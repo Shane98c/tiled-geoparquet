@@ -1,5 +1,5 @@
 import type { ProjectionTask } from './projection.js'
-import type { PreparedTile } from './spatial.js'
+import type { AttributeTask, PreparedTile } from './spatial.js'
 import type { DecodedTile, TileOptions } from './tile.js'
 import type { TileJob, TileReply, TileWork, TileResult } from './tile-protocol.js'
 
@@ -97,6 +97,10 @@ export class TilePool {
   async project(task: ProjectionTask, signal?: AbortSignal): Promise<unknown[]> {
     return ((await this.submit({ type: 'project', task }, signal)) as { values: unknown[] }).values
   }
+  async attributes(task: AttributeTask, signal?: AbortSignal): Promise<Record<string, unknown[]>> {
+    const result = await this.submit({ type: 'attributes', task }, signal)
+    return (result as { columns: Record<string, unknown[]> }).columns
+  }
   private submit(work: TileWork, signal?: AbortSignal): Promise<TileResult> {
     signal?.throwIfAborted()
     if (this.failure) return Promise.reject(this.failure)
@@ -181,13 +185,22 @@ function copyWork(work: TileWork): TileWork {
         runs: work.task.runs.map((run) => ({ ...run, bytes: run.bytes.slice(0) })),
       },
     }
+  if (work.type === 'attributes')
+    return { ...work, task: { ...work.task, attributes: copyAttributes(work.task.attributes) } }
   return {
     ...work,
     task: {
       ...work.task,
       payloads: work.task.payloads.map((bytes) => bytes.slice(0)),
+      attributes: copyAttributes(work.task.attributes ?? []),
     },
   }
+}
+function copyAttributes(attributes: AttributeTask['attributes']): AttributeTask['attributes'] {
+  return attributes.map((entry) => ({
+    ...entry,
+    payloads: entry.payloads.map((bytes) => bytes.slice(0)),
+  }))
 }
 export function geometryTransfers(tile: DecodedTile): ArrayBuffer[] {
   return [
@@ -205,5 +218,7 @@ function workTransfers(work: TileWork): ArrayBuffer[] {
       ...work.task.runs.map((run) => run.bytes),
       ...(work.task.dictionary ? [work.task.dictionary] : []),
     ]
-  return [...work.task.payloads]
+  const attributes = (work.task.attributes ?? []).flatMap((entry) => entry.payloads)
+  if (work.type === 'attributes') return attributes
+  return [...work.task.payloads, ...attributes]
 }

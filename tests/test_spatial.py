@@ -144,6 +144,9 @@ def test_spatial_roundtrip(tmp_path, monkeypatch, family, sparse, leaf_pages, pa
             'fixture exercises directory branches'
         )
         assert root['primary_index']['directory'][0] > 1, 'and primary directory branches'
+        assert max(top[0] for top in root['column_index']['directories']) > 1, (
+            'and row directory branches'
+        )
     assert root['primary_index']['attributes'] == ['height', 'name']
     assert old.read_bytes() == before, 'source is immutable'
     assert validate(new, full=True)['rows'] == n
@@ -263,7 +266,7 @@ def test_layout_requires_separate_output(tmp_path):
         finalize_layout(tmp_path / 'same', tmp_path / 'same')
 
 
-def test_row_reads_skip_the_footer_and_fetch_offset_indexes_once(tmp_path):
+def test_row_reads_use_row_directories_not_the_footer(tmp_path):
     rng = np.random.default_rng(5)
     n = 6000
     x, y = -105 + rng.random(n) * 0.2, 39.6 + rng.random(n) * 0.2
@@ -303,25 +306,12 @@ def test_row_reads_skip_the_footer_and_fetch_offset_indexes_once(tmp_path):
     footer = loads(data[-8 - length : -8])
     root = json.loads(gzip.decompress(data[16 : 16 + int.from_bytes(data[12:16], 'little')]))
     assert root['footer_bytes'] == length
-    offset, size = root['row_metadata']
-    rows = loads(gzip.decompress(data[offset : offset + size]))
-    names = [get(e, 4).decode() for e in get(rows, 2)[1][1:]]
     schema = pq.ParquetFile(out).schema_arrow
-    assert names == [f.name for f in schema if not pa.types.is_nested(f.type)]
-    assert size < length
-    chunks = [
-        chunk
-        for chunk in get(get(footer, 4)[1][g], 1)[1]
-        if b'.'.join(get(get(chunk, 3), 3)[1]).decode() in columns
-    ]
-    indexes = [
-        min(get(c, 4) for c in chunks),
-        max(get(c, 4) + get(c, 5) for c in chunks),
-    ]
-    # the row group's offset indexes sit together, so the requested ones span
-    # no more than the row group's own indexes
-    whole = sum(get(c, 5) for c in get(get(footer, 4)[1][g], 1)[1])
-    assert indexes[1] - indexes[0] <= whole
+    flat = [f.name for f in schema if not pa.types.is_nested(f.type)]
+    assert root['column_index']['columns'] == flat, 'every flat column the writer writes'
+    assert 'row_metadata' not in root
+    chunks = get(get(footer, 4)[1][g], 1)[1]
+    indexes = [min(get(c, 4) for c in chunks), max(get(c, 4) + get(c, 5) for c in chunks)]
     cases = tmp_path / 'cases.json'
     cases.write_text(
         json.dumps(
@@ -549,10 +539,11 @@ def _primary_leaves(raw, node, attributes):
     ]
 
 
-def test_root_shrinks_its_largest_top_node_first(tmp_path, monkeypatch):
-    """While the root exceeds its target, the largest top node gains a level
-    of branches, the primary directory's included; a root that does not fit
-    once every top is a single entry is refused."""
+def test_root_branches_row_directories_before_the_trees_tiles_read(tmp_path, monkeypatch):
+    """While the root exceeds its target a row directory gains a level of
+    branches, the largest top node first, and the primary and LOD trees only
+    once no row directory can; a root that does not fit once every top is a
+    single entry is refused."""
     rng = np.random.default_rng(1)
     n = 3000
     x, y = -105 + rng.random(n) * 0.3, 39.6 + rng.random(n) * 0.3
@@ -582,7 +573,7 @@ def test_root_shrinks_its_largest_top_node_first(tmp_path, monkeypatch):
     # the target leaves room for the fields added once the trees are final
     reserve = layout.BOOTSTRAP_BYTES - layout._ROOT_TARGET_BYTES
     sizes = {}
-    for target in (16256, 720, 640):
+    for target in (16256, 1000, 800, 720):
         monkeypatch.setattr(layout, '_ROOT_TARGET_BYTES', target)
         out = finalize_layout(
             packed, tmp_path / f'{target}.parquet', leaf_pages=2, log=lambda *_: None
@@ -591,14 +582,17 @@ def test_root_shrinks_its_largest_top_node_first(tmp_path, monkeypatch):
         sizes[target] = int.from_bytes(out.read_bytes()[12:16], 'little')
         assert sizes[target] <= target + reserve
         assert validate(out, full=True)['rows'] == n
-        levels = [top[0] for top in root['directories'].values()]
-        exact = root['primary_index']['directory']
+        lods = [top[0] for top in root['directories'].values()]
+        rows = [top[0] for top in root['column_index']['directories']]
+        exact = root['primary_index']['directory'][0]
         if target == 16256:
-            assert exact[0] == 1 and max(levels) == 1, 'a roomy root keeps every tree shallow'
+            assert [exact, *lods, *rows] == [1] * 7, 'a roomy root keeps every tree shallow'
+        if target == 1000:
+            assert max(rows) == 2 and [exact, *lods] == [1] * 4, 'a row directory branches first'
+        if target == 800:
+            assert min(rows) > 1 and exact == 2 and max(lods) == 1, 'then the largest other top'
         if target == 720:
-            assert exact[0] == 2 and max(levels) == 1, 'the largest, the primary, branches first'
-        if target == 640:
-            assert exact[0] == 2 and min(levels) == 2, 'then every other top'
+            assert exact == 2 and min(lods) == 2, 'then every other top'
     monkeypatch.setattr(layout, '_ROOT_TARGET_BYTES', 200)
     with pytest.raises(ValueError, match='exceeds the 16 KiB bootstrap'):
         finalize_layout(packed, tmp_path / 'tiny.parquet', leaf_pages=2, log=lambda *_: None)

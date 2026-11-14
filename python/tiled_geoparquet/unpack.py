@@ -19,11 +19,13 @@ from pathlib import Path
 
 import numpy as np
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 import shapely
 
-from .encoding import PACK_VERSION
-from .pack import FAMILY_DEPTH
+from ._compact import get, loads
+from .encoding import OVERVIEW_COLUMNS, check_format
+from .pack import FAMILY_DEPTH, cast_carried
 
 # larger than any real count; counts are clipped to it so positions stay in int64
 COUNT_LIMIT = 1 << 40
@@ -68,24 +70,144 @@ def lod_values(parquet: pq.ParquetFile, group: int, column: str, name: str) -> p
     return parquet.read_row_group(group, columns=[f'{column}.{name}']).column(0).flatten()[0]
 
 
+def shown_rows(values: pa.Array | pa.ChunkedArray, geometry_type: str) -> np.ndarray:
+    """Which rows of an LOD's packed `values` hold a geometry of their own,
+    the rows the LOD shows: every value of a point LOD, and every value of a
+    shape LOD whose leading varint, its count of parts, is not zero. A row
+    that only hosts copies counts none."""
+    if isinstance(values, pa.ChunkedArray):
+        values = values.combine_chunks()
+    present = values.is_valid().to_numpy(zero_copy_only=False)
+    if geometry_type == 'Point' or not len(values):
+        return present
+    _, offsets, data = values.buffers()
+    width = np.dtype(np.int64 if pa.types.is_large_binary(values.type) else np.int32)
+    offsets = np.frombuffer(offsets, width, len(values) + 1, values.offset * width.itemsize)
+    data = np.frombuffer(data, np.uint8) if data is not None else np.zeros(0, np.uint8)
+    start, end = offsets[:-1], offsets[1:]
+    rows = np.flatnonzero(present & (end > start))
+    first = data[start[rows]]
+    shown = np.zeros(len(values), bool)
+    shown[rows] = (first & 0x7F) != 0
+    # a count whose first byte holds no bits and continues is read to its end
+    for row in rows[first == 0x80]:
+        for byte in data[start[row] + 1 : end[row]]:
+            if byte & 0x7F:
+                shown[row] = True
+            if byte & 0x7F or not byte & 0x80:
+                break
+    return shown
+
+
+def leads(parquet: pq.ParquetFile) -> bool:
+    """Whether the file's attribute columns hold their values on the leading
+    rows of their LOD's pages, as a file with the spatial index does."""
+    return b'lod_spatial_index' in (parquet.metadata.metadata or {})
+
+
+def leading_rows(shown: np.ndarray, bounds: np.ndarray) -> np.ndarray:
+    """Where an attribute column whose values lead its LOD's pages holds the
+    value of each row `shown` marks, in their order: the i-th such row of the
+    page bounded by `bounds` that holds it has its value on that page's i-th
+    row."""
+    rows = np.flatnonzero(shown)
+    before = np.r_[0, np.cumsum(shown, dtype=np.int64)]
+    first = bounds[np.searchsorted(bounds, rows, 'right') - 1]
+    return first + before[rows] - before[first]
+
+
+def moved(values: pa.Array, source: np.ndarray, target: np.ndarray) -> pa.Array:
+    """`values` with the value of each row of `source` on the row of `target`
+    at its position, and null on every other row."""
+    index = np.full(len(values), -1, np.int64)
+    index[target] = source
+    return values.take(pa.array(index, mask=index < 0))
+
+
+class PageBounds:
+    """The row bounds of the pages of a Parquet file's column chunks, from
+    their offset indexes, which Arrow does not read."""
+
+    def __init__(self, path: str | Path):
+        self.file = open(path, 'rb')
+        self.file.seek(-8, 2)
+        size = int.from_bytes(self.file.read(4), 'little')
+        self.file.seek(-8 - size, 2)
+        self.groups = get(loads(self.file.read(size)), 4)[1]
+        self.columns = {
+            '.'.join(part.decode() for part in get(get(chunk, 3), 3)[1]): c
+            for c, chunk in enumerate(get(self.groups[0], 1)[1])
+        }
+
+    def __call__(self, group: int, leaf: str) -> np.ndarray:
+        """Page i of column `leaf` in row group `group` holds its rows
+        `bounds[i]:bounds[i + 1]`."""
+        chunk = get(self.groups[group], 1)[1][self.columns[leaf]]
+        self.file.seek(get(chunk, 4))
+        pages = get(loads(self.file.read(get(chunk, 5))), 1)[1]
+        return np.array([get(page, 3) for page in pages] + [get(self.groups[group], 3)], np.int64)
+
+    def close(self) -> None:
+        self.file.close()
+
+
+def column_values(
+    parquet: pq.ParquetFile,
+    group: int,
+    lod: dict,
+    name: str,
+    field: pa.Field,
+    led: tuple[np.ndarray, np.ndarray] | None = None,
+) -> pa.Array:
+    """Every row's own value of column attribute `field` at LOD `name` in one
+    row group, as the declared type: from the LOD's attribute column, a value
+    table index mapped to its string, or from the source column where the LOD
+    has none. Meaningful on the rows the LOD shows. `led` is, for a file whose
+    attribute columns lead their pages, the rows the LOD shows in the row
+    group and the bounds of its pages there."""
+    spec = lod['attribute_columns']
+    if name in spec['lods']:
+        path = f'{spec["column"]}.{name}.{field.name}'
+        values = parquet.read_row_group(group, columns=[path]).column(0).combine_chunks()
+        for part in path.split('.')[1:]:
+            values = values.field(part)
+        if led is not None:
+            shown, bounds = led
+            leading = leading_rows(shown, bounds)
+            valid = values.is_valid().to_numpy(zero_copy_only=False)
+            if valid.sum() != valid[leading].sum():
+                raise ValueError(f"{path} holds a value past the rows its LOD's page shows")
+            values = moved(values, leading, np.flatnonzero(shown))
+        table = next(a.get('values') for a in lod['attributes'] if a['name'] == field.name)
+        if table is not None:
+            if pc.max(values).as_py() is not None and pc.max(values).as_py() >= len(table):
+                raise ValueError(f'{field.name} indexes past its value table')
+            values = pa.array(table, field.type).take(values)
+        return values.cast(field.type)
+    source = parquet.read_row_group(group, columns=[field.name]).column(0).combine_chunks()
+    return cast_carried(source, field)
+
+
 def read_overview(path: str | Path, zoom: int) -> pa.Table:
     """The rows shown at `zoom`, one of the file's zooms, with their overview
     geometry: `row`, the file row index; `geometry`, WKB in EPSG:3857 metres,
     the CRS stated in the field's GeoArrow metadata; and the carried
-    attributes as that zoom's LOD stores them. Boundary copies are left out,
-    as each repeats a shown row. A carried attribute named `row` or
+    attributes as that zoom's LOD stores them, a column attribute from its
+    LOD's attribute column or the source column. Boundary copies are left
+    out, as each repeats a shown row. A carried attribute named `row` or
     `geometry` is refused."""
     f = pq.ParquetFile(path)
     lod = json.loads((f.schema_arrow.metadata or {}).get(b'geo', b'{}')).get('lod_columns')
-    if not lod or lod.get('pack_version') != PACK_VERSION:
-        raise ValueError(f'{path} has no packed LOD columns of version {PACK_VERSION}')
+    if not lod:
+        raise ValueError(f'{path} has no LOD columns')
+    check_format(lod)
     name = next((n for n, c in lod['lods'].items() if zoom in c['zooms']), None)
     if name is None:
         raise ValueError(f'zoom {zoom} is not one of the file zooms {lod["zooms"]}')
     child = lod['lods'][name]
     fields, dictionaries = carried(lod)
     for a in fields:
-        if a.name in ('row', 'geometry'):
+        if a.name in OVERVIEW_COLUMNS:
             raise ValueError(
                 f'carried attribute {a.name!r} collides with the {a.name!r} column '
                 'read_overview returns'
@@ -95,16 +217,35 @@ def read_overview(path: str | Path, zoom: int) -> pa.Table:
     schema = pa.schema(
         [pa.field('row', pa.int64()), pa.field('geometry', pa.binary(), metadata=wkb), *fields]
     )
+    columns = [a['name'] for a in lod['attributes'] if a.get('storage') == 'column']
+    listed = name in (lod.get('attribute_columns') or {}).get('lods', [])
+    pages = PageBounds(path) if columns and listed and leads(f) else None
     tables, first = [], 0
     for group in range(f.metadata.num_row_groups):
         values = lod_values(f, group, lod['column'], name)
+        led = None
+        if pages:
+            led = (
+                shown_rows(values, child['geometry_type']),
+                pages(group, f'{lod["column"]}.{name}'),
+            )
+        own_values = {
+            a.name: column_values(f, group, lod, name, a, led) for a in fields if a.name in columns
+        }
         for u in unpack_batches(values, child['geometry_type'], fields, dictionaries):
             shapes = _geometries(u, child)
             own = np.flatnonzero(~u.copy & ~shapely.is_empty(shapes))
-            attrs = [u.attrs[a.name].take(own) for a in fields]
+            attrs = [
+                own_values[a.name].take(u.row[own])
+                if a.name in own_values
+                else u.attrs[a.name].take(own)
+                for a in fields
+            ]
             rows = first + u.row[own]
             tables.append(pa.table([rows, shapely.to_wkb(shapes[own]), *attrs], schema))
         first += f.metadata.row_group(group).num_rows
+    if pages:
+        pages.close()
     return pa.concat_tables(tables) if tables else schema.empty_table()
 
 

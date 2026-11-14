@@ -9,21 +9,71 @@ import { rootFileBytes } from './spatial.js'
  * Indexed files open with one leading 16 KiB GET. Unindexed files then fetch the
  * tail and, if needed, the remainder of the footer. Content-Range supplies the
  * size; HEAD is needed only when CORS does not expose that response header.
+ *
+ * `cache` is the cache mode of every request. Chrome's HTTP cache answers the
+ * range requests of one URL one at a time, so a tile's requests sent together
+ * through it arrive in sequence; `no-store` sends them side by side and keeps
+ * nothing for a later visit. `default` names no mode to `fetch`, for a runtime
+ * that takes none.
+ *
+ * `connections` is how many connections to each host are open once the leading
+ * GET returns: one-byte requests sent beside it open the others, so the
+ * parallel requests of the first tiles find them ready. 1 sends none. It is
+ * six with `no-store` and one through the cache, which has one request of a
+ * URL in flight at a time.
  */
 /** Bytes read ahead of the footer when it must be fetched separately, for the page index just before it. */
 const FOOTER_MARGIN = 64 * 1024
 
+/** The connections a browser allows one host on HTTP/1.1. */
+const HOST_CONNECTIONS = 6
+
+/**
+ * Leave `count` connections open to the host of each of `urls`, the first of
+ * which has a request in flight. HTTP/1.1 carries one request per connection,
+ * so each request sent here opens one; HTTP/2 and HTTP/3 carry them on the
+ * connection they have. `no-store` keeps a browser's cache from answering or
+ * queueing them. Failures are ignored, a runtime's refusal of the cache mode
+ * among them.
+ */
+const openConnections = (urls: string[], count: number, signal?: AbortSignal): void => {
+  if (count < 2) return
+  const open = async (url: string) => {
+    const response = await fetch(url, {
+      headers: { Range: 'bytes=0-0' },
+      cache: 'no-store',
+      signal,
+    })
+    if (response.status === 206) await response.arrayBuffer()
+    else await response.body?.cancel()
+  }
+  urls.forEach((url, index) => {
+    for (let n = index ? 0 : 1; n < count; n++) open(url).catch(() => {})
+  })
+}
+
 export const httpSource = async (
   urls: string[],
-  { tail = 64 * 1024, signal }: { tail?: number; signal?: AbortSignal } = {},
+  {
+    tail = 64 * 1024,
+    signal,
+    cache = 'no-store',
+    connections = cache === 'no-store' ? HOST_CONNECTIONS : 1,
+  }: { tail?: number; signal?: AbortSignal; cache?: RequestCache; connections?: number } = {},
 ): Promise<RangeSource> => {
   if (!urls.length) throw new Error('at least one URL is required')
+  if (!Number.isInteger(connections) || connections < 1)
+    throw new Error('connections must be a whole number, 1 or more')
+  const mode: { cache?: RequestCache } = cache === 'default' ? {} : { cache }
   // A fixed leading range opens indexed files in one request. Unindexed files
   // use Content-Range for their size, then continue through the normal footer.
-  const first = await fetch(urls[0], {
+  const opening = fetch(urls[0], {
     headers: { Range: 'bytes=0-16383' },
+    ...mode,
     signal,
   })
+  openConnections(urls, connections, signal)
+  const first = await opening
   if (first.status !== 206) {
     await first.body?.cancel()
     throw new Error(`range request failed: ${first.status}`)
@@ -42,7 +92,7 @@ export const httpSource = async (
     }
   }
   if (!Number.isSafeInteger(byteLength)) {
-    const head = await fetch(urls[0], { method: 'HEAD', signal })
+    const head = await fetch(urls[0], { method: 'HEAD', ...mode, signal })
     byteLength = Number(head.headers.get('Content-Length'))
     if (!head.ok || !head.headers.has('Content-Length')) throw new Error(`cannot size ${urls[0]}`)
   }
@@ -59,6 +109,7 @@ export const httpSource = async (
   const get = async (start: number, end: number) => {
     const response = await fetch(urls[0], {
       headers: { Range: `bytes=${start}-${end - 1}` },
+      ...mode,
       signal,
     })
     if (response.status !== 206) {
@@ -102,6 +153,7 @@ export const httpSource = async (
       try {
         response = await fetch(urls[0], {
           headers: { Range: `bytes=${byteLength - 8}-${byteLength - 1}` },
+          ...mode,
         })
       } catch (error) {
         verified = null
@@ -144,6 +196,7 @@ export const httpSource = async (
       const read = async () => {
         const response = await fetch(url, {
           headers: { Range: `bytes=${start}-${end - 1}` },
+          ...mode,
           signal,
         })
         if (response.status !== 206) {
@@ -160,7 +213,8 @@ export const httpSource = async (
   }
 }
 
-/** The same S3 object under the hostnames the service answers on. A CDN makes this unnecessary. */
+/** The same S3 object under the hostnames the service answers on: three URLs,
+ * so a browser's cache has three of its requests in flight at a time. */
 export const s3Mirrors = (url: string): string[] => {
   const match = /^https:\/\/([^./]+)\.s3\.([a-z0-9-]+)\.amazonaws\.com\/(.+)$/.exec(url)
   if (!match) return [url]

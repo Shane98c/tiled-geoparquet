@@ -202,6 +202,14 @@ for (const [i, [z, x, y]] of cases.entries()) {
     const unstyled = await fast.readLodByTile(lod, z, x, y, [])
     assert.deepEqual(unstyled.rows, rows.rows)
     assert.deepEqual(unstyled.geometry, rows.geometry)
+    const key = fast.lod.key.column
+    const keyed = await fast.readLodByTile(lod, z, x, y, [key, 'geometry'])
+    assert.deepEqual(keyed.rows, rows.rows)
+    assert.deepEqual(
+      keyed.columns,
+      await footer.readColumns(keyed.rows, [key, 'geometry']),
+      `row directories read un-carried columns of ${z}/${x}/${y} as the footer does`,
+    )
     for (const [reader, data, name] of [
       [fast, rows, 'directory'],
       [old, await old.readLodByTile(lod, z, x, y, attrs), 'key interval'],
@@ -258,13 +266,24 @@ for (const workers of [1, 2, 4]) {
     assert.deepEqual(opened.metadata.columns, old.scalarColumns())
     assert.deepEqual(
       (await call({ type: 'stats' })).stats[url],
-      { bytes: 16384, requests: 1 },
-      'one bootstrap regardless of worker count',
+      { bytes: 16389, requests: 6 },
+      'one bootstrap, five one-byte requests beside it, regardless of worker count',
     )
     const cancelled = call({ type: 'tile', config: { url }, z, x, y })
     const rejection = assert.rejects(cancelled, { name: 'AbortError' })
     client.cancel(cancelled.id)
     await rejection
+    // an un-carried column comes from its row directory, fetched with the
+    // tile's pages and decoded in the pool
+    const styled = ['height', fast.lod.key.column]
+    for (const [z, x, y] of cases.slice(0, 8)) {
+      const reply = await call({ type: 'tile', config: { url, properties: styled }, z, x, y })
+      assert.deepEqual(
+        new Uint8Array(reply.data),
+        new Uint8Array(await renderTile(footer, z, x, y, { properties: styled })),
+        `worker ${workers} reads an un-carried column as the footer does`,
+      )
+    }
     const concurrent = cases
       .slice(0, 16)
       .map(([z, x, y]) =>

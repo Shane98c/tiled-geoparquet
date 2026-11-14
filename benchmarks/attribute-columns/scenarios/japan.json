@@ -1,0 +1,35 @@
+{
+  "tiles": [
+    [8, 139.76, 35.68, "metro, Tokyo"],
+    [11, 139.76, 35.68, "city, Tokyo"],
+    [13, 139.7, 35.66, "downtown, Shibuya"],
+    [13, 139.95, 35.45, "suburbs, Chiba"],
+    [15, 139.76, 35.68, "street, Tokyo station"],
+    [15, 135.5, 34.69, "street, Osaka"]
+  ],
+  "dense_from": 14,
+  "viewport": { "width": 1280, "height": 800 },
+  "route": [
+    { "label": "open on Tokyo", "center": [139.76, 35.68], "zoom": 11 },
+    { "label": "zoom in", "center": [139.73, 35.67], "zoom": 12 },
+    { "label": "zoom in on Shibuya", "center": [139.7, 35.66], "zoom": 13 },
+    { "label": "pan east", "center": [139.74, 35.665], "zoom": 13 },
+    { "label": "style by carried", "center": [139.74, 35.665], "zoom": 13, "style": "carried" },
+    { "label": "zoom in", "center": [139.755, 35.675], "zoom": 14 },
+    { "label": "zoom in on Tokyo station", "center": [139.766, 35.681], "zoom": 15 },
+    {
+      "label": "style by un-carried",
+      "center": [139.766, 35.681],
+      "zoom": 15,
+      "style": "uncarried"
+    },
+    { "label": "pan north", "center": [139.766, 35.69], "zoom": 15 },
+    { "label": "zoom out", "center": [139.76, 35.685], "zoom": 13 },
+    { "label": "zoom out", "center": [139.76, 35.68], "zoom": 11 },
+    { "label": "zoom out", "center": [139.76, 35.68], "zoom": 8 },
+    { "label": "style by geometry", "center": [139.76, 35.68], "zoom": 8, "style": "geometry" },
+    { "label": "jump to Osaka", "center": [135.5, 34.69], "zoom": 11 },
+    { "label": "zoom in", "center": [135.5, 34.69], "zoom": 13 },
+    { "label": "pan to the suburbs of Chiba", "center": [139.95, 35.45], "zoom": 13 }
+  ]
+}

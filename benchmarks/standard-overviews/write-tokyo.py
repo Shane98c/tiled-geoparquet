@@ -83,6 +83,7 @@ if __name__ == '__main__':
         staged,
         thinning=chain(drop_smallest(budgets()), tiny_polygons()),
         carry=['height', 'class'],
+        carry_columns=(),
         zooms=list(range(8, 17)),
         complete_from=14,
         page_bytes=16384,

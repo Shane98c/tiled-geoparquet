@@ -10,9 +10,10 @@ GeoParquet tools.
 
 The overview policy applies `drop_smallest` followed by `tiny_polygons`, with
 height and class carried for styling. It uses one Hilbert order, full detail
-from z14 in one LOD serving z14 and z15, which a map overzooms past, 16 KiB
-staging pages and 64 KiB final overview pages. The indexed file is
-**6.32 GB**, compared with **4.84 GB** for the analytical source and
+from z14 in one LOD serving z14 and z15, 16 KiB staging pages and 64 KiB final
+overview pages. Past z15 the reader draws the primary geometry; the hosted
+demo's source has `maxzoom` 15, so MapLibre overzooms z15 there. The indexed
+file is **6.32 GB**, compared with **4.84 GB** for the analytical source and
 **1.30 GB** for PMTiles. These totals represent different capabilities.
 
 Estimated-byte thinning budgets were calibrated against PMTiles feature counts:

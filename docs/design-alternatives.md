@@ -69,19 +69,108 @@ devices reporting at most two cores render serially.
 
 ## Separate attribute columns
 
-Carried attributes could live in ordinary nullable LIST columns beside a
-geometry-only payload, one list slot per own row and boundary copy, so a style
-reads only the attributes it needs. On the 4.9-million-row Tokyo subset this
-saved modest bytes for geometry-only views but made styled views slower: the
-companion pages add requests and decode work that outweighs the saving. The
-layout keeps attributes packed with the geometry, and styles that need other
-source columns project them by row id on demand.
+An attribute a renderer styles with can sit in three places beside the
+overview geometry. All three were measured.
+
+**Packed.** Each overview row's payload holds the attribute, as `carry=`
+writes it. A tile reads it in the pages it reads anyway, every tile pays for
+it whether styled or not, and the LODs from the complete zoom up repeat the
+source column.
+
+**A LIST column per attribute.** Beside a geometry-only payload, each overview
+row holds a list with a slot for its own value and one per boundary copy it
+hosts. On the 4.9-million-row Tokyo subset this saved modest bytes for
+geometry-only views but made styled views slower: the companion pages added
+requests and decode work that outweighed the saving, and every copy's value
+sits in its host's list as well.
+
+**Column attributes**, what the writer keeps by default and what
+`carry_columns=` names ([Attributes](usage.md#attributes)). Every LOD holds
+its shown rows' values in a nullable typed column with pages cut where its
+overview pages are, each page's values on its leading rows, but one page of
+nulls for each run of overview pages without a value; boundary copies keep
+the packed value; and after the
+leaves of each level-one directory node, a block of fixed-size slots, one per
+attribute and leaf, holds the attribute leaves listing the length of the
+attribute page beside each overview page, 0 beside one without a value,
+which a reader locates from the level-one node and fetches with the leaf. A
+tile that names no column attribute requests no part of this. On 1,753,860 Denver buildings, against
+packing `height`, a cold geometry-only tile is 6 to 39% lighter, and a tile
+styled by `height` takes the same rounds with one or two more requests cold
+and one more next, and reads 2 to 9% fewer bytes than packed at zooms 8 to
+13 and under 2% more at zoom 14, except at a small zoom 15
+tile, where the first styled tile under an overview leaf reads an attribute
+leaf of about 2 KB, 17% more than packed; from zoom 11 the next tile reads 3
+to 5% less.
+Packing `height` and keeping `class` as a column reads geometry-only and
+`height` tiles within 0.4% of the file packing only `height`. Decoding and
+encoding a styled tile takes within 0.5 ms of the packed time from zoom 11,
+and 19.3 ms against 18.5 ms for the 60,105 features of a zoom 8 tile.
+
+Choices within the column layout were measured on the same buildings:
+
+- A value on its own row, where a file without the spatial index holds it,
+  has each page spend definition levels on every gap between the rows its
+  zoom shows. Held that way the attribute columns of zooms 4 to 7, a number
+  and a string of few values, take twice the bytes they take leading their
+  pages, those of zooms 8 to 11 about one and a half times, and those of
+  zooms showing every row the same.
+- A separate gzip directory listing the byte range of every attribute leaf,
+  read the first time a style uses a column attribute, would keep the slots'
+  padding out of the file but grows with attributes times leaves. On 53.7
+  million Japan buildings with 15 column attributes it would take 12.1 KB
+  beside a 7.3 KB root, too much for the first 16 KiB, so the first tile
+  styled by a column attribute would take three request rounds where a
+  geometry-only tile takes two.
+- Slots placed right after each leaf would be found from the leaf's own
+  entry, but would sit between consecutive leaves, so a geometry-only view
+  reaching several leaves would either split what is otherwise one request
+  or fetch the slots between them as filler. On 30,000 points with 20 column
+  attributes and 64 pages per leaf, 48 concurrent zoom 16 tiles read through
+  the reader's coalescing would take 44 requests and 47.3 KB, against 28
+  requests and 23.6 KB for the same source without column attributes. With a
+  slot block after each level-one node's leaves, both take the same
+  requests and bytes.
+
+- Listing the byte ranges of the attribute leaves in the level-one directory
+  nodes, beside the leaves they locate, loads both in one round with no
+  separate directory,
+  but makes every node above the leaves grow by two numbers per attribute per
+  entry. On 53.7 million Japan buildings with 17 attributes that pushed the
+  level-one nodes out of the root, and every cold geometry-only zoom 15 tile
+  read three requests in three rounds, 15.4 KB, against two in two, 10.7 KB,
+  without the attributes.
+- Listing an LOD leaf's attribute pages inside the leaf instead of in a leaf
+  per attribute beside it makes every tile read every attribute's lists: with
+  eight attributes a cold geometry-only tile reads 21.0 KB against 12.7 KB at
+  zoom 15 and 133 KB against 117 KB at zoom 13.
+- At the LODs showing every row, reading the source column, its pages cut
+  where the finest LOD's tiles meet and holding 8 KiB of values each, instead
+  of a column of the LOD's own makes a smaller file, 248.5 MB against 254.2 MB,
+  but each attribute leaf there lists the source pages with their rows, 3 to
+  7 KB, and a cold zoom 15 tile styled by `height` reads 18.3 KB against 12.6 KB
+  packed.
+- An attribute page beside every overview page, a page of nulls included,
+  would keep every attribute leaf entry a byte range, but on 53.7 million
+  Japan buildings with 17 column attributes it would make their columns
+  269 MB against 157 MB: the ten valued on fewer than 0.2% of rows would
+  take about 9 MB each, 92 MB together against about 4 MB, mostly page
+  headers over almost no values, and a tile styled by one would request
+  pages holding nothing.
+- Boundary copies packing column attributes keeps a styled tile at two
+  rounds, since a copy's value is in the tile's own pages, but a geometry-only
+  tile reads those values too: with eight attributes kept as columns, 5 to
+  12% more than with none at zooms 13 to 15. Moving them to a column of the
+  copies' values beside each LOD would make that cost a styled tile's
+  instead, at one more request.
 
 ## Shared detail levels
 
 Every complete LOD stores every feature again, so the writer pairs complete
 zooms: one LOD on the finer zoom's grid serves both. The Japan file serves z14
-and z15 from one z15-grid LOD and stops there; a map overzooms z15 past it.
+and z15 from one z15-grid LOD and stops there. Past it the reader draws the
+primary geometry, and a map source whose `maxzoom` is 15 overzooms z15, as the
+hosted demo does.
 That grid has four cells per z15 pixel, so two per pixel at z16 and one at
 z17. A z16 LOD would add 1.11 GB, every feature again, for those views. Serving all complete zooms from one payload suits small files, and
 the writer does so below `single_lod_bytes`; larger files pair zooms because a

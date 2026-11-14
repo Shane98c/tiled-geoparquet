@@ -1,6 +1,8 @@
 """Straddler copies: every tile a feature reaches holds it exactly once."""
 
 import json
+import subprocess
+from pathlib import Path
 
 import numpy as np
 import pyarrow as pa
@@ -11,8 +13,10 @@ import shapely
 from tiled_geoparquet import validate, write
 from tiled_geoparquet.key import KEY_DEPTH, hilbert_key, tile_x, tile_y
 from tiled_geoparquet.quantize import render_polygons
-from tiled_geoparquet.spill import MARGIN, straddlers, take_ragged
+from tiled_geoparquet.spill import MARGIN_PIXELS, straddlers, take_ragged
 from unpacker import Unpacker
+
+MARGIN = MARGIN_PIXELS / 512
 
 
 def key_in(x: int, y: int, zoom: int) -> np.ndarray:
@@ -21,8 +25,8 @@ def key_in(x: int, y: int, zoom: int) -> np.ndarray:
     return hilbert_key(np.array([x << shift]), np.array([y << shift]), KEY_DEPTH)
 
 
-def reached(xmin, ymin, xmax, ymax, zoom):
-    """The tiles a bbox reaches at `zoom`, each reaching MARGIN past its edge, by trying each."""
+def reached(xmin, ymin, xmax, ymax, zoom, margin=MARGIN):
+    """The tiles a bbox reaches at `zoom`, each reaching `margin` past its edge, by trying each."""
     fx0, fx1, fy0, fy1 = (
         tile_x(xmin, zoom),
         tile_x(xmax, zoom),
@@ -33,7 +37,7 @@ def reached(xmin, ymin, xmax, ymax, zoom):
         (x, y)
         for x in range(int(fx0) - 2, int(fx1) + 3)
         for y in range(int(fy0) - 2, int(fy1) + 3)
-        if fx0 - MARGIN < x + 1 and x <= fx1 + MARGIN and fy0 - MARGIN < y + 1 and y <= fy1 + MARGIN
+        if fx0 - margin < x + 1 and x <= fx1 + margin and fy0 - margin < y + 1 and y <= fy1 + margin
     }
 
 
@@ -61,7 +65,7 @@ def test_a_feature_centred_on_a_tile_edge_is_copied_where_its_key_is_not():
     assert (bounds[0] + bounds[2]) / 2 == edge
     (row,) = {y for _, y in reached(*(b[0] for b in bounds), zoom)}
     for own, other in ((k - 1, k), (k, k - 1)):
-        rows, tiles = straddlers(*bounds, key_in(own, row, zoom), zoom)
+        rows, tiles = straddlers(*bounds, key_in(own, row, zoom), zoom, MARGIN)
         assert rows.tolist() == [0]
         assert tiles.tolist() == [other * 2**zoom + row]
 
@@ -75,7 +79,7 @@ def test_a_feature_short_of_a_tile_is_copied_there_within_the_margin():
     row = int(tile_y(39.7, zoom))
     for gap, tiles in ((1, [k * 2**zoom + row]), (6, [])):
         bounds = [np.array([v]) for v in (edge - 40 * pixel, 39.7, edge - gap * pixel, 39.7001)]
-        assert straddlers(*bounds, key_in(k - 1, row, zoom), zoom)[1].tolist() == tiles, gap
+        assert straddlers(*bounds, key_in(k - 1, row, zoom), zoom, MARGIN)[1].tolist() == tiles, gap
 
 
 def test_every_other_tile_a_feature_reaches_gets_one_copy():
@@ -88,7 +92,7 @@ def test_every_other_tile_a_feature_reaches_gets_one_copy():
     xmin, xmax, ymin, ymax = cx - half_w, cx + half_w, cy - half_h, cy + half_h
     kx = np.floor(tile_x((xmin + xmax) / 2, KEY_DEPTH)).astype(np.int64)
     ky = np.floor(tile_y((ymin + ymax) / 2, KEY_DEPTH)).astype(np.int64)
-    rows, tiles = straddlers(xmin, ymin, xmax, ymax, hilbert_key(kx, ky, KEY_DEPTH), zoom)
+    rows, tiles = straddlers(xmin, ymin, xmax, ymax, hilbert_key(kx, ky, KEY_DEPTH), zoom, MARGIN)
     expected, shapes = [], set()
     for i in range(n):
         tiles_i = reached(xmin[i], ymin[i], xmax[i], ymax[i], zoom)
@@ -127,12 +131,13 @@ def test_take_ragged_picks_whole_rows_in_order():
 @pytest.fixture
 def edge_features(tmp_path):
     """Shapes centred exactly on tile edges, shapes three, four and two by two
-    tiles across, and shapes ending a pixel and six pixels short of a tile, at
+    tiles across, and shapes ending 1, 6, 12 and 20 pixels short of a tile, at
     zoom 14."""
     zoom = 14
     tile = 360 / 2**zoom
     pixel = tile / 512
-    k = int(tile_x(-105.0, zoom))
+    # an edge of tiles at zooms 12 and 13 too
+    k = int(tile_x(-105.0, zoom)) // 4 * 4
     edge = -180 + k * tile
     row = int(tile_y(39.7, zoom))
     lat_edge = float(np.degrees(np.arctan(np.sinh(np.pi * (1 - 2 * row / 2**zoom)))))
@@ -149,8 +154,10 @@ def edge_features(tmp_path):
             edge + 0.2 * tile,
             lat_edge + 0.2 * tile,
         ),
-        'within the margin': (edge - 0.3 * tile, 39.7005, edge - pixel, 39.7008),
-        'past the margin': (edge - 0.3 * tile, 39.7005, edge - 6 * pixel, 39.7008),
+        **{
+            f'{gap} short': (edge - 0.3 * tile, 39.7005, edge - gap * pixel, 39.7008)
+            for gap in (1, 6, 12, 20)
+        },
     }
     table = pa.table(
         {
@@ -168,30 +175,44 @@ def edge_features(tmp_path):
     return src, boxes
 
 
-def test_every_tile_a_feature_reaches_holds_it_once(edge_features, tmp_path):
+@pytest.mark.parametrize(
+    'margin, copied',
+    [(None, {1}), (0, set()), (16, {1, 6, 12}), (9.5, {1, 6})],
+)
+def test_every_tile_a_feature_reaches_holds_it_once(edge_features, tmp_path, margin, copied):
+    """Every tile a feature reaches, or comes within the margin of, holds it
+    once at every zoom: at zoom 14 the shapes short of a tile by at most the
+    margin are copied there and the others are not."""
     src, boxes = edge_features
+    options = {} if margin is None else {'margin_pixels': margin}
     out = write(
         src,
         tmp_path / 'edges.lod.parquet',
-        zooms=[13, 14],
-        complete_from=13,
+        zooms=[12, 13, 14],
+        complete_from=12,
+        carry_columns=(),
         workers=1,
         log=lambda *_: None,
+        **options,
     )
-    assert len(reached(*boxes['within the margin'], 14)) == 2
-    assert len(reached(*boxes['past the margin'], 14)) == 1
+    validate(out, full=True)
+    pixels = MARGIN_PIXELS if margin is None else margin
+    share = pixels / 512
+    for gap in (1, 6, 12, 20):
+        assert len(reached(*boxes[f'{gap} short'], 14, share)) == 1 + (gap in copied)
     table = pq.read_table(out)
     meta = json.loads(table.schema.metadata[b'geo'])['lod_columns']
+    assert meta['margin'] == pixels
     keys = table.column('hilbert').to_numpy()
     names = table.column('name').to_pylist()
-    for zoom in (13, 14):
+    for zoom in (12, 13, 14):
         name, info = next((n, i) for n, i in meta['lods'].items() if zoom in i['zooms'])
         decoded = [
             Unpacker(blob, info['geometry_type'], []).row() if blob is not None else None
             for blob in table.column('lod').combine_chunks().field(name).to_pylist()
         ]
         for row, label in enumerate(names):
-            tiles = reached(*boxes[label], zoom)
+            tiles = reached(*boxes[label], zoom, share)
             xs, ys = {x for x, _ in tiles}, {y for _, y in tiles}
             near = {
                 (x, y)
@@ -255,3 +276,65 @@ def test_a_copy_carries_the_value_its_row_has_at_the_lod(tmp_path, override):
     (copy,) = decoded[host]['spill']
     assert copy['id'] == straddler
     assert copy['attrs'] == {'value': override}
+
+
+@pytest.mark.parametrize('margin', [None, 16])
+def test_the_js_reader_draws_copies_out_to_the_margin(edge_features, tmp_path, margin):
+    """Tiles from both JS readers hold the shapes short of their west edge by at
+    most the margin, unclipped out to it, at the LOD zooms 12 to 14 and from the
+    primary geometry at zoom 15, where the tile reads as far as the margin or
+    8 pixels, whichever is more. A file of another version or without a
+    margin is refused."""
+    src, boxes = edge_features
+    options = {} if margin is None else {'margin_pixels': margin}
+    out = write(
+        src,
+        tmp_path / 'edges.lod.parquet',
+        zooms=[12, 13, 14],
+        complete_from=12,
+        workers=1,
+        log=lambda *_: None,
+        **options,
+    )
+    pixels = MARGIN_PIXELS if margin is None else margin
+    reach = max(8, pixels)
+    names = pq.read_table(out, columns=['name']).column('name').to_pylist()
+    cases = []
+    for gap in (1, 6, 12, 20):
+        _, ymin, xmax, ymax = boxes[f'{gap} short']
+        for z in (12, 13, 14, 15):
+            fx = float(tile_x(np.array([xmax]), z)[0])
+            short = (np.floor(fx) + 1 - fx) * 512
+            cases.append(
+                {
+                    'z': z,
+                    'x': int(fx) + 1,
+                    'y': int(tile_y(np.array([(ymin + ymax) / 2]), z)[0]),
+                    'id': names.index(f'{gap} short'),
+                    'present': bool(short <= (reach if z == 15 else pixels)),
+                    'reach': reach * 8,
+                }
+            )
+    present = {(c['z'], c['id']) for c in cases if c['present']}
+    assert len(present) == (13 if margin else 5), present
+    (tmp_path / 'cases.json').write_text(json.dumps(cases))
+    table = pq.read_table(out)
+    refused = []
+    for name, change in (
+        ('version', lambda lod: lod.update(version='0.1.0')),
+        ('margin', lambda lod: lod.pop('margin')),
+    ):
+        geo = json.loads(table.schema.metadata[b'geo'])
+        change(geo['lod_columns'])
+        path = tmp_path / f'{name}.parquet'
+        metadata = {**table.schema.metadata, b'geo': json.dumps(geo).encode()}
+        pq.write_table(table.replace_schema_metadata(metadata), path)
+        refused.append(str(path))
+    script = Path(__file__).resolve().parents[1] / 'js' / 'test' / 'margin.test.mjs'
+    result = subprocess.run(
+        ['node', str(script), str(out), str(tmp_path / 'cases.json'), *refused],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert 'margin tests passed' in result.stdout

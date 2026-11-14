@@ -14,24 +14,30 @@ const network = {
   bytes: 0,
   uniqueBytes: 0,
   refetchedBytes: 0,
+  helpers: 0,
+  helperJobs: 0,
 }
 const ranges = []
 globalThis.postMessage = (data, transfer) =>
   parentPort.postMessage(data.stats ? { ...data, network } : data, transfer)
 globalThis.Worker = class {
   constructor(url) {
+    network.helpers++
     this.worker = new NodeWorker(new URL('./worker-harness.mjs', import.meta.url), {
-      workerData: { entry: url.href },
+      workerData: { entry: String(url) },
     })
   }
   postMessage(data, transfer) {
+    if (data.type !== 'cpu-init') network.helperJobs++
     this.worker.postMessage(data, transfer)
   }
   terminate() {
     return this.worker.terminate()
   }
   addEventListener(type, callback) {
-    this.worker.on(type, (data) => callback(type === 'message' ? { data } : data))
+    this.worker.on(type, (data) =>
+      callback(type === 'message' ? { data } : { message: data?.message, preventDefault() {} }),
+    )
   }
 }
 if (workerData.entry) {
@@ -79,6 +85,8 @@ if (workerData.entry) {
       throw error
     }
   }
+  // the coordinator starts its CPU helpers from its own script's address
+  globalThis.location = { href: new URL('../dist/worker.js', import.meta.url).href }
   await import('../dist/worker.js')
   parentPort.postMessage({ ready: true })
 }

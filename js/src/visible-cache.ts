@@ -63,6 +63,19 @@ export class VisibleTileCache {
       ),
     )
     tile.columns = { ...tile.columns, ...scalars }
+    if (tile.pending) {
+      tile.pending = tile.pending.filter((name) => !Object.hasOwn(scalars, name))
+      // a request filling the tile at the same time holds the map it started with
+      tile.copies = Object.fromEntries(
+        Object.entries(tile.copies ?? {}).filter(([name]) => tile.pending!.includes(name)),
+      )
+      if (!tile.pending.length) {
+        delete tile.pending
+        delete tile.own
+        delete tile.copies
+        delete tile.shown
+      }
+    }
     this.bytes -= entry.bytes
     entry.bytes = decodedTileBytes(tile)
     this.bytes += entry.bytes
@@ -82,9 +95,10 @@ export function decodedTileBytes(tile: DecodedTile): number {
   const buffers = new Set<ArrayBufferLike>()
   for (const value of Object.values(tile.geometry))
     if (ArrayBuffer.isView(value)) buffers.add(value.buffer)
-  let bytes = 512 + tile.rows.length * 8
+  if (tile.own) buffers.add(tile.own.buffer)
+  let bytes = 512 + (tile.rows.length + (tile.shown?.length ?? 0)) * 8
   for (const buffer of buffers) bytes += buffer.byteLength
-  for (const values of Object.values(tile.columns)) {
+  for (const values of [...Object.values(tile.columns), ...Object.values(tile.copies ?? {})]) {
     bytes += 64 + values.length * 16
     for (const value of values) if (typeof value === 'string') bytes += 32 + value.length * 2
   }

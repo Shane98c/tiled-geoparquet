@@ -18,12 +18,13 @@ from tiled_geoparquet import _validate_index, validate, write
 from tiled_geoparquet._compact import dumps, get, loads, loads_prefix, set_value
 from tiled_geoparquet._layout import (
     _node,
+    column_schema,
     finalize_layout,
     primary_leaf,
-    primary_schema,
     read_node,
     read_primary_node,
-    row_metadata,
+    read_row_node,
+    row_leaf,
 )
 from tiled_geoparquet.cli import cli
 from tiled_geoparquet.validate import BOUNDS, ValidationError, _outward
@@ -261,7 +262,9 @@ def test_directory_nodes_are_reached_once(leafy, tmp_path, monkeypatch):
     store.write(bad, root)
     decoded = []
     monkeypatch.setattr(
-        _validate_index, 'read_node', lambda node: decoded.append(node) or read_node(node)
+        _validate_index,
+        'read_node',
+        lambda node: decoded.append(node) or read_node(node),
     )
     with pytest.raises(ValidationError, match='referenced twice'):
         validate(bad, full=True)
@@ -312,9 +315,7 @@ def carried(tmp_path_factory):
         ('rows', "runs do not add up to their page's rows"),
         ('offset', 'run outside the geometry pages'),
         ('sources', 'misplaces height pages'),
-        ('codecs', 'codecs disagree with footer'),
-        ('schema', 'schema disagrees with footer'),
-        ('attributes', 'distinct flat source columns'),
+        ('attributes', 'distinct indexed columns'),
         ('level', 'malformed directory node'),
         ('top', 'must start above its leaves'),
         ('missing', 'no primary directory'),
@@ -338,11 +339,6 @@ def test_primary_directory_corruption(carried, tmp_path, mutation, message):
         leaf[5][max(i for i, length in enumerate(leaf[6]) if length)] += 1
     elif mutation == 'sources':
         leaf[9][0][1][0] += 1
-    elif mutation == 'codecs':
-        index['codecs'][0] = 'SNAPPY'
-    elif mutation == 'schema':
-        footer = len(raw) - 8 - int.from_bytes(raw[-8:-4], 'little')
-        index['schema'] = primary_schema(loads(raw[footer:-8]), [root['primary']])
     elif mutation == 'attributes':
         index['attributes'] = ['bbox']
     elif mutation == 'level':
@@ -357,6 +353,86 @@ def test_primary_directory_corruption(carried, tmp_path, mutation, message):
     bad = tmp_path / 'bad.parquet'
     store.write(bad, root)
     validate(bad, sample_rows=3)
+    with pytest.raises(ValidationError, match=message):
+        validate(bad, full=True)
+
+
+@pytest.mark.parametrize(
+    'mutation, message',
+    [
+        ('columns', 'must list every flat column that decodes on its own'),
+        ('codecs', 'row directory codecs disagree with footer'),
+        ('schema', 'row directory schema disagrees with footer'),
+        ('directories', 'row directories disagree with their columns'),
+        ('top', 'must start above its leaves'),
+        ('order', 'out of key order'),
+        ('omitted', 'row directory of height disagrees with its offset indexes'),
+        ('offset', 'row directory of height disagrees with its offset indexes'),
+        ('rows', 'disagrees with its parent entry'),
+        ('level', 'inconsistent directory depth'),
+        ('shared', 'referenced twice'),
+    ],
+)
+def test_row_directory_corruption(carried, tmp_path, mutation, message):
+    """The root lists every flat column whose pages decode on their own, with
+    its codec, schema and a row directory whose leaves list each of its pages
+    once, in row order, with the byte range and rows of its offset index."""
+    raw, root = _root(carried[1])
+    index = root['column_index']
+    footer = len(raw) - 8 - int.from_bytes(raw[-8:-4], 'little')
+    assert index['columns'] == ['hilbert', 'height', 'geometry'], 'flat columns, in schema order'
+    i = index['columns'].index('height')
+    level, top = read_row_node(index['directories'][i])
+    n = len(top['low'])
+    assert level == 1 and n > 4, 'a leaf per page'
+    store = _Appended(raw)
+    leaves = [raw[o : o + size] for o, size in zip(top['offset'], top['length'], strict=True)]
+
+    def node(level, entries, refs):
+        low, high = top['low'][entries], top['high'][entries]
+        return _node(level, low, high, *zip(*refs, strict=True))
+
+    everything = np.arange(n)
+    if mutation == 'columns':
+        for key in ('columns', 'codecs', 'directories'):
+            del index[key][i]
+    elif mutation == 'codecs':
+        index['codecs'][i] = 'SNAPPY'
+    elif mutation == 'schema':
+        index['schema'] = column_schema(loads(raw[footer:-8]), ['height'])
+    elif mutation == 'directories':
+        del index['directories'][i]
+    elif mutation == 'top':
+        index['directories'][i] = json.loads(gzip.decompress(leaves[0]))
+    elif mutation == 'order':
+        order = np.r_[1, 0, everything[2:]]
+        index['directories'][i] = node(1, order, [store(leaves[j]) for j in order])
+    elif mutation == 'omitted':
+        index['directories'][i] = node(1, everything[:-1], [store(leaf) for leaf in leaves[:-1]])
+    elif mutation == 'shared':
+        # the second branch's first entry locates the first branch's last leaf
+        refs = [store(leaf) for leaf in leaves]
+        refs[2] = refs[1]
+        parts = [store(node(1, everything[a:b], refs[a:b])) for a, b in ((0, 2), (2, n))]
+        index['directories'][i] = _node(
+            2,
+            [top['low'][0], top['low'][2]],
+            [top['high'][1], top['high'][-1]],
+            *zip(*parts, strict=True),
+        )
+    else:
+        _, pages = read_row_node(json.loads(gzip.decompress(leaves[1])))
+        changed = row_leaf(pages)
+        if mutation == 'offset':
+            changed[1][0] += 1
+        elif mutation == 'rows':
+            changed[4][-1] -= 1
+        else:
+            changed[0] = 1
+        refs = [store(changed) if j == 1 else store(leaf) for j, leaf in enumerate(leaves)]
+        index['directories'][i] = node(1, everything, refs)
+    bad = tmp_path / 'bad.parquet'
+    store.write(bad, root)
     with pytest.raises(ValidationError, match=message):
         validate(bad, full=True)
 
@@ -455,12 +531,9 @@ def test_offset_index_sums_cannot_wrap(indexed, tmp_path, field, values, message
     moved = dumps(index)
     set_value(chunk, 4, footer)
     set_value(chunk, 5, len(moved))
-    flat = [f.name for f in pq.ParquetFile(indexed).schema_arrow if not pa.types.is_nested(f.type)]
-    rows = gzip.compress(dumps(row_metadata(metadata, flat)), mtime=0)
-    root['row_metadata'] = [footer + len(moved), len(rows)]
     encoded = dumps(metadata)
     root['footer_bytes'] = len(encoded)
-    raw = raw[:footer] + moved + rows + encoded + struct.pack('<I', len(encoded)) + b'PAR1'
+    raw = raw[:footer] + moved + encoded + struct.pack('<I', len(encoded)) + b'PAR1'
     root['file_bytes'] = len(raw)
     bad = tmp_path / 'wrapped.parquet'
     _write_root(bad, raw, root)
@@ -562,7 +635,6 @@ def test_source_page_headers_hold_a_value_or_null_per_row(kind, values, nulls, r
         'codec',
         'primary',
         'footer_bytes',
-        'row_metadata',
         'magic',
     ],
 )
@@ -576,16 +648,6 @@ def test_spatial_index_corruption(indexed, tmp_path, mutation):
             root['primary'] = 'wrong_geometry'
         else:
             root['footer_bytes'] += 1
-    elif mutation == 'row_metadata':
-        # a stale copy: the row metadata of a file with one more row
-        offset, length = root['row_metadata']
-        rows = loads(gzip.decompress(raw[offset : offset + length]))
-        set_value(rows, 3, get(rows, 3) + 1)
-        encoded = gzip.compress(dumps(rows), mtime=0)
-        footer = len(raw) - 8 - int.from_bytes(raw[-8:-4], 'little')
-        raw = raw[:footer] + encoded + raw[footer:]
-        root['row_metadata'] = [footer, len(encoded)]
-        root['file_bytes'] = len(raw)
     elif mutation in ('root_bounds', 'level'):
         # [level, cells, spans, gaps, lengths] of one LOD's top node
         node = next(node for node in root['directories'].values() if node[1])
@@ -843,6 +905,47 @@ def test_covering_geometry_and_key_columns_are_checked(indexed, tmp_path, mutati
 
     bad = _rewritten(indexed, tmp_path / f'{mutation}.parquet', change)
     with pytest.raises(ValidationError, match=re.escape(message)):
+        validate(bad, sample_rows=0)
+
+
+@pytest.mark.parametrize(
+    'margin, message',
+    [
+        (0, None),
+        (12.5, None),
+        (128, None),
+        ('missing', 'margin None is not a number of pixels from 0 to 128'),
+        (-1, 'margin -1 is not a number of pixels from 0 to 128'),
+        (129, 'margin 129 is not a number of pixels from 0 to 128'),
+        ('2', "margin '2' is not a number of pixels from 0 to 128"),
+        (True, 'margin True is not a number of pixels from 0 to 128'),
+        (None, 'margin None is not a number of pixels from 0 to 128'),
+    ],
+)
+def test_the_margin_is_a_number_of_pixels(indexed, tmp_path, margin, message):
+    def change(table, geo):
+        if margin == 'missing':
+            del geo['lod_columns']['margin']
+        else:
+            geo['lod_columns']['margin'] = margin
+        return table
+
+    bad = _rewritten(indexed, tmp_path / 'margin.parquet', change)
+    if message is None:
+        validate(bad, sample_rows=0)
+        return
+    with pytest.raises(ValidationError, match=re.escape(message)):
+        validate(bad, sample_rows=0)
+
+
+@pytest.mark.parametrize('version', ['0.3.0', '0.5.0', '1.4.0'])
+def test_another_format_version_is_refused(indexed, tmp_path, version):
+    def change(table, geo):
+        geo['lod_columns']['version'] = version
+        return table
+
+    bad = _rewritten(indexed, tmp_path / 'version.parquet', change)
+    with pytest.raises(ValidationError, match=f'version {re.escape(version)} is not compatible'):
         validate(bad, sample_rows=0)
 
 

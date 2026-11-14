@@ -54,13 +54,15 @@ def buildings(tmp_path):
 def copied_straddlers(bounds, keys, zoom):
     """The straddlers that get copies: shapes a pixel or larger at `zoom`."""
     from tiled_geoparquet.key import mercator, resolution
-    from tiled_geoparquet.spill import straddlers
+    from tiled_geoparquet.spill import MARGIN_PIXELS, straddlers
 
     xmin, ymin, xmax, ymax = bounds.T
     x0, y0 = mercator(xmin, ymin)
     x1, y1 = mercator(xmax, ymax)
     large = np.flatnonzero(np.maximum(x1 - x0, y1 - y0) / resolution(zoom) >= 1)
-    rows, tiles = straddlers(xmin[large], ymin[large], xmax[large], ymax[large], keys[large], zoom)
+    rows, tiles = straddlers(
+        xmin[large], ymin[large], xmax[large], ymax[large], keys[large], zoom, MARGIN_PIXELS / 512
+    )
     return large[rows], tiles
 
 
@@ -98,6 +100,7 @@ def test_polygons_roundtrip(buildings, tmp_path):
         tmp_path / 'out.parquet',
         thinning=only('risk > 0.2', drop_rate(2.5)),
         carry=['risk', ('floors', 'int32'), 'name'],
+        carry_columns=(),
         workers=1,
         log=lambda *_: None,
     )
@@ -400,6 +403,7 @@ def test_float16_overviews_hold_the_source_rounded(buildings, tmp_path):
         buildings,
         tmp_path / 'half.parquet',
         carry=[('risk', 'halffloat')],
+        carry_columns=(),
         workers=1,
         log=lambda *_: None,
     )
@@ -687,7 +691,9 @@ def test_cli_auto_thinning():
 def test_straddlers_are_copied_into_the_tiles_they_reach(buildings, tmp_path):
     from tiled_geoparquet.key import hilbert_key
 
-    out = write(buildings, tmp_path / 'spill.parquet', workers=1, log=lambda *_: None)
+    out = write(
+        buildings, tmp_path / 'spill.parquet', carry_columns=(), workers=1, log=lambda *_: None
+    )
     validate(out)
     meta = json.loads(pq.read_schema(out).metadata[b'geo'])['lod_columns']
     depth = meta['key']['depth']

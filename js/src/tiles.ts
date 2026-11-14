@@ -2,9 +2,11 @@
  * Worker-backed Mapbox Vector Tiles for any map library. `tileUrl(config)`
  * is a `{z}/{x}/{y}` template; `fetchTile(url)` returns one expanded tile's
  * MVT bytes, and `registerProtocol(maplibregl)` wires it into MapLibre.
- * Tiles are rendered in a worker so page scrolling stays smooth;
- * `prefetch(url)` opens the file before the map exists.
+ * `vectorSource(config)` is that template as a MapLibre source with the
+ * file's zoom limits and bounds. Tiles are rendered in a worker so page
+ * scrolling stays smooth; `prefetch(url)` opens the file before the map exists.
  */
+import { sourceLimits, type SourceLimits } from './source-limits.js'
 import type { TileOptions } from './tile.js'
 import type { Bbox, LodMetadata } from './reader.js'
 
@@ -55,7 +57,7 @@ export type WorkerRequest =
   | { id: number; type: 'stats' }
   | { id: number; type: 'open'; url: string }
   | { id: number; type: 'cancel' }
-  | { id: number; type: 'configure'; workers: number }
+  | { id: number; type: 'configure'; workers: number; connections?: number; cache?: RequestCache }
 export type WorkerResponse =
   | { id: number; ok: true; configured: true }
   | { id: number; ok: true; data: ArrayBuffer }
@@ -84,6 +86,25 @@ export const setWorkerCount = (count: number): void => {
   if (worker) throw new Error('Set worker count before opening a source')
   workerCount = count
 }
+let sourceOptions: { connections?: number; cache?: RequestCache } = {}
+/** Set how files are requested before prefetch, readMetadata, or
+ * registerProtocol. `connections`, 1–6, is how many connections to each host
+ * a file opens with: one-byte requests sent beside its first read open them,
+ * which spares the first tiles' parallel requests a handshake each on
+ * HTTP/1.1, and one sends none. `cache` is the cache mode of every request:
+ * `no-store` sends a tile's requests side by side, where Chrome's HTTP cache
+ * answers the range requests of one URL one at a time.
+ */
+export const setSourceOptions = (options: { connections?: number; cache?: RequestCache }): void => {
+  const { connections } = options
+  if (
+    connections !== undefined &&
+    !(Number.isInteger(connections) && connections >= 1 && connections <= 6)
+  )
+    throw new Error('Expected 1–6 connections')
+  if (worker) throw new Error('Set source options before opening a source')
+  sourceOptions = { ...options }
+}
 let nextId = 0
 const pending = new Map<
   number,
@@ -93,7 +114,12 @@ const pending = new Map<
 const getWorker = (): Worker => {
   if (worker) return worker
   worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' })
-  worker.postMessage({ id: 0, type: 'configure', workers: workerCount } satisfies WorkerRequest)
+  worker.postMessage({
+    id: 0,
+    type: 'configure',
+    workers: workerCount,
+    ...sourceOptions,
+  } satisfies WorkerRequest)
   const current = worker
   const fail = (event: ErrorEvent | MessageEvent) => {
     if (worker !== current) return
@@ -184,6 +210,29 @@ export const readMetadata = async (
   if (!('metadata' in response)) throw new Error('worker returned no map metadata')
   return response.metadata
 }
+
+export interface VectorSource extends SourceLimits {
+  type: 'vector'
+  tiles: [string]
+}
+
+/**
+ * A MapLibre vector source for the file, with the zoom limits and bounds its
+ * metadata gives: `map.addSource(id, await vectorSource(config))`. The map
+ * overzooms the finest LOD past `maxzoom`, the finest LOD zoom unless
+ * `options.maxzoom` sets it. A higher one draws tiles of exact primary
+ * geometry from the finest LOD zoom up to it; a file without LODs draws them
+ * at every zoom and defaults to 22. Opens the file in the worker that serves
+ * the tiles.
+ */
+export const vectorSource = async (
+  config: SourceConfig,
+  options: { maxzoom?: number } = {},
+): Promise<VectorSource> => ({
+  type: 'vector',
+  tiles: [tileUrl(config)],
+  ...sourceLimits(await readMetadata(config.url), options.maxzoom),
+})
 
 /**
  * The Mapbox Vector Tile for one expanded `tileUrl`, rendered in the worker.

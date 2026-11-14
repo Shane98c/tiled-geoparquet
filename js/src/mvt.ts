@@ -30,15 +30,9 @@ import { HALF_WORLD, MAX_LATITUDE, isMercator } from './web-mercator.js'
 
 /** Tile coordinate extent written by `toMvt`. */
 export const MVT_EXTENT = 4096
-/** Clip buffer around each tile, in `MVT_EXTENT` units. */
+/** Default clip buffer around each tile, in `MVT_EXTENT` units. */
 export const MVT_BUFFER = 64
 const DEFAULT_LAYER_NAME = 'cogp'
-const MVT_CLIP_BBOX: ClipBbox = [
-  -MVT_BUFFER,
-  -MVT_BUFFER,
-  MVT_EXTENT + MVT_BUFFER,
-  MVT_EXTENT + MVT_BUFFER,
-]
 
 const textEncoder = new TextEncoder()
 
@@ -48,6 +42,8 @@ export interface MvtTileOptions {
   y: number
   /** Default: `cogp`. */
   layer?: string
+  /** Clip buffer around the tile in `MVT_EXTENT` units. Default: `MVT_BUFFER`. */
+  buffer?: number
   /** Checked every 1024 rows. */
   signal?: AbortSignal
 }
@@ -63,7 +59,13 @@ export interface MvtTileOptions {
  */
 export function toMvt(source: FeatureSource, options: MvtTileOptions): ArrayBuffer {
   const geometry = source.geometry!
-  const projection = new TileProjection(options.z, options.x, options.y, geometry)
+  const projection = new TileProjection(
+    options.z,
+    options.x,
+    options.y,
+    geometry,
+    options.buffer ?? MVT_BUFFER,
+  )
   const columns = Object.entries(source.columns ?? {})
   const layer = new ByteWriter(65536)
   const commands = new ByteWriter()
@@ -77,8 +79,8 @@ export function toMvt(source: FeatureSource, options: MvtTileOptions): ArrayBuff
   for (let row = 0; row < geometry.length; row++) {
     if ((row & 1023) === 0) options.signal?.throwIfAborted()
     commands.reset()
-    const feature = encodeGeometry(geometry, row, projection, source.rowIndex?.[row], commands)
-    if (!feature) continue
+    const type = encodeGeometry(geometry, row, projection, commands)
+    if (!type) continue
     tags.reset()
     for (const [key, column] of columns) {
       if (column[row] == null) continue
@@ -95,7 +97,7 @@ export function toMvt(source: FeatureSource, options: MvtTileOptions): ArrayBuff
       tags.writeVarint(keys.get(key)!)
       tags.writeVarint(id)
     }
-    writeFeature(layer, feature, tags.view())
+    writeFeature(layer, source.rowIndex?.[row], type, commands, tags)
   }
   options.signal?.throwIfAborted()
   for (const key of keys.keys()) layer.writeStringField(3, key)
@@ -110,65 +112,62 @@ export function toMvt(source: FeatureSource, options: MvtTileOptions): ArrayBuff
   return tile.finish().buffer as ArrayBuffer
 }
 
-interface EncodedMvtFeature {
-  id?: number
-  type: 1 | 2 | 3
-  geometry: Uint8Array
-}
-
 /**
- * Write MVT command integers directly from the column's coordinate arrays.
- * CogpReader selects candidate rows; reject distant parts here before
- * projecting and clipping their coordinates to the buffered tile extent.
+ * Write MVT command integers directly from the column's coordinate arrays,
+ * and return the feature's MVT geometry type, 0 when nothing of it is in the
+ * tile. A path wholly inside the buffered tile is written as it is projected;
+ * any other is first checked against the tile by its bounds, so distant parts
+ * are rejected before their coordinates are projected and clipped.
  */
 function encodeGeometry(
   column: GeometryColumn,
   row: number,
   projection: TileProjection,
-  id: number | undefined,
   commands: ByteWriter,
-): EncodedMvtFeature | null {
+): 0 | 1 | 2 | 3 {
   const type = column.types[row]
-  if (!type) return null
+  if (!type) return 0
   const { geometryOffsets: go, polygonOffsets: po, ringOffsets: ro } = column
   const p0 = go[row]!,
     p1 = go[row + 1]!
   const c0 = ro[po[p0]!]!,
     c1 = ro[po[p1]!]!
-  if (c0 === c1) return null
+  if (c0 === c1) return 0
   const mvtType = type === 1 || type === 4 ? 1 : type === 2 || type === 5 ? 2 : 3
-  const cursor = { x: 0, y: 0 }
+  const cursor = projection.cursor
+  cursor.x = 0
+  cursor.y = 0
   if (mvtType === 1) {
-    if (!partIntersectsTile(column, projection, c0, c1)) return null
+    if (!partIntersectsTile(column, projection, c0, c1)) return 0
     writePoints(commands, column, projection, cursor, c0, c1)
-  } else {
+  } else if (mvtType === 3) {
     for (let p = p0; p < p1; p++) {
       const firstRing = po[p]!,
         lastRing = po[p + 1]!
-      if (
-        mvtType === 3 &&
-        (firstRing === lastRing ||
-          !partIntersectsTile(column, projection, ro[firstRing]!, ro[lastRing]!))
-      )
-        continue
-      for (let r = firstRing; r < lastRing; r++) {
-        if (mvtType === 3)
-          writePolygonRing(
-            commands,
-            column,
-            projection,
-            cursor,
-            ro[r]!,
-            ro[r + 1]!,
-            r === firstRing,
-          )
-        else if (partIntersectsTile(column, projection, ro[r]!, ro[r + 1]!)) {
-          writeLine(commands, column, projection, cursor, ro[r]!, ro[r + 1]!)
-        }
+      if (firstRing === lastRing) continue
+      const start = ro[firstRing]!,
+        end = ro[firstRing + 1]!
+      // an exterior ring wholly inside the buffered tile shows its polygon reaches the tile
+      if (!writeInteriorPath(commands, column, projection, cursor, start, end, true, true)) {
+        if (!partIntersectsTile(column, projection, start, ro[lastRing]!)) continue
+        writeClippedRing(commands, column, projection, cursor, start, end, true)
+      }
+      for (let r = firstRing + 1; r < lastRing; r++)
+        writePolygonRing(commands, column, projection, cursor, ro[r]!, ro[r + 1]!, false)
+    }
+  } else {
+    for (let p = p0; p < p1; p++) {
+      for (let r = po[p]!; r < po[p + 1]!; r++) {
+        const start = ro[r]!,
+          end = ro[r + 1]!
+        if (writeInteriorPath(commands, column, projection, cursor, start, end, false, false))
+          continue
+        if (partIntersectsTile(column, projection, start, end))
+          writeClippedLine(commands, column, projection, cursor, start, end)
       }
     }
   }
-  return commands.length === 0 ? null : { id, type: mvtType, geometry: commands.view() }
+  return commands.length === 0 ? 0 : mvtType
 }
 
 /** Reject a part before projecting or clipping all its coordinates. */
@@ -202,7 +201,9 @@ function partIntersectsTile(
   if (!projection.intersectsXRange(minX, maxX)) return false
   const south = projection.y(minY)
   const north = projection.y(maxY)
-  return Math.max(south, north) >= MVT_CLIP_BBOX[1] && Math.min(south, north) <= MVT_CLIP_BBOX[3]
+  return (
+    Math.max(south, north) >= projection.clip[1] && Math.min(south, north) <= projection.clip[3]
+  )
 }
 
 function writePoints(
@@ -213,11 +214,22 @@ function writePoints(
   start: number,
   end: number,
 ): void {
+  if (end - start === 1) {
+    const px = projectX(column, projection, start)
+    const py = projectY(column, projection, start)
+    if (!pointInBbox(px, py, projection.clip)) return
+    commands.writeVarint(command(1, 1))
+    commands.writeVarint(zigZag(px - cursor.x))
+    commands.writeVarint(zigZag(py - cursor.y))
+    cursor.x = px
+    cursor.y = py
+    return
+  }
   const coordinates: Position[] = []
   for (let i = start; i < end; i++) {
     const px = projectX(column, projection, i)
     const py = projectY(column, projection, i)
-    if (!pointInBbox(px, py, MVT_CLIP_BBOX)) continue
+    if (!pointInBbox(px, py, projection.clip)) continue
     coordinates.push([px, py])
   }
   if (coordinates.length === 0) return
@@ -230,7 +242,7 @@ function writePoints(
   }
 }
 
-function writeLine(
+function writeClippedLine(
   commands: ByteWriter,
   column: GeometryColumn,
   projection: TileProjection,
@@ -238,9 +250,8 @@ function writeLine(
   start: number,
   end: number,
 ): void {
-  if (writeInteriorPath(commands, column, projection, cursor, start, end, false, false)) return
   const coordinates = projectPart(column, projection, start, end, false)
-  for (const part of clipLineString(coordinates, MVT_CLIP_BBOX)) {
+  for (const part of clipLineString(coordinates, projection.clip)) {
     writePath(commands, cursor, part, false)
   }
 }
@@ -255,8 +266,20 @@ function writePolygonRing(
   exterior: boolean,
 ): void {
   if (writeInteriorPath(commands, column, projection, cursor, start, end, true, exterior)) return
+  writeClippedRing(commands, column, projection, cursor, start, end, exterior)
+}
+
+function writeClippedRing(
+  commands: ByteWriter,
+  column: GeometryColumn,
+  projection: TileProjection,
+  cursor: { x: number; y: number },
+  start: number,
+  end: number,
+  exterior: boolean,
+): void {
   const coordinates = projectPart(column, projection, start, end, true)
-  const clipped = clipPolygonRing(coordinates, MVT_CLIP_BBOX)
+  const clipped = clipPolygonRing(coordinates, projection.clip)
   // MVT uses clockwise exteriors in screen coordinates (Y points down).
   let area = 0
   for (let i = 0; i < clipped.length; i++) {
@@ -269,8 +292,9 @@ function writePolygonRing(
 }
 
 /** Most LOD rings lie wholly inside the buffered tile. Project and normalize
- * those into reusable typed buffers, retaining the general clipping path for
- * boundary crossings. No coordinate-pair arrays are allocated here. */
+ * those into reusable typed buffers and write them, returning false with
+ * nothing written for a path with a point outside it, which takes the general
+ * clipping path. No coordinate-pair arrays are allocated here. */
 function writeInteriorPath(
   commands: ByteWriter,
   column: GeometryColumn,
@@ -281,47 +305,80 @@ function writeInteriorPath(
   closed: boolean,
   exterior: boolean,
 ): boolean {
+  const cx = column.x,
+    cy = column.y
   const repeatsFirst =
-    closed &&
-    end - start > 1 &&
-    column.x[start] === column.x[end - 1] &&
-    column.y[start] === column.y[end - 1]
+    closed && end - start > 1 && cx[start] === cx[end - 1] && cy[start] === cy[end - 1]
   const limit = end - (repeatsFirst ? 1 : 0)
   projection.reservePath(limit - start)
   const xs = projection.pathX,
     ys = projection.pathY
-  let count = 0,
-    previousX: number | undefined
-  for (let i = start; i < limit; i++) {
-    const x = projectX(column, projection, i, previousX),
-      y = projectY(column, projection, i)
-    if (!pointInBbox(x, y, MVT_CLIP_BBOX)) return false
-    previousX = x
-    if (count && xs[count - 1] === x && ys[count - 1] === y) continue
-    xs[count] = x
-    ys[count++] = y
+  const [minX, minY, maxX, maxY] = projection.clip
+  let count = 0
+  if (projection.mercator) {
+    // TileProjection.x and y, in line
+    const { ax, bx, ay, by, worldSize } = projection
+    const half = worldSize / 2
+    let reference = MVT_EXTENT / 2
+    for (let i = start; i < limit; i++) {
+      let local = ax * cx[i]! + bx
+      const shift = reference - local
+      if (shift >= half || shift < -half) local += Math.round(shift / worldSize) * worldSize
+      const x = Math.round(local),
+        y = Math.round(ay * cy[i]! + by)
+      if (!(x >= minX && x <= maxX && y >= minY && y <= maxY)) return false
+      reference = x
+      if (count && xs[count - 1] === x && ys[count - 1] === y) continue
+      xs[count] = x
+      ys[count++] = y
+    }
+  } else {
+    let previousX: number | undefined
+    for (let i = start; i < limit; i++) {
+      const x = projectX(column, projection, i, previousX),
+        y = projectY(column, projection, i)
+      if (!pointInBbox(x, y, projection.clip)) return false
+      previousX = x
+      if (count && xs[count - 1] === x && ys[count - 1] === y) continue
+      xs[count] = x
+      ys[count++] = y
+    }
   }
   if (closed && count > 1 && xs[0] === xs[count - 1] && ys[0] === ys[count - 1]) count--
   if (count < (closed ? 3 : 2)) return true
   let reverse = false
   if (closed) {
     let area = 0
+    let previousX = xs[count - 1]!,
+      previousY = ys[count - 1]!
     for (let i = 0; i < count; i++) {
-      const next = (i + 1) % count
-      area += xs[i] * ys[next] - xs[next] * ys[i]
+      const x = xs[i]!,
+        y = ys[i]!
+      area += previousX * y - x * previousY
+      previousX = x
+      previousY = y
     }
     if (area === 0) return true
     reverse = area > 0 !== exterior
   }
   commands.writeVarint(command(1, 1))
+  // every point and the cursor lie in the buffered tile, so the deltas are small integers
+  let lastX = cursor.x,
+    lastY = cursor.y
   for (let k = 0; k < count; k++) {
     if (k === 1) commands.writeVarint(command(2, count - 1))
     const i = reverse ? count - 1 - k : k
-    commands.writeVarint(zigZag(xs[i] - cursor.x))
-    commands.writeVarint(zigZag(ys[i] - cursor.y))
-    cursor.x = xs[i]
-    cursor.y = ys[i]
+    const x = xs[i]!,
+      y = ys[i]!
+    const dx = x - lastX,
+      dy = y - lastY
+    commands.writeUint32(((dx << 1) ^ (dx >> 31)) >>> 0)
+    commands.writeUint32(((dy << 1) ^ (dy >> 31)) >>> 0)
+    lastX = x
+    lastY = y
   }
+  cursor.x = lastX
+  cursor.y = lastY
   if (closed) commands.writeVarint(command(7, 1))
   return true
 }
@@ -383,26 +440,34 @@ function projectY(column: GeometryColumn, projection: TileProjection, index: num
   return projection.y(column.y[index]!)
 }
 
-function writeFeature(layer: ByteWriter, value: EncodedMvtFeature, tags: Uint8Array): void {
+function writeFeature(
+  layer: ByteWriter,
+  id: number | undefined,
+  type: 1 | 2 | 3,
+  geometry: ByteWriter,
+  tags: ByteWriter,
+): void {
   // Protobuf requires the nested message length first. Its fields already have
   // known sizes, so write directly into the layer without a temporary buffer.
   const length =
-    (value.id === undefined ? 0 : 1 + varintLength(value.id)) +
-    (tags.byteLength ? 1 + varintLength(tags.byteLength) + tags.byteLength : 0) +
+    (id === undefined ? 0 : 1 + varintLength(id)) +
+    (tags.length ? 1 + varintLength(tags.length) + tags.length : 0) +
     1 +
-    varintLength(value.type) +
+    varintLength(type) +
     1 +
-    varintLength(value.geometry.byteLength) +
-    value.geometry.byteLength
+    varintLength(geometry.length) +
+    geometry.length
   layer.writeVarint(2 * 8 + 2)
   layer.writeVarint(length)
-  if (value.id !== undefined) layer.writeVarintField(1, value.id)
-  if (tags.byteLength) layer.writeBytesField(2, tags)
-  layer.writeVarintField(3, value.type)
-  layer.writeBytesField(4, value.geometry)
+  if (id !== undefined) layer.writeVarintField(1, id)
+  if (tags.length) layer.writeWriterField(2, tags)
+  layer.writeVarintField(3, type)
+  layer.writeWriterField(4, geometry)
 }
 
 function varintLength(value: number): number {
+  if (value >= 0 && (value | 0) === value)
+    return value < 0x80 ? 1 : value < 0x4000 ? 2 : value < 0x200000 ? 3 : value < 0x10000000 ? 4 : 5
   if (!Number.isSafeInteger(value) || value < 0) throw new Error('invalid protobuf varint')
   let length = 1
   while (value >= 0x80) {
@@ -436,21 +501,26 @@ class TileProjection {
     this.pathY = new Int32Array(size)
   }
 
+  readonly clip: ClipBbox
+  /** The position the feature being written has reached. */
+  readonly cursor = { x: 0, y: 0 }
   private readonly projectedY = new Map<number, number>()
   private readonly tiles: number
-  private readonly worldSize: number
-  private readonly mercator: boolean
-  private readonly ax: number
-  private readonly bx: number
-  private readonly ay: number
-  private readonly by: number
+  readonly worldSize: number
+  readonly mercator: boolean
+  readonly ax: number
+  readonly bx: number
+  readonly ay: number
+  readonly by: number
 
   constructor(
     z: number,
     x: number,
     private readonly tileY: number,
     private readonly column: GeometryColumn,
+    buffer: number,
   ) {
+    this.clip = [-buffer, -buffer, MVT_EXTENT + buffer, MVT_EXTENT + buffer]
     this.tiles = 2 ** z
     const tileX = ((x % this.tiles) + this.tiles) % this.tiles
     this.worldSize = this.tiles * MVT_EXTENT
@@ -480,8 +550,8 @@ class TileProjection {
     if (right - left >= this.worldSize / 2) return true
     // TileProjection.x can shift a part by whole worlds. Check every possible
     // shifted copy, with one pixel of slack for coordinate rounding.
-    const first = Math.ceil((MVT_CLIP_BBOX[0] - 1 - right) / this.worldSize)
-    const last = Math.floor((MVT_CLIP_BBOX[2] + 1 - left) / this.worldSize)
+    const first = Math.ceil((this.clip[0] - 1 - right) / this.worldSize)
+    const last = Math.floor((this.clip[2] + 1 - left) / this.worldSize)
     return first <= last
   }
 
@@ -543,6 +613,7 @@ class ByteWriter {
   }
 
   writeVarint(value: number): void {
+    if (value >= 0 && (value | 0) === value) return this.writeUint32(value)
     if (!Number.isSafeInteger(value) || value < 0) throw new Error('invalid protobuf varint')
     this.reserve(10)
     while (value >= 0x80) {
@@ -550,6 +621,34 @@ class ByteWriter {
       value = Math.floor(value / 0x80)
     }
     this.bytes[this.offset++] = value
+  }
+
+  /** The varint of an unsigned 32-bit integer. */
+  writeUint32(value: number): void {
+    if (this.offset + 5 > this.bytes.byteLength) this.reserve(5)
+    const bytes = this.bytes
+    let offset = this.offset
+    while (value > 0x7f) {
+      bytes[offset++] = (value & 0x7f) | 0x80
+      value >>>= 7
+    }
+    bytes[offset++] = value
+    this.offset = offset
+  }
+
+  /** A length-delimited field of the bytes `source` holds. */
+  writeWriterField(field: number, source: ByteWriter): void {
+    const length = source.offset
+    this.writeVarint(field * 8 + 2)
+    this.writeVarint(length)
+    this.reserve(length)
+    if (length < 64) {
+      const from = source.bytes,
+        to = this.bytes
+      let offset = this.offset
+      for (let i = 0; i < length; i++) to[offset++] = from[i]!
+    } else this.bytes.set(source.bytes.subarray(0, length), this.offset)
+    this.offset += length
   }
 
   reset(): void {

@@ -7,6 +7,7 @@ import json
 import click
 
 from . import thinning as th
+from ._tile_sizes import format_bytes
 from .validate import ValidationError, inspect, validate
 from .writer import write
 
@@ -80,7 +81,17 @@ def cli():
     help="zoom from which every feature is present: a zoom, 'auto' (median feature spans a pixel) or 'never'",
 )
 @click.option(
-    '--carry', multiple=True, help='column[:arrow type] to carry per LOD, e.g. risk:float32'
+    '--carry',
+    multiple=True,
+    help='column[:arrow type] packed into every overview row, e.g. risk:float32',
+)
+@click.option(
+    '--carry-columns',
+    multiple=True,
+    help=(
+        'column[:arrow type] kept as columns a tile reads only when a style asks. '
+        "'auto', the default, keeps every cheap column; 'none' keeps none"
+    ),
 )
 @click.option('--geometry', default='geometry', show_default=True)
 @click.option('--row-group-rows', default=1_048_576, type=int, show_default=True)
@@ -111,6 +122,14 @@ def cli():
     type=click.FloatRange(min=0, min_open=True),
     help='width in pixels of the square a shape under a pixel draws as',
 )
+@click.option(
+    '--margin-pixels',
+    default=2,
+    type=click.FloatRange(min=0, max=128),
+    show_default=True,
+    help='pixels past a tile edge within which a feature centred elsewhere is copied into the '
+    'tile; lines and outlines up to twice this wide draw whole along tile edges',
+)
 @click.option('--workers', default=None, type=int)
 @click.option('--memory-limit', default=None)
 @click.option('--temp-dir', default=None)
@@ -123,6 +142,7 @@ def write_cmd(
     zooms,
     complete_from,
     carry,
+    carry_columns,
     geometry,
     row_group_rows,
     page_bytes,
@@ -130,6 +150,7 @@ def write_cmd(
     compression_level,
     batch_rows,
     placeholder_pixels,
+    margin_pixels,
     workers,
     memory_limit,
     temp_dir,
@@ -141,6 +162,12 @@ def write_cmd(
     if complete_from != 'auto':
         complete_from = None if complete_from == 'never' else int(complete_from)
     carried = [tuple(c.split(':', 1)) if ':' in c else c for c in carry]
+    if carry_columns in ((), ('auto',)):
+        kept = 'auto'
+    elif carry_columns == ('none',):
+        kept = ()
+    else:
+        kept = [tuple(c.split(':', 1)) if ':' in c else c for c in carry_columns]
     write(
         src,
         out,
@@ -149,6 +176,7 @@ def write_cmd(
         zooms=zooms,
         complete_from=complete_from,
         carry=carried,
+        carry_columns=kept,
         geometry=geometry,
         row_group_rows=row_group_rows,
         page_bytes=page_bytes,
@@ -156,6 +184,7 @@ def write_cmd(
         compression_level=compression_level,
         batch_rows=batch_rows,
         placeholder_pixels=placeholder_pixels,
+        margin_pixels=margin_pixels,
         workers=workers,
         memory_limit=memory_limit,
         temp_dir=temp_dir,
@@ -179,12 +208,36 @@ def validate_cmd(path, full, sample_rows):
 @cli.command('inspect')
 @click.argument('path')
 def inspect_cmd(path):
-    """Print the lod_columns metadata and per-column bytes of one row group."""
+    """Print the lod_columns metadata, per-column bytes of one row group, and
+    how heavy the tiles of each zoom are."""
     info = inspect(path)
     rows = info['rows_in_sampled_group']
-    click.echo(
-        json.dumps({k: v for k, v in info.items() if k != 'compressed_bytes_by_column'}, indent=2)
-    )
+    tables = ('compressed_bytes_by_column', 'tile_sizes')
+    click.echo(json.dumps({k: v for k, v in info.items() if k not in tables}, indent=2))
     click.echo(f'bytes per row in row group {info["row_group_sampled"]}:')
     for col, nbytes in info['compressed_bytes_by_column'].items():
         click.echo(f'  {col:40s} {nbytes / max(rows, 1):8.2f}')
+    if info['tile_sizes'] is None:
+        click.echo('tile sizes: none, the file has no spatial index')
+        return
+    click.echo('compressed bytes of the pages a cold tile read fetches, per zoom:')
+    for line in _tile_size_table(info['tile_sizes']):
+        click.echo('  ' + line)
+
+
+def _tile_size_table(sizes: list[dict]) -> list[str]:
+    """`tile_sizes()` as lines of aligned columns under a header."""
+    table = [('zoom', 'lod', 'tiles', 'median', 'p99', 'max', 'largest tile')]
+    for zoom in sizes:
+        fetched, largest = ['-'] * 3, '-'
+        if zoom['tiles']:
+            fetched = [format_bytes(zoom[k]) for k in ('median_bytes', 'p99_bytes', 'max_bytes')]
+            largest = '/'.join(map(str, zoom['largest']))
+        table.append((str(zoom['zoom']), zoom['lod'], f'{zoom["tiles"]:,}', *fetched, largest))
+    widths = [max(len(row[i]) for row in table) for i in range(len(table[0]))]
+    # numbers align right; the LOD name and the tile read left
+    align = ('>', '<', '>', '>', '>', '>', '<')
+    return [
+        '  '.join(f'{cell:{a}{w}}' for cell, a, w in zip(row, align, widths, strict=True)).rstrip()
+        for row in table
+    ]

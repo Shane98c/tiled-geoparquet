@@ -9,7 +9,7 @@ GeoParquet tools query the original columns; the map uses a custom reader.
 That reader also maps any WKB GeoParquet without overviews straight from its
 rows, which suits files of a few MB ([plain GeoParquet](docs/usage.md#plain-geoparquet)).
 
-Draft 0.1.0. The format can still change, and the Python and JavaScript
+Format draft 0.4.0. The format can still change, and the Python and JavaScript
 packages are not published to registries yet.
 
 [Live comparison](https://geoparquet-lod-compare.pages.dev/) ·
@@ -24,8 +24,8 @@ packages are not published to registries yet.
 A map archive makes display fast; an analytical table preserves the data needed
 for queries and new styles. This project explores whether one file can do both
 with competitive map access. The original geometry appears once in the source
-column. Display geometry, selected attributes, and tile-boundary copies add
-storage, but there is no separate archive of pre-encoded MVT tiles.
+column. Display geometry, per-zoom attribute values, and tile-boundary copies
+add storage, but there is no separate archive of pre-encoded MVT tiles.
 
 The intended use is a static dataset that people need to both explore and query.
 If map delivery is the only requirement, PMTiles is the simpler choice. Several
@@ -51,13 +51,17 @@ measure and where the files come from.
 
 Input is GeoParquet with WKB geometry in longitude/latitude (OGC:CRS84 or
 EPSG:4326 in x/y order), one geometry family per file. The overviews are
-stored in Web Mercator metres. Thinning budgets should be tuned to your data.
+stored in Web Mercator metres. Thinning budgets should be tuned to your data;
+the build logs each zoom's [tile sizes](docs/usage.md#tile-sizes) to tune against.
 
 With Python 3.12+ and uv installed, run `uv sync --locked` from a clone.
 Save the following as `build.py` and run `uv run python build.py`. Supply your
-own `buildings.parquet`; `height` and `class` here are example source columns
-to carry into the fast map path. The first build may download DuckDB's spatial
-extension.
+own `buildings.parquet`. Every cheap source column (numbers, booleans and
+strings with at most 256 distinct values) is also kept as a column per zoom
+level, which a tile reads only when a style names it. Adding
+`carry=['height']` packs an attribute a map always styles by into the tiles
+themselves ([Attributes](docs/usage.md#attributes) compares the two). The
+first build may download DuckDB's spatial extension.
 
 ```python
 from tiled_geoparquet import chain, drop_smallest, tiny_polygons, write
@@ -67,12 +71,11 @@ if __name__ == '__main__':
         'buildings.parquet',
         'buildings.lod.parquet',
         thinning=chain(drop_smallest(850_000), tiny_polygons()),
-        carry=['height', 'class'],
     )
 ```
 
-The output still contains the original geometries and all source attributes,
-including columns you did not choose for `carry`. For example, query the same
+The output still contains the original geometries and all source attributes.
+For example, with `class` and `height` columns in the source, query the same
 file with DuckDB from `uv run python`:
 
 ```python
@@ -112,17 +115,16 @@ install the JS package by path (`npm install ../tiled-geoparquet/js`). Its
 worker asset must remain available to your bundler. The tiles are standard
 Mapbox Vector Tiles, so any map library that lets you load a tile's bytes
 yourself can draw them with `fetchTile`; the
-[guide](docs/usage.md#in-other-map-libraries) shows OpenLayers. In a MapLibre
-app, after creating the map and loading its style:
+[guide](docs/usage.md#in-other-map-libraries) shows OpenLayers. Clients that
+only fetch tile URLs, such as desktop GIS, read them from
+[`tiled-geoparquet-serve`](docs/usage.md#serving-tiles-over-http). In a
+MapLibre app, after creating the map and loading its style:
 
 ```js
-import { registerProtocol, tileUrl } from 'tiled-geoparquet/tiles'
+import { registerProtocol, vectorSource } from 'tiled-geoparquet/tiles'
 
 registerProtocol(maplibregl)
-map.addSource('buildings', {
-  type: 'vector',
-  tiles: [tileUrl({ url, layer: 'buildings', properties: ['height'] })],
-})
+map.addSource('buildings', await vectorSource({ url, layer: 'buildings', properties: ['height'] }))
 map.addLayer({
   id: 'buildings',
   type: 'fill',
@@ -130,6 +132,12 @@ map.addLayer({
   'source-layer': 'buildings',
 })
 ```
+
+`vectorSource` reads the file's bounds and zoom range into the source. The
+map overzooms the finest overview past its zoom, as it does a PMTiles
+archive; `vectorSource(config, { maxzoom: 18 })` draws exact geometry from
+there to z18, at 165 to 240 KB a cold tile against about 10 KB
+([guide](docs/usage.md#in-a-maplibre-app)).
 
 The reader also exposes whole-feature geometry batches with typed coordinate
 buffers, plus GeoJSON, GeoArrow IPC, and MVT adapters; the
@@ -183,13 +191,48 @@ competitive request counts and transfer sizes, not a general speed ranking.
   Compatibility has been exercised with PyArrow and DuckDB, not every Parquet
   reader or rewriter. [Design alternatives](docs/design-alternatives.md)
   records what standard encodings cost in the same role.
-- **Fast styles require choices.** Carried attributes are cheap to render but
-  repeated across LODs. Other source columns, including nested fields, can be
-  fetched on demand; their first read can be substantially more expensive.
+- **Attribute styles cost requests.** The writer keeps each cheap source
+  column as a column per zoom level, which a tile reads only when it names
+  the attribute. On 1.75 million Denver buildings, a cold tile styled by
+  `height` kept this way takes one or two more requests than with `height`
+  packed into the tiles by `carry`, in the same two rounds, and reads from
+  9% fewer bytes to 2% more, except a small zoom 15 tile that reads 14.7 KB
+  against 12.6 KB; the next tile takes one more request. On 155.6 million US
+  buildings read from S3 in Chrome, a first view styled by two half-float
+  column attributes took 3 to 15 requests against 2 to 5 with both packed,
+  read from 8% fewer bytes to 4% more, and took 0.73 to 1.12 s against 0.73
+  to 1.05 s, within 11% either way at each view. That is with a tile's
+  requests sent past the browser's HTTP cache, which answers the range
+  requests of one URL one at a time, and six connections opened as the file
+  opens, the reader's defaults ([Requests](docs/usage.md#requests)); a view
+  opened again then reads from the network where the cache would answer from
+  disk. With 300 ms added to every request, a view styled by one column
+  attribute stays within 10% of the packed file's time; styled by two it
+  took from 6% less to 24% more, and by four up to 42% more than by two
+  packed, so `carry` is for a map styled by several attributes from its
+  first view whose readers are on slow links. Switching
+  drawn tiles to a column attribute
+  fetches its pages, where a packed attribute restyles from
+  the tiles held: six zoom 13 tiles took 4 requests, 155 KB and 0.26 s at
+  100 ms per request, against none and 25 ms. Boundary copies pack every
+  column attribute, so a geometry-only tile reads their values too, up to
+  1.5% more bytes with two column attributes and 12% more with eight. Columns
+  not kept this way, such as strings with more than 256 distinct values,
+  integer ids and nested fields, are read from the source column on demand,
+  at one more request round and, at zooms where thinning drops most rows, up
+  to 5.3 times the bytes; nested fields read the footer first.
 - **Overviews are selective.** Thinning and quantization serve display; they
   are not an exact analytical summary. Whole-feature overview queries preserve
   thinning and use bbox overlap, not exact intersection. Use original geometry
   for exact work. The Japan density tuning is not yet a general policy.
+- **Tile margins cost copies.** An overview tile carries a neighbouring
+  feature only when it reaches within the file's margin of the tile's edge, 2
+  pixels by default, where tippecanoe's default buffer is 10. MapLibre clips
+  fill and line layers to each tile, so a line or outline drawn wider than
+  twice the margin can be cut where a feature runs along a tile edge. The
+  writer's `margin_pixels` widens it, but each copy is a whole feature: for
+  146,155 Denver buildings, 16 pixels make 4.7 times the copies of 2, 14%
+  more overview bytes and a 4% larger file.
 - **Browser work and memory.** Pages must be decoded and converted to MVT, with
   caches and a worker pool. Low-memory devices and prolonged sessions need more
   testing.

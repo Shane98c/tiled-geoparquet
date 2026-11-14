@@ -1,11 +1,13 @@
 """Straddlers: a feature whose geometry reaches into a tile other than the one
-holding its bbox centre, or within MARGIN of it, is needed by that tile too,
-but its row lives in its own tile's key interval. The writer therefore stores
+holding its bbox centre, or within the margin of it, is needed by that tile
+too, but its row lives in its own tile's key interval. The writer therefore stores
 a copy of its LOD geometry, with its attributes and file row index, on a host
 row inside each such tile's interval, so a tile is exactly its own interval
 and a reader never searches for neighbours. The copies are the LOD's `spill`
 list. MapLibre draws each tile's fills and lines clipped to the tile, so a
-copy draws only inside it; the margin holds an outline drawn along the edge.
+copy draws only inside it; a margin of m pixels holds a line or outline up to
+2m pixels wide drawn along the edge. The margin is the writer's
+`margin_pixels`, recorded in the file's metadata as `margin`.
 """
 
 from __future__ import annotations
@@ -14,7 +16,10 @@ import numpy as np
 
 from .key import KEY_DEPTH, hilbert_cell, hilbert_key, tile_x, tile_y
 
-MARGIN = 16 / 4096  # two pixels of a 512-pixel tile, as a share of the tile
+MARGIN_PIXELS = 2
+# Every copy is a whole feature. At a quarter tile a small feature averages 1.25
+# copies per zoom; at half a tile every feature is copied into three neighbours.
+MAX_MARGIN_PIXELS = 128
 
 
 def ranges(starts: np.ndarray, stops: np.ndarray) -> np.ndarray:
@@ -31,17 +36,19 @@ def straddlers(
     ymax: np.ndarray,
     keys: np.ndarray,
     zoom: int,
+    margin: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     """For features reaching into tiles beyond their own at `zoom`: the row
     index of each such feature and the tile (x * 2^zoom + y) it reaches into,
-    one pair per foreign tile, a tile reaching MARGIN past its edge. A
+    one pair per foreign tile, a tile reaching `margin`, a share of the
+    tile, past its edge. A
     feature's own tile is the one its Hilbert key (`keys`, at KEY_DEPTH) is
     in, so copies go to exactly the tiles whose intervals do not hold its row."""
     n = 2**zoom
-    x0 = np.clip(np.floor(tile_x(xmin, zoom) - MARGIN), 0, n - 1).astype(np.int64)
-    x1 = np.clip(np.floor(tile_x(xmax, zoom) + MARGIN), 0, n - 1).astype(np.int64)
-    y0 = np.clip(np.floor(tile_y(ymax, zoom) - MARGIN), 0, n - 1).astype(np.int64)
-    y1 = np.clip(np.floor(tile_y(ymin, zoom) + MARGIN), 0, n - 1).astype(np.int64)
+    x0 = np.clip(np.floor(tile_x(xmin, zoom) - margin), 0, n - 1).astype(np.int64)
+    x1 = np.clip(np.floor(tile_x(xmax, zoom) + margin), 0, n - 1).astype(np.int64)
+    y0 = np.clip(np.floor(tile_y(ymax, zoom) - margin), 0, n - 1).astype(np.int64)
+    y1 = np.clip(np.floor(tile_y(ymin, zoom) + margin), 0, n - 1).astype(np.int64)
     many = np.flatnonzero((x0 < x1) | (y0 < y1))
     x0, x1, y0, y1 = (v[many] for v in (x0, x1, y0, y1))
     own_x, own_y = hilbert_cell(np.asarray(keys, np.int64)[many] >> 2 * (KEY_DEPTH - zoom), zoom)

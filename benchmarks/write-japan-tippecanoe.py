@@ -47,6 +47,7 @@ if __name__ == '__main__':
         args.out,
         thinning=chain(drop_smallest(budget), tiny_polygons()),
         carry=['height', 'class'],
+        carry_columns=(),
         workers=12,
         zooms=list(range(16)),
         complete_from=14,

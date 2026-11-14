@@ -18,6 +18,7 @@ from .key import mercator, resolution
 
 SUBPIXELS = 4
 DOT_CELLS = 2
+SLIVER_CELLS = 2.0
 
 
 def grid(zoom: int, tile_size: int = 512) -> float:
@@ -46,19 +47,62 @@ def _dot_squares(qx, qy, cells: float):
     return shapely.polygons(ring)
 
 
-def _quantize(g, scale: float):
+def _each(op, g):
+    """`op` over an array of shapes, None in the rows GEOS raises on."""
     try:
-        return shapely.set_precision(shapely.simplify(g, 0.7, preserve_topology=True), 1.0)
+        return op(g)
     except shapely.errors.GEOSException:
         out = np.empty(len(g), dtype=object)
         for i, geom in enumerate(g):
             try:
-                out[i] = shapely.set_precision(
-                    shapely.simplify(geom, 0.7, preserve_topology=True), 1.0
-                )
+                out[i] = op(geom)
             except shapely.errors.GEOSException:
                 out[i] = None
         return out
+
+
+def _simplify(g):
+    return shapely.simplify(g, 0.7, preserve_topology=True)
+
+
+def _quantize_lines(g):
+    """Simplified lines on the integer grid. GEOS rounds a line's vertices,
+    drops the repeats and removes a part left with a single point."""
+    return _each(lambda s: shapely.set_precision(_simplify(s), 1.0), g)
+
+
+def _under(g, cells: float):
+    """Rows narrower than `cells` in both directions."""
+    minx, miny, maxx, maxy = shapely.bounds(g).T
+    with np.errstate(invalid='ignore'):
+        return (maxx - minx < cells) & (maxy - miny < cells)
+
+
+def _quantize_polygons(g, dot_cells: float):
+    """Simplified polygons on the integer grid, each valid or None.
+
+    Rounding every vertex to its cell keeps most polygons valid and is several
+    times cheaper than noding them. The noding snap rebuilds the rest: those
+    rounding leaves invalid, where a ring collapses, touches or crosses itself
+    or two parts meet, and those under `SLIVER_CELLS` square cells, about a
+    cell wide, which noding mostly collapses and rounding would keep as
+    hairlines. A rounded polygon can keep a vertex twice in a row;
+    `render_polygons` stores it once."""
+    simple = _each(_simplify, g)
+    snapped = _each(lambda s: shapely.set_precision(s, 1.0, mode='pointwise'), simple)
+    # noding puts vertices only on rounded ones, so a shape under the placeholder
+    # stays under it and is drawn as one however it is snapped
+    dot = _under(snapped, dot_cells)
+    rest = np.flatnonzero(~dot)
+    keep = shapely.is_valid(snapped[rest])
+    keep[keep] = shapely.area(snapped[rest[keep]]) >= SLIVER_CELLS
+    redo = rest[~keep]
+    if len(redo):
+        noded = _each(lambda s: shapely.set_precision(s, 1.0), simple[redo])
+        noded[~shapely.is_valid(noded)] = None
+        snapped[redo] = noded
+    snapped[dot] = None
+    return snapped
 
 
 def render_polygons(
@@ -67,11 +111,8 @@ def render_polygons(
     """Quantized MultiPolygon per row as ragged int32 arrays:
     (geometry offsets, polygon offsets, ring offsets, x, y). `wkb` is in
     longitude and latitude; `cx`, `cy` are centroids in metres."""
-    g = _quantize(_to_grid(wkb, scale, offset), scale)
-    minx, miny, maxx, maxy = shapely.bounds(g).T
-    with np.errstate(invalid='ignore'):
-        small = shapely.is_missing(g) | shapely.is_empty(g) | ~shapely.is_valid(g)
-        small |= (maxx - minx < dot_cells) & (maxy - miny < dot_cells)
+    g = _quantize_polygons(_to_grid(wkb, scale, offset), dot_cells)
+    small = shapely.is_missing(g) | shapely.is_empty(g) | _under(g, dot_cells)
     if small.any():
         g = g.copy()
         g[small] = _dot_squares(
@@ -81,12 +122,15 @@ def render_polygons(
         )
     polys, poly_parent = shapely.get_parts(g, return_index=True)
     rings, ring_parent = shapely.get_rings(polys, return_index=True)
-    coords = shapely.get_coordinates(rings)
+    coords, ring = shapely.get_coordinates(rings, return_index=True)
+    repeat = np.zeros(len(coords), bool)
+    repeat[1:] = (ring[1:] == ring[:-1]) & (coords[1:] == coords[:-1]).all(axis=1)
+    coords, ring = coords[~repeat], ring[~repeat]
     geom_offsets = np.zeros(len(g) + 1, dtype=np.int64)
     np.add.at(geom_offsets, poly_parent + 1, 1)
     poly_offsets = np.zeros(len(polys) + 1, dtype=np.int64)
     np.add.at(poly_offsets, ring_parent + 1, 1)
-    ring_offsets = np.concatenate([[0], shapely.get_num_coordinates(rings)])
+    ring_offsets = np.concatenate([[0], np.bincount(ring, minlength=len(rings))])
     return (
         np.cumsum(geom_offsets),
         np.cumsum(poly_offsets),
@@ -102,11 +146,8 @@ def render_lines(
     """Quantized MultiLineString per row in the polygon tree shape: each part is
     one 'ring' that is not closed. A line that collapses on the grid becomes a
     two-cell segment at its centroid so it still draws."""
-    g = _quantize(_to_grid(wkb, scale, offset), scale)
-    minx, miny, maxx, maxy = shapely.bounds(g).T
-    with np.errstate(invalid='ignore'):
-        small = shapely.is_missing(g) | shapely.is_empty(g)
-        small |= (maxx - minx < 1) & (maxy - miny < 1)
+    g = _quantize_lines(_to_grid(wkb, scale, offset))
+    small = shapely.is_missing(g) | shapely.is_empty(g) | _under(g, 1)
     if small.any():
         g = g.copy()
         qx = np.floor((cx[small] - offset[0]) / scale)

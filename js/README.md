@@ -16,9 +16,62 @@ const reader = await openReader(coalescing(await httpSource([url])))
 const mvt = await renderTile(reader, z, x, y, { properties: ['height'] })
 ```
 
+A tile holds the attributes `properties` names: packed attributes, column
+attributes or source columns. Without it, in `renderTile`, `vectorSource`,
+`tileUrl` and the tile server alike, a tile holds the packed attributes only.
+
+`httpSource(urls, { cache, connections })` sends a tile's requests past the
+browser's HTTP cache, which answers the range requests of one URL one at a
+time, and opens six connections to the host as the file opens;
+`setSourceOptions` from the tiles entry point sets the same two. A server
+that opens the file for each request passes `cache: 'default'`. See
+[Requests](../docs/usage.md#requests).
+
 Serve immutable files with HTTP Range support and CORS exposing `Content-Range`.
 The tiles entry point requires the distributed `worker.js` and its imports to
 remain available to your bundler. Other dependencies remain external in `dist`.
+
+In a map, `vectorSource` from the tiles entry point is a MapLibre vector
+source with the file's bounds and zoom limits. Its `maxzoom` is the finest
+LOD zoom, which the map overzooms; `{ maxzoom }` as a second argument raises
+it to draw exact geometry further in, and a file without LODs gets 22:
+
+```js
+import { registerProtocol, vectorSource } from 'tiled-geoparquet/tiles'
+
+registerProtocol(maplibregl)
+map.addSource('buildings', await vectorSource({ url, layer: 'buildings', properties: ['height'] }))
+```
+
+For clients that fetch tile URLs themselves, the `tiled-geoparquet-serve`
+command serves a local path or an http(s) URL on loopback, as
+`/{z}/{x}/{y}.mvt` and TileJSON at `/tiles.json`:
+
+```sh
+npx tiled-geoparquet-serve buildings.lod.parquet --port 8080 --layer buildings --properties height,class
+```
+
+`--host`, `--maxzoom` and `--public-url` are its other options; from this
+directory it is `node dist/serve-cli.js`. The same service is
+`tileHandler(reader, options)` from `tiled-geoparquet/server`, a function
+from a web-standard `Request` to a `Response` with no Node imports.
+`tiled-geoparquet/node` has `fileSource(path)`, a local file as a byte source,
+and `nodeListener(handler)` for `node:http`:
+
+```js
+import { createServer } from 'node:http'
+import { openReader } from 'tiled-geoparquet'
+import { fileSource, nodeListener } from 'tiled-geoparquet/node'
+import { tileHandler } from 'tiled-geoparquet/server'
+
+const reader = await openReader(await fileSource('buildings.lod.parquet'))
+createServer(nodeListener(tileHandler(reader, { layer: 'buildings' }))).listen(8080, '127.0.0.1')
+```
+
+Tiles are gzipped for clients that accept it, an empty tile is a 200 with an
+empty layer, and a Cloudflare Worker must open the reader inside each
+request; [usage documentation](../docs/usage.md#serving-tiles-over-http) has
+the routes, statuses and options.
 
 Project code is MIT; the MVT encoder and geometry builder include code adapted
 from `@cogp/reader` with its MIT copyright notice retained in source and

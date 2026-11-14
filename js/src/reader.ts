@@ -15,7 +15,14 @@ import { readColumn } from 'hyparquet/src/column.js'
 import { DEFAULT_PARSERS } from 'hyparquet/src/convert.js'
 import { isListLike, isMapLike, getSchemaPath } from 'hyparquet/src/schema.js'
 import { compressors } from './compressors.js'
-import { attributeKind, decodeSelectedRow, type AttributeField } from './decode.js'
+import {
+  MAX_ATTRIBUTES,
+  asColumnValue,
+  attributeFields,
+  decodeSelectedRow,
+  showsRow,
+  type AttributeField,
+} from './decode.js'
 import { decodeProjection, type ProjectionExecutor, type ProjectionTask } from './projection.js'
 import { GeometryBuilder, type GeometryType, type LodGeometry } from './geometry.js'
 import { tileInterval } from './key.js'
@@ -25,9 +32,10 @@ import { MAX_LATITUDE } from './web-mercator.js'
 export type Bbox = [number, number, number, number]
 
 export const LOD_KEY = 'lod_columns'
-export const LOD_VERSION = '0.1.0'
+export const LOD_VERSION = '0.4.0'
 export const ENCODING = 'packed'
 export const PACK_VERSION = 2
+const MAX_MARGIN = 128
 
 /** Same major version, and the same minor while the major is 0. */
 export function isCompatibleVersion(version: string): boolean {
@@ -52,11 +60,19 @@ export interface LodMetadata {
   order: string
   zooms: number[]
   tile_size: number
+  /** Pixels of a `tile_size` tile past its edge within which a feature centred
+   * outside the tile is copied into it. */
+  margin: number
   /** Stored Hilbert key column and its depth, when rows are ordered by it. */
   key?: { column: string; depth: number }
   encoding: string
   pack_version: number
-  attributes: { name: string; type: string; values?: string[] }[]
+  /** Carried attributes; `storage` says where a row's own value is: its
+   * packed row, as when it is absent, or a column. */
+  attributes: { name: string; type: string; values?: string[]; storage?: 'packed' | 'column' }[]
+  /** The struct of attribute columns, and the LODs with one per column
+   * attribute; other LODs read the source columns. */
+  attribute_columns?: { column: string; lods: string[] }
   thinning: Record<string, unknown>
   lods: Record<string, Omit<Lod, 'name'>>
 }
@@ -153,22 +169,22 @@ export class GeoParquetReader {
   private readonly footer: ArrayBuffer | undefined
   private digest: Promise<string> | undefined
   private readonly fields: AttributeField[]
+  /** Whether the attribute columns hold their values on the leading rows of
+   * their LOD's pages, as a file with the spatial index does. */
+  private readonly leads: boolean
 
   private constructor(file: RangeSource, metadata: FileMetaData, footer?: ArrayBuffer) {
     this.file = file
     this.metadata = metadata
     this.footer = footer
+    this.leads = !!metadata.key_value_metadata?.some((kv) => kv.key === 'lod_spatial_index')
     const geo = JSON.parse(
       metadata.key_value_metadata?.find((kv) => kv.key === 'geo')?.value ?? '{}',
     )
     const lod = geo[LOD_KEY] as LodMetadata | undefined
     if (lod) checkLod(lod)
     else if (!geo.columns) throw new Error('file has no GeoParquet geo metadata')
-    this.fields = (lod?.attributes ?? []).map((a) =>
-      a.values
-        ? { name: a.name, kind: 'enum' as const, values: a.values }
-        : { name: a.name, kind: attributeKind(a.type) },
-    )
+    this.fields = attributeFields(lod?.attributes ?? [])
     this.lod = lod
     this.lods = Object.fromEntries(
       Object.entries(lod?.lods ?? {}).map(([name, child]) => [name, { ...child, name }]),
@@ -318,6 +334,10 @@ export class GeoParquetReader {
     const leaf = this.lodLeaf(lod)
     const tile = z * 2 ** 48 + x * 2 ** z + y
     const wanted = attributes.map((a) => this.fields.findIndex((f) => f.name === a))
+    const led =
+      this.leads &&
+      !!this.lod?.attribute_columns?.lods.includes(lod.name) &&
+      wanted.some((i) => this.fields[i]?.column)
 
     // groups adjacent in key order are spatial neighbours: warm their indexes so a pan
     // seldom meets a group cold
@@ -339,21 +359,32 @@ export class GeoParquetReader {
         const values = ranges.length
           ? await this.readLeafRows(g, leaf, ranges, signal)
           : new Map<number, unknown>()
-        return { g, own, values }
+        const held = led ? await this.heldRows(g, leaf, own, lod.geometry_type, signal) : undefined
+        return { g, own, values, held: held?.rows, spans: held?.spans ?? [] }
       }),
     )
     const rows: number[] = []
     const columns: Record<string, unknown[]> = Object.fromEntries(attributes.map((a) => [a, []]))
     const builder = new GeometryBuilder()
-    const add = (id: number, attrs: unknown[]) => {
+    // positions of the tile's own features, whose column attributes come from
+    // columns, and the row holding each one's
+    const own: number[] = []
+    const holders: number[] = []
+    let holder = 0
+    const add = (id: number, attrs: unknown[], slot: number) => {
+      if (!slot) {
+        own.push(rows.length)
+        holders.push(holder)
+      }
       rows.push(id)
       attributes.forEach((a, i) => columns[a].push(attrs[wanted[i]]))
     }
     const carried = wanted.some((i) => i >= 0)
-    for (const { g, own, values } of perGroup) {
+    for (const { g, own, values, held } of perGroup) {
       const first = this.rowGroupStarts[g]
       for (const [row, raw] of values) {
         const inside = row >= own[0] && row < own[1]
+        holder = first + (held?.get(row) ?? row)
         decodeSelectedRow(
           raw as Uint8Array,
           lod.geometry_type,
@@ -368,8 +399,97 @@ export class GeoParquetReader {
       }
     }
     const out = { rows, columns, geometry: builder.finish(lod.scale, lod.offset) }
-    await this.hydrateColumns(out, attributes, signal)
+    await Promise.all([
+      this.columnAttributes(out, own, holders, lod, attributes, signal),
+      this.hydrateColumns(out, attributes, signal),
+      ...perGroup.map(({ g, spans }) => this.checkLeading(g, spans, lod, attributes, signal)),
+    ])
     return out
+  }
+
+  /** For each row of `own` in group `g` that the LOD of leaf `leaf` shows,
+   * the row holding its column attributes where they lead the LOD's pages:
+   * its page's row at its position among the rows the page shows. `spans`
+   * are, for each page a row of `own` is read from, its rows past as many
+   * as it shows, which hold no value. */
+  private async heldRows(
+    g: number,
+    leaf: string,
+    own: [number, number],
+    type: GeometryType,
+    signal?: AbortSignal,
+  ): Promise<{ rows: Map<number, number>; spans: [number, number][] }> {
+    const rows = new Map<number, number>()
+    const spans: [number, number][] = []
+    if (own[0] >= own[1]) return { rows, spans }
+    for (const page of await this.leafPages(g, leaf, [own], signal)) {
+      let shown = 0
+      let read = false
+      for (let k = 0; k < page.values.length; k++) {
+        const value = unwrap(page.values[k])
+        if (value === ABSENT || !showsRow(value as Uint8Array, type)) continue
+        const row = page.rowStart + k
+        if (row >= own[0] && row < own[1]) {
+          rows.set(row, page.rowStart + shown)
+          read = true
+        }
+        shown++
+      }
+      if (read) spans.push([page.rowStart + shown, page.rowStart + page.values.length])
+    }
+    return { rows, spans }
+  }
+
+  /** Raise if a requested column attribute of `lod` holds a value on the
+   * rows `spans` of group `g`: past the rows its LOD page shows, it would be
+   * no row's. */
+  private async checkLeading(
+    g: number,
+    spans: [number, number][],
+    lod: Lod,
+    attributes: string[],
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const spec = this.lod?.attribute_columns
+    const ranges = spans.filter(([a, b]) => a < b)
+    if (!spec || !ranges.length) return
+    const fields = this.fields.filter((f) => f.column && attributes.includes(f.name))
+    await Promise.all(
+      fields.map(async (field) => {
+        const path = `${spec.column}.${lod.name}.${field.name}`
+        eachRow(ranges, await this.leafPages(g, path, ranges, signal), (_, raw) => {
+          if (unwrap(raw) !== ABSENT)
+            throw new Error(`${field.name} holds a value past the rows its page shows`)
+        })
+      }),
+    )
+  }
+
+  /** The own features' values of the requested column attributes, from the
+   * LOD's attribute column or, at an LOD without one, the source column:
+   * `holders` is the row holding each own feature's. */
+  private async columnAttributes(
+    out: { rows: number[]; columns: Record<string, unknown[]> },
+    own: number[],
+    holders: number[],
+    lod: Lod,
+    attributes: string[],
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const spec = this.lod?.attribute_columns
+    const fields = this.fields.filter((f) => f.column && attributes.includes(f.name))
+    if (!spec || !fields.length || !own.length) return
+    await Promise.all(
+      fields.map(async (field) => {
+        const path = spec.lods.includes(lod.name)
+          ? `${spec.column}.${lod.name}.${field.name}`
+          : field.name
+        const values = (await this.readColumns(holders, [path], signal))[path]
+        own.forEach((position, i) => {
+          out.columns[field.name][position] = asColumnValue(values[i], field)
+        })
+      }),
+    )
   }
 
   /** The key range of row group `g` from its footer statistics; null when it has no keys. */
@@ -1150,9 +1270,15 @@ const unsigned = (v: unknown): number => {
   return n < 0 ? n + 2 ** 32 : n
 }
 
-function checkLod(lod: LodMetadata): void {
+/** Refuse LOD metadata this reader cannot read, wherever a file states it. */
+export function checkLod(lod: LodMetadata): void {
   if (!isCompatibleVersion(lod.version)) {
     throw new Error(`${LOD_KEY} version ${lod.version} is not compatible with ${LOD_VERSION}`)
+  }
+  if (typeof lod.margin !== 'number' || !(lod.margin >= 0 && lod.margin <= MAX_MARGIN)) {
+    throw new Error(
+      `${LOD_KEY} margin ${lod.margin} is not a number of pixels from 0 to ${MAX_MARGIN}`,
+    )
   }
   if (lod.encoding !== ENCODING || lod.pack_version !== PACK_VERSION) {
     throw new Error(
@@ -1165,6 +1291,25 @@ function checkLod(lod: LodMetadata): void {
     }
   }
   if (!lod.key) throw new Error(`${LOD_KEY} file stores no key column`)
+  if (lod.attributes.length > MAX_ATTRIBUTES)
+    throw new Error(`${LOD_KEY} carries more than ${MAX_ATTRIBUTES} attributes`)
+  for (const a of lod.attributes) {
+    if (a.storage !== undefined && a.storage !== 'packed' && a.storage !== 'column')
+      throw new Error(`attribute ${a.name} has unknown storage ${a.storage}`)
+    attributeFields([a])
+  }
+  const spec = lod.attribute_columns
+  const columns = lod.attributes.some((a) => a.storage === 'column')
+  if (columns !== (spec !== undefined))
+    throw new Error(`${LOD_KEY} attribute_columns must be given exactly with column attributes`)
+  if (
+    spec &&
+    (typeof spec.column !== 'string' ||
+      !Array.isArray(spec.lods) ||
+      new Set(spec.lods).size !== spec.lods.length ||
+      !spec.lods.every((name) => Object.hasOwn(lod.lods, name)))
+  )
+    throw new Error(`${LOD_KEY} attribute_columns must name a column and declared LODs`)
 }
 
 const BBOX_KEYS = ['xmin', 'ymin', 'xmax', 'ymax'] as const

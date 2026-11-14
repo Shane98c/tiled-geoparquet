@@ -2,7 +2,9 @@
 
 Each LOD is a nullable `binary` child of the `lod` struct: null means the row
 is not shown there, and a value is the row packed as `pack` describes, so a
-tile reads one leaf per LOD. Every carried attribute is inside the blob.
+tile reads one leaf per LOD. A packed attribute is inside the blob; a column
+attribute is inside it only on boundary copies, and a row's own value is in
+an attribute column or, at an LOD without one, the source column.
 """
 
 from __future__ import annotations
@@ -10,9 +12,39 @@ from __future__ import annotations
 import numpy as np
 import pyarrow as pa
 
+LOD_VERSION = '0.4.0'
 ENCODING = 'packed'
 PACK_VERSION = 2
+# a row's presence bitmap is one 64-bit varint, a bit per carried attribute
+MAX_ATTRIBUTES = 64
+# the columns `read_overview` returns beside the carried attributes
+OVERVIEW_COLUMNS = ('row', 'geometry')
 GEOMETRY_TYPES = {'point': 'Point', 'line': 'MultiLineString', 'polygon': 'MultiPolygon'}
+# where an attribute's own-row values live: in the packed row, the default,
+# or in columns
+STORAGES = ('packed', 'column')
+
+
+def is_compatible_version(version) -> bool:
+    """Whether `lod_columns` metadata of `version` is this format: the same
+    major version, and the same minor while the major is 0."""
+    major, minor = (str(version).split('.') + [''])[:2]
+    ours = LOD_VERSION.split('.')
+    return major == ours[0] and (major != '0' or minor == ours[1])
+
+
+def check_format(lod: dict) -> None:
+    """Raise ValueError unless `lod`, a file's `lod_columns` metadata, is the
+    version and packing this package reads."""
+    if not is_compatible_version(lod.get('version')):
+        raise ValueError(
+            f'lod_columns version {lod.get("version")} is not compatible with {LOD_VERSION}'
+        )
+    if lod.get('encoding') != ENCODING or lod.get('pack_version') != PACK_VERSION:
+        raise ValueError(
+            f'lod_columns encoding {lod.get("encoding")}/{lod.get("pack_version")} is not '
+            f'{ENCODING}/{PACK_VERSION}'
+        )
 
 
 def lod_type() -> pa.DataType:
@@ -43,12 +75,38 @@ def infer_attributes(schema: pa.Schema, carry) -> list[pa.Field]:
             out.append(pa.field(name, pa.type_for_alias(alias), nullable=True))
         else:
             out.append(pa.field(item, schema.field(item).type, nullable=True))
+    if len(out) > MAX_ATTRIBUTES:
+        raise ValueError(f'cannot carry {len(out)} attributes: at most {MAX_ATTRIBUTES}')
     for f in out:
         if not is_carried_type(f.type):
             raise ValueError(
                 f'cannot carry {f.name}: {f.type} is not an integer, float, bool or string'
             )
     return out
+
+
+def column_type(attribute: dict) -> pa.DataType:
+    """The Arrow type of a column attribute's LOD columns, from its metadata
+    entry: the declared type, a string with a value table as the uint8 index
+    into it, and a large string as a string."""
+    if 'values' in attribute:
+        return pa.uint8()
+    t = pa.type_for_alias(attribute['type'])
+    return pa.string() if pa.types.is_large_string(t) else t
+
+
+def source_compatible(source: pa.DataType, declared: pa.DataType) -> bool:
+    """Whether a source column of type `source` can serve a column attribute
+    declared `declared` where an LOD reads the source column: the reader
+    rounds a number to a declared float type, and takes anything else as it
+    is, so the kinds must agree."""
+    if pa.types.is_floating(declared):
+        return pa.types.is_integer(source) or pa.types.is_floating(source)
+    if pa.types.is_integer(declared):
+        return pa.types.is_integer(source)
+    if pa.types.is_boolean(declared):
+        return pa.types.is_boolean(source)
+    return pa.types.is_string(source) or pa.types.is_large_string(source)
 
 
 INT32 = np.iinfo(np.int32)

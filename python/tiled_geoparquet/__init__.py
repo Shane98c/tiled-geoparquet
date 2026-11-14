@@ -1,5 +1,6 @@
 """GeoParquet with per-zoom display columns."""
 
+from ._tile_sizes import tile_sizes
 from .thinning import (
     Context,
     Thin,
@@ -35,6 +36,7 @@ __all__ = [
     'only',
     'read_overview',
     'size_threshold',
+    'tile_sizes',
     'tiny_polygons',
     'validate',
     'write',

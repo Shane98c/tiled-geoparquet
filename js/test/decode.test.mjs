@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { GeometryBuilder } from '../dist/index.js'
-import { decodeAttributes, decodeSelectedRow } from '../dist/decode.js'
+import { decodeAttributes, decodeSelectedRow, showsRow } from '../dist/decode.js'
 import { columnar, nested } from './columnar.mjs'
 
 // a MultiPolygon, a MultiLineString and a Point in grid units, copied feature by feature
@@ -215,4 +215,85 @@ for (const [bits, value] of [
   const row = Uint8Array.from([0, 0, 1, ...varint(bits), 0])
   const fields = [{ name: 'value', kind: 'float16' }]
   assert.ok(Object.is(decodeAttributes(row, 'Point', fields)[0], value), `0x${bits.toString(16)}`)
+}
+
+// a carried integer is the number nearest its 64-bit value, with its sign
+const varint64 = (v) => {
+  const out = []
+  while (v >= 128n) {
+    out.push(Number(v % 128n) + 128)
+    v /= 128n
+  }
+  out.push(Number(v))
+  return out
+}
+const zz64 = (v) => (v < 0n ? -2n * v - 1n : 2n * v)
+for (const value of [
+  0n,
+  -1n,
+  2n ** 31n,
+  -(2n ** 31n) - 1n,
+  2n ** 52n + 1n,
+  -(2n ** 52n) - 1n,
+  2n ** 53n,
+  -(2n ** 53n),
+  2n ** 53n + 1n,
+  -(2n ** 53n) - 3n,
+  2n ** 63n - 1n,
+  -(2n ** 63n),
+]) {
+  const row = Uint8Array.from([0, 0, 1, ...varint64(zz64(value)), 0])
+  const fields = [{ name: 'value', kind: 'int' }]
+  assert.equal(decodeAttributes(row, 'Point', fields)[0], Number(value), `${value}`)
+}
+
+// the presence bitmap is exact for all 64 attributes it can hold
+{
+  const fields = Array.from({ length: 64 }, (_, i) => ({ name: `a${i}`, kind: 'int' }))
+  for (const present of [[0], [31], [32], [52], [53], [63], [0, 31, 32, 53, 63]]) {
+    const bitmap = present.reduce((bits, i) => bits | (1n << BigInt(i)), 0n)
+    const row = Uint8Array.from([
+      0,
+      0,
+      ...varint64(bitmap),
+      ...present.flatMap((i) => varint(zz(i + 1))),
+      0,
+    ])
+    const expected = fields.map((_, i) => (present.includes(i) ? i + 1 : null))
+    assert.deepEqual(decodeAttributes(row, 'Point', fields), expected, `attributes ${present}`)
+    const seen = []
+    decodeSelectedRow(row, 'Point', fields, new GeometryBuilder(), true, 0, 0, (_, attrs) =>
+      seen.push(attrs),
+    )
+    assert.deepEqual(seen, [expected], `selected attributes ${present}`)
+  }
+}
+
+// A row its LOD shows holds a geometry of its own: a shape row whose count
+// of parts, a varint of however many bytes, is not zero. The count decides
+// both whether the row is drawn and whether it takes a place among the rows
+// its page shows.
+{
+  const triangle = [1, 3, 0, 0, 4, 0, 4, 4]
+  for (const [count, shown] of [
+    [[0], false],
+    [[0x80, 0x00], false],
+    [[0x80, 0x80, 0x00], false],
+    [[1], true],
+    [[0x81, 0x00], true],
+    [[0x81, 0x80, 0x00], true],
+  ]) {
+    const row = Uint8Array.from([...count, ...(shown ? triangle : []), 0, 0])
+    assert.equal(showsRow(row, 'MultiPolygon'), shown, `count ${count}`)
+    const drawn = []
+    decodeSelectedRow(row, 'MultiPolygon', [], new GeometryBuilder(), true, 7, 0, (id) =>
+      drawn.push(id),
+    )
+    assert.deepEqual(drawn, shown ? [7] : [], `a row of count ${count} is drawn when shown`)
+  }
+  assert.equal(showsRow(Uint8Array.of(0x80, 0x01, 2, 0, 0, 2, 2), 'MultiLineString'), true)
+  assert.equal(showsRow(Uint8Array.of(0, 0, 0), 'MultiLineString'), false)
+  assert.equal(showsRow(new Uint8Array(0), 'MultiPolygon'), false)
+  assert.equal(showsRow(Uint8Array.of(0x80), 'MultiPolygon'), false)
+  assert.equal(showsRow(Uint8Array.of(0, 0, 0, 0), 'Point'), true, 'every point row is shown')
 }

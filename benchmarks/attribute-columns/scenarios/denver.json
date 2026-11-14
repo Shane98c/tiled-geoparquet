@@ -1,0 +1,35 @@
+{
+  "tiles": [
+    [8, -104.99, 39.74, "metro, Denver"],
+    [11, -104.99, 39.74, "city, Denver"],
+    [12, -104.99, 39.74, "city, Denver"],
+    [13, -104.99, 39.74, "downtown"],
+    [13, -104.86, 39.83, "suburbs, Montbello"],
+    [14, -104.99, 39.74, "downtown"],
+    [15, -104.99, 39.74, "street, downtown"],
+    [15, -105.03, 39.76, "street, Highland"]
+  ],
+  "dense_from": 14,
+  "viewport": { "width": 1280, "height": 800 },
+  "route": [
+    { "label": "open on Denver", "center": [-104.99, 39.74], "zoom": 11 },
+    { "label": "zoom in", "center": [-104.99, 39.74], "zoom": 12 },
+    { "label": "zoom in", "center": [-104.99, 39.74], "zoom": 13 },
+    { "label": "pan east", "center": [-104.96, 39.74], "zoom": 13 },
+    { "label": "style by carried", "center": [-104.96, 39.74], "zoom": 13, "style": "carried" },
+    { "label": "zoom in", "center": [-104.98, 39.745], "zoom": 14 },
+    { "label": "pan north", "center": [-104.98, 39.755], "zoom": 14 },
+    { "label": "zoom in", "center": [-104.985, 39.75], "zoom": 15 },
+    {
+      "label": "style by un-carried",
+      "center": [-104.985, 39.75],
+      "zoom": 15,
+      "style": "uncarried"
+    },
+    { "label": "zoom out", "center": [-104.98, 39.75], "zoom": 13 },
+    { "label": "pan west", "center": [-105.02, 39.75], "zoom": 13 },
+    { "label": "zoom out", "center": [-105.0, 39.75], "zoom": 11 },
+    { "label": "style by geometry", "center": [-105.0, 39.75], "zoom": 11, "style": "geometry" },
+    { "label": "zoom out", "center": [-104.9, 39.8], "zoom": 9 }
+  ]
+}

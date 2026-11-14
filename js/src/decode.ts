@@ -14,7 +14,24 @@ export interface AttributeField {
   kind: AttributeKind
   /** The value table of an `enum` attribute, indexed by the packed value. */
   values?: string[]
+  /** The declared Arrow type. */
+  type?: string
+  /** Whether a row's own value is in an attribute or source column rather
+   * than its packed row; its boundary copies pack it either way. */
+  column?: boolean
 }
+
+/** The fields of carried attributes as `lod_columns` metadata declares them. */
+export const attributeFields = (
+  attributes: { name: string; type: string; values?: string[]; storage?: string }[],
+): AttributeField[] =>
+  attributes.map((a) => ({
+    name: a.name,
+    kind: a.values ? 'enum' : attributeKind(a.type),
+    ...(a.values ? { values: a.values } : {}),
+    type: a.type,
+    column: a.storage === 'column',
+  }))
 
 /** The attribute kinds the packer writes, from the Arrow type names in the metadata. */
 export const attributeKind = (type: string): AttributeKind => {
@@ -33,10 +50,13 @@ const f32 = new DataView(new ArrayBuffer(8))
 
 class Cursor {
   pos = 0
+  /** Bits 32 to 63 of the varint `wide` read last. */
+  high = 0
   constructor(readonly bytes: Uint8Array) {}
 
-  /** Read an IEEE-754 bit pattern without passing its 64 bits through Number. */
-  float64(): number {
+  /** A varint of up to 64 bits as unsigned halves: bits 0 to 31 returned,
+   * the rest left in `high`, so no bit passes through a double. */
+  wide(): number {
     let low = 0,
       high = 0,
       shift = 0
@@ -50,9 +70,28 @@ class Cursor {
       if (!(byte & 0x80)) break
       shift += 7
     }
-    f32.setUint32(0, low >>> 0, true)
-    f32.setUint32(4, high >>> 0, true)
+    this.high = high >>> 0
+    return low >>> 0
+  }
+
+  /** An IEEE-754 double from its 64-bit pattern. */
+  float64(): number {
+    f32.setUint32(0, this.wide(), true)
+    f32.setUint32(4, this.high, true)
     return f32.getFloat64(0, true)
+  }
+
+  /** A zigzag integer of up to 64 bits as the nearest number: exact up to
+   * 2^53 in magnitude, and rounded once past it, as `Number` rounds a BigInt. */
+  int(): number {
+    const zigzag = this.wide()
+    let low = ((zigzag >>> 1) | (this.high << 31)) >>> 0,
+      high = this.high >>> 1
+    if (!(zigzag & 1)) return high * 2 ** 32 + low
+    // a negative value n is stored as -2n - 1, so its magnitude is the shifted bits plus one
+    low = (low + 1) >>> 0
+    if (!low) high++
+    return -(high * 2 ** 32 + low)
   }
 
   varint(): number {
@@ -69,8 +108,15 @@ class Cursor {
 
 const unzigzag = (v: number): number => (v % 2 ? -(v + 1) / 2 : v / 2)
 
+/** The presence bitmap holds one bit per carried attribute. */
+export const MAX_ATTRIBUTES = 64
+
+/** Bit `i` of a presence bitmap given as the halves `Cursor.wide` reads. */
+const isPresent = (low: number, high: number, i: number): boolean =>
+  ((i < 32 ? low >>> i : high >>> (i - 32)) & 1) === 1
+
 /** An IEEE half-precision bit pattern as a number. */
-const half = (bits: number): number => {
+export const half = (bits: number): number => {
   const sign = bits & 0x8000 ? -1 : 1
   const exponent = (bits >> 10) & 0x1f
   const fraction = bits & 0x3ff
@@ -104,16 +150,40 @@ export const asCarried = (value: unknown, kind: AttributeKind): unknown => {
   return value
 }
 
-/** Attribute values with string slots left as byte lengths, filled from the trailing payload later. */
+/** A column attribute's own value, read from an attribute column or a source
+ * column, as its packed value would decode: a value table index as its
+ * string, a float rounded to its declared precision and a 64-bit integer as
+ * the nearest number. */
+export const asColumnValue = (value: unknown, field: AttributeField): unknown => {
+  if (value == null) return null
+  if (field.kind === 'enum' && typeof value === 'number') {
+    const found = field.values?.[value]
+    if (found === undefined) throw new Error(`${field.name} indexes past its value table`)
+    return found
+  }
+  if (typeof value === 'bigint') return Number(value)
+  return asCarried(value, field.kind)
+}
+
+let absent: unknown[] = []
+
+/** Attribute values with string slots left as byte lengths, filled from the trailing payload later.
+ * With `shared`, a row packing no attribute returns one read-only array of nulls. */
 const attributes = (
   c: Cursor,
   fields: AttributeField[],
   strings: [unknown[], number, number][],
+  shared = false,
 ) => {
-  const present = c.varint()
+  const low = c.wide(),
+    high = c.high
+  if (shared && !low && !high) {
+    if (absent.length !== fields.length) absent = new Array(fields.length).fill(null)
+    return absent
+  }
   const out: unknown[] = new Array(fields.length)
   for (let i = 0; i < fields.length; i++) {
-    if (!(Math.floor(present / 2 ** i) % 2)) {
+    if (!isPresent(low, high, i)) {
       out[i] = null
       continue
     }
@@ -121,11 +191,12 @@ const attributes = (
       out[i] = c.float64()
       continue
     }
+    if (fields[i].kind === 'int') {
+      out[i] = c.int()
+      continue
+    }
     const v = c.varint()
     switch (fields[i].kind) {
-      case 'int':
-        out[i] = unzigzag(v)
-        break
       case 'float16':
         out[i] = half(v)
         break
@@ -211,7 +282,7 @@ export const decodeSelectedRow = (
   const strings: [unknown[], number, number][] = []
   const selected: [number, unknown[], number][] = []
   const keep = geometryInto(c, type, own ? builder : undefined)
-  const attrs = attributes(c, fields, strings)
+  const attrs = attributes(c, fields, strings, true)
   if (own && keep) selected.push([id, attrs, 0])
   const count = c.varint()
   for (let k = 0; k < count; k++) {
@@ -222,7 +293,7 @@ export const decodeSelectedRow = (
       builder.begin(type)
       if (type === 'MultiLineString') builder.startPolygon()
     }
-    const copyAttrs = attributes(c, fields, strings)
+    const copyAttrs = attributes(c, fields, strings, true)
     if (copyTile === tile) selected.push([copyId, copyAttrs, k + 1])
   }
   for (const [slot, i, length] of strings) {
@@ -230,6 +301,19 @@ export const decodeSelectedRow = (
     c.pos += length
   }
   for (const [row, values, slot] of selected) add(row, values, slot)
+}
+
+/** Whether a packed row holds a geometry of its own, which makes it a row
+ * its LOD shows: every row of a point LOD, and a shape row whose leading
+ * varint, its count of parts, is not zero. A row that only hosts copies
+ * counts none. */
+export const showsRow = (bytes: Uint8Array, type: GeometryType): boolean => {
+  if (type === 'Point') return true
+  for (let i = 0; i < bytes.length; i++) {
+    if (bytes[i] & 0x7f) return true
+    if (!(bytes[i] & 0x80)) return false
+  }
+  return false
 }
 
 function geometryInto(c: Cursor, type: GeometryType, builder?: GeometryBuilder): boolean {
@@ -272,22 +356,53 @@ function ringInto(c: Cursor, builder?: GeometryBuilder, closed = false) {
   }
   builder.startRing()
   const start = builder.reserveCoordinates(closed && n ? n + 1 : n)
-  let x = 0,
+  const bytes = c.bytes,
+    xs = builder.x,
+    ys = builder.y
+  let pos = c.pos,
+    x = 0,
     y = 0
   for (let i = start; i < start + n; i++) {
-    x += unzigzag(c.varint())
-    y += unzigzag(c.varint())
-    builder.x[i] = x
-    builder.y[i] = y
+    // Cursor.varint and unzigzag in line: most deltas are one byte
+    let b = bytes[pos++]
+    if (!(b & 0x80)) x += (b >>> 1) ^ -(b & 1)
+    else {
+      let v = b & 0x7f,
+        scale = 128
+      for (;;) {
+        b = bytes[pos++]
+        v += (b & 0x7f) * scale
+        if (!(b & 0x80)) break
+        scale *= 128
+      }
+      x += unzigzag(v)
+    }
+    b = bytes[pos++]
+    if (!(b & 0x80)) y += (b >>> 1) ^ -(b & 1)
+    else {
+      let v = b & 0x7f,
+        scale = 128
+      for (;;) {
+        b = bytes[pos++]
+        v += (b & 0x7f) * scale
+        if (!(b & 0x80)) break
+        scale *= 128
+      }
+      y += unzigzag(v)
+    }
+    xs[i] = x
+    ys[i] = y
   }
+  c.pos = pos
   if (closed && n) {
-    builder.x[start + n] = builder.x[start]
-    builder.y[start + n] = builder.y[start]
+    xs[start + n] = xs[start]
+    ys[start + n] = ys[start]
   }
 }
 
 const NO_ATTRIBUTES: unknown[] = []
 function skipAttributes(c: Cursor, fields: AttributeField[]) {
-  const present = c.varint()
-  for (let i = 0; i < fields.length; i++) if (Math.floor(present / 2 ** i) % 2) c.varint()
+  const low = c.wide(),
+    high = c.high
+  for (let i = 0; i < fields.length; i++) if (isPresent(low, high, i)) c.varint()
 }

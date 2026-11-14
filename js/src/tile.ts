@@ -2,8 +2,8 @@ import { asCarried, attributeKind } from './decode.js'
 import { MVT_BUFFER, MVT_EXTENT, toMvt } from './mvt.js'
 import { geometryColumnFromWkb } from '@cogp/reader'
 import type { LodGeometry } from './geometry.js'
-import type { Bbox, Lod, LodRows } from './reader.js'
-import { decodeTile, type PreparedTile, type TileReader } from './spatial.js'
+import type { Bbox, Lod, LodMetadata, LodRows } from './reader.js'
+import { decodeTile, type AttributeTask, type PreparedTile, type TileReader } from './spatial.js'
 import { HALF_WORLD } from './web-mercator.js'
 
 const VECTOR_TILE_SIZE = 512
@@ -13,7 +13,8 @@ export interface TileOptions {
   layer?: string
   /** MVT layer name for point LODs (default: same as `layer`). */
   pointLayer?: string
-  /** Attribute names to copy into MVT properties (default: all carried attributes, none without LODs). */
+  /** Attribute names to copy into MVT properties (default: the packed attributes, none without LODs).
+   * A column attribute or source column is read only when named. */
   properties?: string[]
   signal?: AbortSignal
 }
@@ -21,9 +22,21 @@ export interface TileOptions {
 const tileYToLatitude = (y: number, tiles: number) =>
   (Math.atan(Math.sinh(Math.PI * (1 - (2 * y) / tiles))) * 180) / Math.PI
 
-export const tileBounds = (z: number, x: number, y: number): Bbox => {
+/** The attributes whose values arrive with a tile's geometry. */
+export const packedAttributes = (lod?: LodMetadata): string[] =>
+  (lod?.attributes ?? []).filter((a) => a.storage !== 'column').map((a) => a.name)
+
+/** The clip buffer, in `MVT_EXTENT` units, for a file whose straddler copies
+ * reach `margin` pixels past a tile: geometry clipped nearer than that would cut
+ * the strokes the copies are there to draw. */
+export const clipBuffer = (margin: number): number => {
+  if (!Number.isFinite(margin) || margin < 0) throw new Error(`invalid margin ${margin}`)
+  return Math.max(MVT_BUFFER, Math.ceil((margin / VECTOR_TILE_SIZE) * MVT_EXTENT))
+}
+
+export const tileBounds = (z: number, x: number, y: number, buffer = MVT_BUFFER): Bbox => {
   const tiles = 2 ** z
-  const padding = MVT_BUFFER / MVT_EXTENT
+  const padding = buffer / MVT_EXTENT
   return [
     ((x - padding) / tiles) * 360 - 180,
     tileYToLatitude(y + 1 + padding, tiles),
@@ -33,9 +46,9 @@ export const tileBounds = (z: number, x: number, y: number): Bbox => {
 }
 
 /** The buffered tile in EPSG:3857 metres, the CRS LOD coordinates are stored in. */
-const mercatorTileBounds = (z: number, x: number, y: number): Bbox => {
+const mercatorTileBounds = (z: number, x: number, y: number, buffer: number): Bbox => {
   const cell = (2 * HALF_WORLD) / 2 ** z
-  const padding = (MVT_BUFFER / MVT_EXTENT) * cell
+  const padding = (buffer / MVT_EXTENT) * cell
   return [
     -HALF_WORLD + x * cell - padding,
     HALF_WORLD - (y + 1) * cell - padding,
@@ -55,9 +68,10 @@ export const renderTile = async (
   options: TileOptions = {},
 ): Promise<ArrayBuffer> => {
   const { signal } = options
-  const bbox = tileBounds(z, x, y)
+  const buffer = reader.lod ? clipBuffer(reader.lod.margin) : MVT_BUFFER
+  const bbox = tileBounds(z, x, y, buffer)
   const carried = reader.lod?.attributes ?? []
-  const names = options.properties ?? carried.map((a) => a.name)
+  const names = options.properties ?? packedAttributes(reader.lod)
   const lod = reader.lod ? reader.lodForZoom(z) : undefined
   const pointFamily = lod?.geometry_type === 'Point'
   const layer = (pointFamily ? options.pointLayer : undefined) ?? options.layer ?? 'features'
@@ -73,12 +87,12 @@ export const renderTile = async (
     }
     return toMvt(
       { geometry: geometryColumnFromWkb(wkb), rowIndex: rows, columns },
-      { z, x, y, layer, signal },
+      { z, x, y, layer, signal, buffer },
     )
   }
   const data = await reader.readLodByTile(lod, z, x, y, names, signal)
   signal?.throwIfAborted()
-  return renderDecodedTile(normalizeTile(lod, data, z, x, y), options)
+  return renderDecodedTile(normalizeTile(lod, data, z, x, y, buffer), options)
 }
 
 export const tileResolution = (z: number, y: number) => {
@@ -94,18 +108,88 @@ export interface DecodedTile {
   rows: number[]
   columns: Record<string, unknown[]>
   geometry: LodGeometry
+  /** Clip buffer in `MVT_EXTENT` units, from the file's margin. */
+  buffer: number
+  /** Column attributes with no entry in `columns` yet: their own features'
+   * values are in pages the tile has not read. */
+  pending?: string[]
+  /** While any column attribute is pending: 0 for a boundary copy and, for a
+   * feature of the tile's own, one more than its position among the rows its
+   * LOD page shows, where an attribute page holds its value. */
+  own?: Uint32Array
+  /** Per pending column attribute, the values its boundary copies pack, one
+   * per copy in feature order. */
+  copies?: Record<string, unknown[]>
+  /** While any column attribute is pending: the first row of each LOD page
+   * the tile read and how many rows it shows, which bound the values an
+   * attribute page beside it may hold. */
+  shown?: number[]
 }
 
+/** A tile decoded with every carried attribute: those column attributes
+ * whose pages the task lacks are pending. */
 export function decodePreparedTile(task: PreparedTile): DecodedTile {
-  const data = decodeTile(
+  const { own, pending, copies, shown, ...data } = decodeTile(
     task,
     task.fields.map((f) => f.name),
   )
-  return normalizeTile(task.lod, data, task.z, task.x, task.y)
+  const tile = normalizeTile(
+    task.lod,
+    data,
+    task.z,
+    task.x,
+    task.y,
+    clipBuffer(task.margin),
+    own,
+    copies,
+  )
+  if (pending.length) return { ...tile, pending, shown }
+  const { own: _own, copies: _copies, ...complete } = tile
+  return complete
+}
+
+/** The work of filling a decoded tile's pending column attributes from their
+ * pages over its own rows, which `own` marks, checked against the rows its
+ * LOD pages show, `shown`. */
+export function attributeTask(
+  tile: DecodedTile,
+  own: Uint32Array,
+  shown: number[],
+  fields: AttributeTask['fields'],
+  attributes: AttributeTask['attributes'],
+): AttributeTask {
+  return {
+    rows: tile.rows.filter((_, i) => own[i]),
+    ranks: Array.from(own.filter(Boolean), (position) => position - 1),
+    shown,
+    fields,
+    attributes,
+  }
+}
+
+/** A tile's columns of `values`, the values a task decoded for the features
+ * `own` marks, merged with the values `copies` holds for its boundary copies. */
+export function filledColumns(
+  own: Uint32Array,
+  copies: Record<string, unknown[]>,
+  values: Record<string, unknown[]>,
+): Record<string, unknown[]> {
+  return Object.fromEntries(
+    Object.entries(values).map(([name, ownValues]) => {
+      const copied = copies[name] ?? []
+      const column: unknown[] = new Array(own.length)
+      let k = 0
+      let c = 0
+      for (let i = 0; i < own.length; i++) column[i] = own[i] ? ownValues[k++] : copied[c++]
+      if (k !== ownValues.length || c !== copied.length)
+        throw new Error(`${name} values disagree with the tile`)
+      return [name, column]
+    }),
+  )
 }
 
 export function renderDecodedTile(tile: DecodedTile, options: TileOptions = {}): ArrayBuffer {
-  const { lod, rows, geometry, z, x, y } = tile
+  const { lod, rows, geometry, z, x, y, buffer } = tile
   const names = options.properties ?? Object.keys(tile.columns)
   const columns = Object.fromEntries(
     names.map((name) => {
@@ -117,13 +201,22 @@ export function renderDecodedTile(tile: DecodedTile, options: TileOptions = {}):
     (lod.geometry_type === 'Point' ? options.pointLayer : undefined) ?? options.layer ?? 'features'
   return toMvt(
     { geometry: geometry as never, rowIndex: rows, columns },
-    { z, x, y, layer, signal: options.signal },
+    { z, x, y, layer, buffer, signal: options.signal },
   )
 }
 
 /** Point filtering happens once before caching; rendering is read-only. */
-function normalizeTile(lod: Lod, data: LodRows, z: number, x: number, y: number): DecodedTile {
-  const bbox = mercatorTileBounds(z, x, y)
+function normalizeTile(
+  lod: Lod,
+  data: LodRows,
+  z: number,
+  x: number,
+  y: number,
+  buffer: number,
+  own?: Uint32Array,
+  copies?: Record<string, unknown[]>,
+): DecodedTile {
+  const bbox = mercatorTileBounds(z, x, y, buffer)
   const names = Object.keys(data.columns)
   const pointFamily = lod.geometry_type === 'Point'
   const { rows, columns } = data
@@ -131,19 +224,31 @@ function normalizeTile(lod: Lod, data: LodRows, z: number, x: number, y: number)
   if (pointFamily) {
     // Keep points inside the buffered tile. Point offsets are the identity
     // sequence; compact coordinates and attributes in place.
+    const copied = Object.values(copies ?? {})
     let count = 0
+    let copy = 0
+    let keptCopies = 0
     for (let i = 0; i < rows.length; i++) {
+      const isCopy = own !== undefined && !own[i]
+      if (isCopy) copy++
       const mx = lod.offset[0] + lod.scale[0] * geometry.x[i]
       const my = lod.offset[1] + lod.scale[1] * geometry.y[i]
       if (mx < bbox[0] || mx > bbox[2] || my < bbox[1] || my > bbox[3]) continue
       geometry.x[count] = geometry.x[i]
       geometry.y[count] = geometry.y[i]
       rows[count] = rows[i]
+      if (own) own[count] = own[i]
       for (const name of names) columns[name][count] = columns[name][i]
+      if (isCopy) {
+        for (const values of copied) values[keptCopies] = values[copy - 1]
+        keptCopies++
+      }
       count++
     }
     rows.length = count
     for (const name of names) columns[name].length = count
+    for (const values of copied) values.length = keptCopies
+    if (own) own = own.subarray(0, count)
     geometry = {
       ...geometry,
       length: count,
@@ -155,5 +260,16 @@ function normalizeTile(lod: Lod, data: LodRows, z: number, x: number, y: number)
       ringOffsets: geometry.ringOffsets.subarray(0, count + 1),
     }
   }
-  return { lod, z, x, y, rows, columns, geometry }
+  return {
+    lod,
+    z,
+    x,
+    y,
+    rows,
+    columns,
+    geometry,
+    buffer,
+    ...(own ? { own } : {}),
+    ...(copies ? { copies } : {}),
+  }
 }

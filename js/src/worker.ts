@@ -4,8 +4,16 @@ import { decodeProjection } from './projection.js'
 /// <reference lib="webworker" />
 import type { Transfer, WorkerRequest, WorkerResponse } from './tiles.js'
 import { coalescing, httpSource, s3Mirrors } from './range-buffer.js'
-import { openReader, SpatialReader, type TileReader } from './spatial.js'
-import { decodePreparedTile, renderDecodedTile, renderTile } from './tile.js'
+import { decodeAttributes, openReader, SpatialReader, type TileReader } from './spatial.js'
+import {
+  attributeTask,
+  decodePreparedTile,
+  filledColumns,
+  packedAttributes,
+  renderDecodedTile,
+  renderTile,
+} from './tile.js'
+import { attributeFields } from './decode.js'
 import { TilePool, geometryTransfers } from './tile-pool.js'
 import type { CpuRequest, TileReply } from './tile-protocol.js'
 
@@ -15,6 +23,7 @@ let geometryDecodes = 0,
   projectionJobs = 0
 const readers = new Map<string, Promise<TileReader>>()
 let workerCount = 2
+let sourceOptions: { connections?: number; cache?: RequestCache } = {}
 let pool: Promise<TilePool | undefined> | undefined
 let started = false
 // A bundler may emit this worker as a classic script, and only a module worker
@@ -59,7 +68,8 @@ const getReader = (url: string): Promise<TileReader> => {
   if (!reader) {
     // Batch neighbouring tile messages and directory completions across microtasks.
     // Cancelled slices are removed before this short window dispatches its ranges.
-    reader = httpSource(s3Mirrors(url)).then((file) =>
+    const cached = (sourceOptions.cache ?? 'no-store') !== 'no-store'
+    reader = httpSource(cached ? s3Mirrors(url) : [url], sourceOptions).then((file) =>
       openReader(coalescing(file, { windowMs: 1 })),
     )
     readers.set(url, reader)
@@ -76,12 +86,22 @@ scope.addEventListener('message', (event: MessageEvent<WorkerRequest | CpuReques
     zstdReady.then(() => scope.postMessage({ ready: true } satisfies TileReply))
     return
   }
-  if (request.type === 'decode' || request.type === 'encode' || request.type === 'project') {
+  if (
+    request.type === 'decode' ||
+    request.type === 'encode' ||
+    request.type === 'project' ||
+    request.type === 'attributes'
+  ) {
     try {
       if (request.type === 'project') {
         scope.postMessage({
           id: request.id,
           values: decodeProjection(request.task),
+        } satisfies TileReply)
+      } else if (request.type === 'attributes') {
+        scope.postMessage({
+          id: request.id,
+          columns: decodeAttributes(request.task),
         } satisfies TileReply)
       } else if (request.type === 'decode') {
         const tile = decodePreparedTile(request.task)
@@ -108,16 +128,19 @@ scope.addEventListener('message', (event: MessageEvent<WorkerRequest | CpuReques
       started ||
       !Number.isInteger(request.workers) ||
       request.workers < 1 ||
-      request.workers > 4
+      request.workers > 4 ||
+      (request.connections !== undefined &&
+        (!Number.isInteger(request.connections) || request.connections < 1))
     ) {
       scope.postMessage({
         id: request.id,
         ok: false,
         name: 'Error',
-        error: 'Configure 1–4 workers before opening a source',
+        error: 'Configure 1–4 workers and 1 or more connections before opening a source',
       } satisfies WorkerResponse)
     } else {
       workerCount = request.workers
+      sourceOptions = { connections: request.connections, cache: request.cache }
       scope.postMessage({ id: request.id, ok: true, configured: true } satisfies WorkerResponse)
     }
     return
@@ -181,12 +204,13 @@ scope.addEventListener('message', (event: MessageEvent<WorkerRequest | CpuReques
               signal: controller.signal,
             }
             const cpu = await getPool()
-            const properties =
-              options.properties ?? (reader.lod?.attributes ?? []).map((a) => a.name)
+            const properties = options.properties ?? packedAttributes(reader.lod)
             if (reader instanceof SpatialReader && request.z <= reader.finestZoom) {
               const source = properties.filter(
                 (name) => !reader.lod.attributes.some((a) => a.name === name),
               )
+              const wanted = properties.filter((name) => reader.columnAttributes.includes(name))
+              const lod = reader.lodForZoom(request.z)
               const key = JSON.stringify([request.config.url, request.z, request.x, request.y])
               let rendered: ArrayBuffer | undefined
               const tile = await visible.getOrLoad(
@@ -194,11 +218,13 @@ scope.addEventListener('message', (event: MessageEvent<WorkerRequest | CpuReques
                 async (sharedSignal) => {
                   // Keep shared work only while at least one tile still needs it.
                   const task = await reader.prepareTile(
-                    reader.lodForZoom(request.z),
+                    lod,
                     request.z,
                     request.x,
                     request.y,
                     sharedSignal,
+                    source,
+                    wanted,
                   )
                   geometryDecodes++
                   const settings = source.length ? undefined : { ...options, signal: undefined }
@@ -216,26 +242,68 @@ scope.addEventListener('message', (event: MessageEvent<WorkerRequest | CpuReques
               )
               if (rendered) return rendered
               const missing = source.filter((name) => !Object.hasOwn(tile.columns, name))
-              const extras = missing.length
-                ? await reader.readColumns(
-                    tile.rows,
-                    missing,
-                    controller.signal,
-                    cpu
-                      ? (task, signal) => {
-                          projectionJobs++
-                          return cpu.project(task, signal)
-                        }
-                      : undefined,
-                  )
-                : {}
+              // a style asking for a column attribute the cached tile lacks
+              // fetches that attribute's pages over the tile's own rows
+              const unfilled = wanted.filter((name) => tile.pending?.includes(name))
+              // another request for this tile may fill its last pending attribute
+              // and drop the tile's marks before this one's pages arrive
+              const own = tile.own ?? new Uint32Array(tile.rows.length)
+              const copies = tile.copies ?? {}
+              const shown = tile.shown ?? []
+              const [extras, filled] = await Promise.all<Record<string, unknown[]>>([
+                missing.length
+                  ? reader.readColumns(
+                      tile.rows,
+                      missing,
+                      controller.signal,
+                      cpu
+                        ? (task, signal) => {
+                            projectionJobs++
+                            return cpu.project(task, signal)
+                          }
+                        : undefined,
+                    )
+                  : {},
+                unfilled.length
+                  ? reader
+                      .prepareAttributes(
+                        lod,
+                        request.z,
+                        request.x,
+                        request.y,
+                        unfilled,
+                        controller.signal,
+                      )
+                      .then((pages) => {
+                        const task = attributeTask(
+                          tile,
+                          own,
+                          shown,
+                          attributeFields(reader.lod.attributes),
+                          pages,
+                        )
+                        return cpu
+                          ? cpu.attributes(task, controller.signal)
+                          : decodeAttributes(task)
+                      })
+                      .then((values) => filledColumns(own, copies, values))
+                  : {},
+              ])
               controller.signal.throwIfAborted()
+              Object.assign(extras, filled)
               visible.addColumns(key, tile, extras)
               // New styles never modify the cached geometry or carried columns.
               const columns = Object.fromEntries(
                 properties.map((name) => [name, extras[name] ?? tile.columns[name]]),
               )
-              const styled = { ...tile, columns }
+              const {
+                own: _own,
+                copies: _copies,
+                pending: _pending,
+                shown: _shown,
+                ...decoded
+              } = tile
+              const styled = { ...decoded, columns }
               return cpu ? cpu.render(styled, options) : renderDecodedTile(styled, options)
             }
             return renderTile(reader, request.z, request.x, request.y, options)
