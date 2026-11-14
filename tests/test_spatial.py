@@ -13,7 +13,7 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 import pytest
 import shapely
-from tiled_geoparquet import chain, drop_rate, validate
+from tiled_geoparquet import chain, drop_rate, read_overview, validate
 from tiled_geoparquet import write as build
 from tiled_geoparquet._compact import dumps, get, loads
 from tiled_geoparquet._layout import (
@@ -107,7 +107,7 @@ def test_spatial_roundtrip(tmp_path, monkeypatch, family, sparse, leaf_pages, pa
         zooms=range(10, 15),
         complete_from=13,
         thinning=thinning,
-        carry=['height', 'name'],
+        attributes=['height', 'name'],
         row_group_rows=n if sparse else 256,
         page_bytes=1024,
         page_rows=32,
@@ -122,7 +122,7 @@ def test_spatial_roundtrip(tmp_path, monkeypatch, family, sparse, leaf_pages, pa
     assert dumps(loads(footer)) == footer
     if leaf_pages == 1:
         monkeypatch.setattr(
-            importlib.import_module('tiled_geoparquet._layout'), '_ROOT_TARGET_BYTES', 800
+            importlib.import_module('tiled_geoparquet._layout'), '_ROOT_TARGET_BYTES', 900
         )
     if family == 'line':
         # Exercise the public build against the unindexed table and the
@@ -147,14 +147,17 @@ def test_spatial_roundtrip(tmp_path, monkeypatch, family, sparse, leaf_pages, pa
         assert max(top[0] for top in root['column_index']['directories']) > 1, (
             'and row directory branches'
         )
-    assert root['primary_index']['attributes'] == ['height', 'name']
+    assert set(root['primary_index']) == {'directory'}
     assert old.read_bytes() == before, 'source is immutable'
     assert validate(new, full=True)['rows'] == n
     a, b = pq.read_table(old), pq.read_table(new)
-    # Arrow equality treats NaN != NaN in the covering of empty geometries.
-    assert a.drop(['bbox']).equals(b.drop(['bbox'])), (
+    # Arrow equality treats NaN != NaN in the covering of empty geometries. The
+    # attribute columns' values lead the overview pages, which are cut anew.
+    assert a.drop(['bbox', 'lod_attributes']).equals(b.drop(['bbox', 'lod_attributes'])), (
         'all exact and overview values remain identical, in the same order'
     )
+    for zoom in range(10, 15):
+        assert read_overview(old, zoom).equals(read_overview(new, zoom)), zoom
     for coordinate in ['xmin', 'ymin', 'xmax', 'ymax']:
         np.testing.assert_array_equal(
             a['bbox'].combine_chunks().field(coordinate).to_numpy(),
@@ -176,10 +179,12 @@ def test_spatial_roundtrip(tmp_path, monkeypatch, family, sparse, leaf_pages, pa
     # selection must still work. Distant empty views must remain empty.
     cases.extend([[14, 0, 0], [14, 16383, 16383]])
     # Independent full-table reference: exact key membership plus all matching
-    # boundary copies, computed without either reader.
+    # boundary copies, computed without either reader; an own row's attributes
+    # are its source values in their declared types.
     meta = json.loads(a.schema.metadata[b'geo'])['lod_columns']
     fields = [pa.field(f['name'], pa.type_for_alias(f['type'])) for f in meta['attributes']]
     dictionaries = {f['name']: f['values'] for f in meta['attributes'] if 'values' in f}
+    source = {f.name: a.column(f.name).cast(f.type).to_pylist() for f in fields}
     decoded = {
         name: [
             Unpacker(blob, info['geometry_type'], fields, dictionaries).row() if blob else None
@@ -202,7 +207,7 @@ def test_spatial_roundtrip(tmp_path, monkeypatch, family, sparse, leaf_pages, pa
             if value is None:
                 continue
             if start <= keys[row] < start + span and value['geometry']:
-                features.append([row, value['geometry'], value['attrs']])
+                features.append([row, value['geometry'], {k: v[row] for k, v in source.items()}])
             features.extend(
                 [[v['id'], v['geometry'], v['attrs']] for v in value['spill'] if v['tile'] == tile]
             )
@@ -460,7 +465,7 @@ def test_rows_without_an_extent_stay_out_of_the_primary_directory(tmp_path, miss
         packed,
         zooms=range(10, 13),
         complete_from=12,
-        carry=['height'],
+        attributes=(),
         row_group_rows=128,
         page_rows=16,
         batch_rows=16,
@@ -493,7 +498,7 @@ def test_rows_without_an_extent_stay_out_of_the_primary_directory(tmp_path, miss
     raw = out.read_bytes()
     root = _root(raw)
     index = root['primary_index']
-    leaves = _primary_leaves(raw, index['directory'], index['attributes'])
+    leaves = _primary_leaves(raw, index['directory'])
     assert len(leaves) > 2, 'the fixture routes queries to several leaves'
     first = np.concatenate([leaf['first'] for leaf in leaves])
     assert first.max() < shapes, 'no page of rows without an extent is indexed'
@@ -525,17 +530,15 @@ def test_rows_without_an_extent_stay_out_of_the_primary_directory(tmp_path, miss
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def _primary_leaves(raw, node, attributes):
+def _primary_leaves(raw, node):
     """The decoded leaves under a primary directory node, in order."""
-    level, entries = read_primary_node(node, attributes)
+    level, entries = read_primary_node(node)
     if not level:
         return [entries]
     return [
         leaf
         for offset, length in zip(entries['offset'], entries['length'], strict=True)
-        for leaf in _primary_leaves(
-            raw, json.loads(gzip.decompress(raw[offset : offset + length])), attributes
-        )
+        for leaf in _primary_leaves(raw, json.loads(gzip.decompress(raw[offset : offset + length])))
     ]
 
 
@@ -562,7 +565,7 @@ def test_root_branches_row_directories_before_the_trees_tiles_read(tmp_path, mon
         packed,
         zooms=range(10, 13),
         complete_from=12,
-        carry=['h'],
+        attributes=(),
         row_group_rows=512,
         page_rows=16,
         batch_rows=16,
@@ -573,7 +576,7 @@ def test_root_branches_row_directories_before_the_trees_tiles_read(tmp_path, mon
     # the target leaves room for the fields added once the trees are final
     reserve = layout.BOOTSTRAP_BYTES - layout._ROOT_TARGET_BYTES
     sizes = {}
-    for target in (16256, 1000, 800, 720):
+    for target in (16256, 1000, 800, 700):
         monkeypatch.setattr(layout, '_ROOT_TARGET_BYTES', target)
         out = finalize_layout(
             packed, tmp_path / f'{target}.parquet', leaf_pages=2, log=lambda *_: None
@@ -591,7 +594,7 @@ def test_root_branches_row_directories_before_the_trees_tiles_read(tmp_path, mon
             assert max(rows) == 2 and [exact, *lods] == [1] * 4, 'a row directory branches first'
         if target == 800:
             assert min(rows) > 1 and exact == 2 and max(lods) == 1, 'then the largest other top'
-        if target == 720:
+        if target == 700:
             assert exact == 2 and min(lods) == 2, 'then every other top'
     monkeypatch.setattr(layout, '_ROOT_TARGET_BYTES', 200)
     with pytest.raises(ValueError, match='exceeds the 16 KiB bootstrap'):

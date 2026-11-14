@@ -12,8 +12,8 @@ belong at this zoom?".
 `area`, all in Web Mercator metres, so a size reads the same on screen at any
 latitude, `nv` (vertex count), `u` (a uniform in [0, 1) hashed from the
 geometry, so stable across rebuilds),
-and every carried attribute and extra column the writer was told to load.
-A returned table must keep `id`; any carried attribute column it includes
+and every attribute and extra column the writer was told to load.
+A returned table must keep `id`; any attribute column it includes
 overrides that attribute in this zoom's LOD, which is how accumulated
 values such as cluster counts reach the renderer.
 
@@ -264,7 +264,7 @@ def importance(column: str, per_tile: int = 1000, descending: bool = True) -> Th
 def cluster(pixels: float = 8.0, count: str = 'count') -> Thin:
     """Collapse the rows in each `pixels`-wide grid cell into one
     representative, the cell's first row in Hilbert order, carrying their
-    total in attribute `count`, which must be a carried attribute; an
+    total in attribute `count`, which must be one of the file's attributes; an
     existing `count` column is summed, so a pre-aggregated source keeps its
     totals."""
 

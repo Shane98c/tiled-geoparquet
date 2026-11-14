@@ -6,7 +6,7 @@ beside them are re-encoded with zstd at tile boundaries; every other column
 chunk is copied verbatim. A directory of boxed runs of rows locates the
 primary geometry's own pages, a directory per flat column locates its pages
 by row, and fixed-size slots after each group of directory leaves hold the
-leaves listing the pages of column attributes.
+leaves listing the pages of the attributes.
 Readers unaware of the directories follow the relocated standard footer.
 """
 
@@ -36,7 +36,7 @@ from .spill import ranges
 from .unpack import PageBounds, leading_rows, leads, moved, shown_rows
 from .writer import DEFAULT_WORKERS
 
-VERSION = 8
+VERSION = 9
 BOOTSTRAP_BYTES = 16384
 # reserve room for file_bytes, footer_bytes and the header
 _ROOT_TARGET_BYTES = BOOTSTRAP_BYTES - 128
@@ -418,7 +418,7 @@ def read_attribute_leaf(node):
 
 def attribute_slot(raw, size, attribute, leaf):
     """An attribute slot of `size` bytes holding the gzip attribute leaf
-    `raw`: its length, the position of its column attribute, the byte offset
+    `raw`: its length, the position of its attribute, the byte offset
     of the directory leaf it is beside, the leaf, then zeros."""
     return (
         struct.pack('<IIQ', len(raw), attribute, leaf) + raw + bytes(size - SLOT_HEADER - len(raw))
@@ -426,7 +426,7 @@ def attribute_slot(raw, size, attribute, leaf):
 
 
 def slot_place(group, attribute, size):
-    """The byte offset of the slot of the column attribute at position
+    """The byte offset of the slot of the attribute at position
     `attribute` beside a leaf, from the leaf's `group`: the end of its
     level-one node's last leaf, that node's leaves and the leaf's position
     among them."""
@@ -436,13 +436,13 @@ def slot_place(group, attribute, size):
 
 def read_attribute_slot(raw, attribute, leaf):
     """The attribute leaf an attribute slot's bytes hold, decoded, for the
-    slot of the column attribute at position `attribute` beside the
+    slot of the attribute at position `attribute` beside the
     directory leaf at byte `leaf`."""
     length = int.from_bytes(raw[:4], 'little') if len(raw) >= SLOT_HEADER else 0
     if not 0 < length <= len(raw) - SLOT_HEADER:
         raise ValueError("an attribute slot's length overruns its slot")
     if int.from_bytes(raw[4:8], 'little') != attribute:
-        raise ValueError('an attribute slot holds another column attribute')
+        raise ValueError('an attribute slot holds another attribute')
     if int.from_bytes(raw[8:SLOT_HEADER], 'little') != leaf:
         raise ValueError('an attribute slot is beside another leaf')
     if any(raw[SLOT_HEADER + length :]):
@@ -566,20 +566,15 @@ def pages_over(pages, first, end):
     return np.flatnonzero(np.cumsum(marks)[:-1] > 0)
 
 
-def primary_leaf(entries, sources):
+def primary_leaf(entries):
     """A primary directory leaf over `entries`, runs of rows each within one
     geometry page in row order: their boxes as `_box_columns` stores them,
     their pages' byte ranges, each page's after the previous entry's page's
-    end and of length 0 when it is that page, their first rows after the
-    previous entry's end row and their rows, then, for each source column's
-    pages in `sources`, those over the entries' rows."""
+    end and of length 0 when it is that page, then their first rows after the
+    previous entry's end row and their rows."""
     offset, length, first, count = (np.asarray(entries[k], np.int64) for k in SOURCE_FIELDS)
     again = np.r_[False, offset[1:] == offset[:-1]]
     previous = np.r_[0, offset + length][: len(offset)]
-    located = []
-    for pages in sources:
-        over = pages_over(pages, first, first + count)
-        located.append(_source_columns(*(pages[k][over] for k in SOURCE_FIELDS)))
     return [
         0,
         *_box_columns(*(entries[k] for k in BOX_FIELDS)),
@@ -587,7 +582,6 @@ def primary_leaf(entries, sources):
         np.where(again, 0, length).tolist(),
         (first - np.r_[0, first + count][: len(first)]).tolist(),
         count.tolist(),
-        located,
     ]
 
 
@@ -603,15 +597,14 @@ def _box_columns(x0, y0, x1, y1):
     ]
 
 
-def read_primary_node(node, columns):
+def read_primary_node(node):
     """A primary directory node's level and entries as arrays: above the
     leaves, nodes as `read_node` reads them; in a leaf, runs of rows with
     boxes `x0, y0, x1, y1` in cells, their pages' byte offsets and lengths,
-    first rows and rows, plus, under `sources`, each of the `columns` source
-    columns' pages over the leaf's rows. Entries are in row order."""
+    first rows and rows. Entries are in row order."""
     if isinstance(node, list) and node and node[0] != 0:
         return read_node(node)
-    if not isinstance(node, list) or len(node) != 10 or type(node[0]) is not int:
+    if not isinstance(node, list) or len(node) != 9 or type(node[0]) is not int:
         raise ValueError('malformed primary directory leaf')
     west, south, width, height, gaps, length, rows, count = (_column(v) for v in node[1:9])
     if len({len(v) for v in (west, south, width, height, gaps, length, rows, count)}) != 1:
@@ -641,12 +634,6 @@ def read_primary_node(node, columns):
         'first': np.cumsum(rows + count) - count,
         'count': count,
     }
-    sources = node[9]
-    if not isinstance(sources, list) or len(sources) != len(columns):
-        raise ValueError('primary directory leaf disagrees with its columns')
-    if not all(isinstance(r, list) and len(r) == 4 for r in sources):
-        raise ValueError('malformed source pages')
-    entries['sources'] = [_read_sources(r) for r in sources]
     return 0, entries
 
 
@@ -803,7 +790,7 @@ def _page_bounds(path):
 
 def _leaf_type(parquet, leaf):
     """The Arrow type of the dotted leaf path `leaf`."""
-    parts = leaf.split('.')
+    parts = leaf.split('.', 2)
     field = parquet.schema_arrow.field(parts[0])
     for part in parts[1:]:
         field = field.type.field(part)
@@ -824,8 +811,8 @@ def attribute_cuts(present, bounds):
 def _nested(values, schema, leaf):
     """A table of `schema`, whose one column nests the dotted path `leaf`,
     holding `values` there."""
-    fields = [schema.field(leaf.split('.')[0])]
-    for part in leaf.split('.')[1:]:
+    fields = [schema.field(leaf.split('.', 2)[0])]
+    for part in leaf.split('.', 2)[1:]:
         fields.append(fields[-1].type.field(part))
     for field in reversed(fields[1:]):
         values = pa.StructArray.from_arrays([values], fields=[field])
@@ -865,7 +852,7 @@ def _attribute_pages(parquet, group, leaf, bounds, path, compression_level, held
     value_type = _leaf_type(parquet, leaf)
     fixed = pa.types.is_floating(value_type) or pa.types.is_integer(value_type)
     values = table.column(0).combine_chunks()
-    for part in leaf.split('.')[1:]:
+    for part in leaf.split('.', 2)[1:]:
         values = values.field(part)
     valid = values.is_valid().to_numpy(zero_copy_only=False)
     if valid.sum() != valid[held].sum():
@@ -928,7 +915,7 @@ def _tile_pages(
     `key_file`, and a key without its low `shift` bits is its tile. Pages are
     v1 data pages of PLAIN values without a dictionary, as the profile
     requires, so every page is independently decodable. Consecutive all-null
-    tiles share a run; they carry no overview payload. The LOD's attribute
+    tiles share a run; they hold no overview payload. The LOD's attribute
     columns, the dotted leaf paths `attributes`, are encoded beside it with
     the same page bounds but for runs of pages without a value, their values
     leading each page; `led` is the path of `parquet` when its attribute
@@ -1096,13 +1083,13 @@ def _append_page_chunks(path, target, statistics=None):
     return combined, {1: (9, (12, pages))}, joined
 
 
-def _without_columns(root):
-    """`root` as the same file without column attributes would have it: no
-    column attribute in its LOD metadata, and no attribute codec or attribute
-    slot sizes."""
+def _without_attributes(root):
+    """`root` as the same file without attributes would have it: no
+    attribute in its LOD metadata, and no attribute codec or attribute slot
+    sizes."""
     lean = {k: v for k, v in root.items() if k not in ('attribute_codec', 'attribute_slots')}
     lod = {k: v for k, v in root['lod'].items() if k != 'attribute_columns'}
-    lod['attributes'] = [a for a in lod['attributes'] if a.get('storage') != 'column']
+    lod['attributes'] = []
     lean['lod'] = lod
     return lean
 
@@ -1119,9 +1106,8 @@ def fit_root(target, root, trees, names, indexed, branched=()):
     and the LOD and primary trees only once no row directory can. The trees
     of `branched` take a level of branches before any other.
 
-    The trees first fit the root without column attributes, so they branch as
-    in the same file without them, and then with the column attributes'
-    metadata."""
+    The trees first fit the root without attributes, so they branch as in
+    the same file without them, and then with the attributes' metadata."""
 
     def place():
         tops = {name: _node(level, **shards) for name, (level, shards) in trees.items()}
@@ -1143,7 +1129,7 @@ def fit_root(target, root, trees, names, indexed, branched=()):
             trees[name] = _branches(target, *trees[name])
     tops = place()
     rows = [('column', n) for n in indexed]
-    for fitted in (_without_columns, lambda root: root):
+    for fitted in (_without_attributes, lambda root: root):
         while len(_json(fitted(root))) > _ROOT_TARGET_BYTES:
             if not branch(tops, rows) and not branch(tops, list(trees)):
                 raise ValueError('LOD metadata exceeds the 16 KiB bootstrap')
@@ -1166,7 +1152,7 @@ class _Tally:
 def _write_leaves(target, leaves, beside, size, grouped):
     """Write the gzip `leaves` of a tree to `target`, each level-one node's
     back to back, BRANCH_ENTRIES of them when `grouped` and otherwise all,
-    each group followed by its slot block: per column attribute, the slot of
+    each group followed by its slot block: per attribute, the slot of
     `size` bytes holding the gzip attribute leaf in each leaf's entry of the
     list `beside`, in leaf order. Returns the leaves' offsets and lengths."""
     offset, length = [], []
@@ -1225,8 +1211,8 @@ def finalize_layout(
     PARALLEL_LOD_BYTES of LOD values. Working memory is bounded by one row
     group of one LOD column in each encoding process plus the file's page
     directory and indexes; keys are staged in a disk mmap. Encrypted/external
-    chunks and bloom filters are unsupported, and so are column attributes
-    without attribute columns at every LOD.
+    chunks and bloom filters are unsupported, and so are attributes without
+    attribute columns at every LOD.
     """
     src, out = Path(src), Path(out)
     if src.resolve() == out.resolve():
@@ -1264,11 +1250,11 @@ def finalize_layout(
                     bounds[i] = min(bounds[i], value) if i < 2 else max(bounds[i], value)
     root['bounds'] = bounds if bounds[0] <= bounds[2] else [-180, -85.051129, 180, 85.051129]
     names = list(lod['lods'])
-    column_names = [a['name'] for a in lod['attributes'] if a.get('storage') == 'column']
+    column_names = [a['name'] for a in lod['attributes']]
     attribute_column = (lod.get('attribute_columns') or {}).get('column')
     column_lods = list((lod.get('attribute_columns') or {}).get('lods', []))
     if column_names and column_lods != names:
-        raise ValueError('the spatial index needs every LOD to hold the column attributes')
+        raise ValueError('the spatial index needs every LOD to hold the attributes')
     with src.open('rb') as original:
         if original.read(4) != b'PAR1':
             raise ValueError('not an unencrypted Parquet file')
@@ -1297,9 +1283,8 @@ def finalize_layout(
                 if 14 in cm or 10 in cm:
                     raise ValueError('bloom filters and legacy index pages are unsupported')
         # Row directories locate the pages of the flat columns that decode on
-        # their own; the primary directory, those of the primary geometry and of
-        # the packed attributes among them, and the attribute slots beside the
-        # directory leaves those of the column attributes.
+        # their own; the primary directory, those of the primary geometry; and
+        # the attribute slots beside the directory leaves those of the attributes.
         flat_chunks = flat_columns(metadata)
         if primary not in flat_chunks or get(flat_chunks[primary][0], 1) != 6:
             raise ValueError('the primary geometry must be a flat binary column')
@@ -1320,20 +1305,15 @@ def finalize_layout(
         if len(codecs(primary)) != 1:
             raise ValueError('the primary geometry codec must agree across row groups')
         indexed = [name for name in flat_chunks if standalone(name) and len(codecs(name)) == 1]
-        attributes = [
-            a['name']
-            for a in lod['attributes']
-            if a['name'] in indexed and a['name'] != primary and a.get('storage') != 'column'
-        ]
         tracked = {flat_chunks[name][1]: name for name in indexed}
         root['column_index'] = {
             'columns': indexed,
             'codecs': [CODECS[next(iter(codecs(name)))] for name in indexed],
             'schema': column_schema(metadata, indexed),
         }
-        root['primary_index'] = {'attributes': attributes}
+        root['primary_index'] = {}
         if any(name not in indexed for name in column_names):
-            raise ValueError('a column attribute needs a flat source column of its name')
+            raise ValueError('an attribute needs a flat source column of its name')
         with tempfile.TemporaryDirectory(prefix='.lod-layout-', dir=out.parent) as work:
             work = Path(work)
             total_rows = parquet.metadata.num_rows
@@ -1413,7 +1393,9 @@ def finalize_layout(
                             local_keys = keys[starts[g] : starts[g] + group_rows]
                             path, present, encoded_attributes = next(encoded)
                             for leaf, encoded_attribute in encoded_attributes.items():
-                                attribute_files[(name, leaf.split('.')[2], g)] = encoded_attribute
+                                attribute_files[(name, leaf.split('.', 2)[2], g)] = (
+                                    encoded_attribute
+                                )
                             cm, index, _ = _append_page_chunks(path, target)
                             set_value(chunk, 3, cm)
                             chunk.pop(6, None)
@@ -1538,10 +1520,6 @@ def finalize_layout(
                     zoom,
                     leaf_pages,
                 )
-                sources = [
-                    {k: np.concatenate([part[k] for part in runs[name]]) for k in SOURCE_FIELDS}
-                    for name in attributes
-                ]
                 columnar = [
                     {k: np.concatenate([part[k] for part in runs[a]]) for k in SOURCE_FIELDS}
                     for a in column_names
@@ -1550,10 +1528,7 @@ def finalize_layout(
                 slotted[None] = (
                     first_cells,
                     np.r_[first_cells[1:], 4**zoom] - 1,
-                    [
-                        _json(primary_leaf({k: v[m] for k, v in entries.items()}, sources))
-                        for m in members
-                    ],
+                    [_json(primary_leaf({k: v[m] for k, v in entries.items()})) for m in members],
                     [
                         [
                             _json(

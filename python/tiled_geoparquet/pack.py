@@ -1,25 +1,25 @@
 """One packed blob per row per LOD.
 
 A row's LOD value is a byte string a tile reads in one run: its geometry on
-the LOD's grid, its carried attributes, and on a host row the straddler
-copies it carries. Everything is an unsigned LEB128 varint except string
+the LOD's grid and, on a host row, the straddler copies it hosts with
+their attributes. Everything is an unsigned LEB128 varint except string
 bytes, which follow all of a row's varints in order, so a reader walks the
 varints knowing the structure and then takes string payloads in turn.
 
-    row     := varints(own) varints(attrs) varints(spill) strings...
+    row     := varints(own) varints(spill) strings...
     own     := polygons: n, per polygon: rings, per ring: vertices, then
                zigzag(dx) zigzag(dy) per vertex, deltas within the ring and
                the first vertex from the origin; a ring's closing vertex,
                which repeats its first, is not stored
                lines: n parts, per part: vertices, deltas
                point: zigzag(x) zigzag(y)
+    spill   := count, per copy: tile (zoom << 48 | x * 2^zoom + y), file row
+               index, own, attrs
     attrs   := presence bitmap (one varint, bit i for attribute i), then each
                present value: integers zigzag, float16, float32 and float64 as
                their bit patterns, bool 0/1, string as its byte length, or for
                a string attribute with a `values` table in the metadata the
                value's index in that table
-    spill   := count, per copy: tile (zoom << 48 | x * 2^zoom + y), file row
-               index, own, attrs
 
 A row shown only to host copies has zero polygons. Empty geometry is
 otherwise never written.
@@ -149,12 +149,21 @@ def _point_values(x: np.ndarray, y: np.ndarray):
     return out, np.full(len(x), 2, np.int64)
 
 
-def cast_carried(array: pa.Array, field: pa.Field) -> pa.Array:
-    """`array` as the type carried attribute `field` declares. A finite number
-    too large for a float type, which casting would make infinite, is refused."""
+def cast_attribute(array: pa.Array, field: pa.Field) -> pa.Array:
+    """`array` as the type attribute `field` declares. A finite number
+    too large for a float type, which casting would make infinite, is
+    refused, and so is a uint64 past the int64 maximum, which a copy cannot
+    pack, whether or not its row has copies."""
+    out = array if array.type == field.type else array.cast(field.type)
+    if pa.types.is_uint64(field.type):
+        v = out.fill_null(0).to_numpy(zero_copy_only=False)
+        if (big := v > INT64_MAX).any():
+            raise ValueError(
+                f'cannot keep {field.name} value {v[big][0]}: a uint64 attribute is at most '
+                f'{INT64_MAX}, as copies pack it as int64'
+            )
     if array.type == field.type:
-        return array
-    out = array.cast(field.type)
+        return out
     numeric = pa.types.is_integer(array.type) or pa.types.is_floating(array.type)
     if pa.types.is_floating(field.type) and numeric:
         cast = out.to_numpy(zero_copy_only=False)
@@ -162,8 +171,8 @@ def cast_carried(array: pa.Array, field: pa.Field) -> pa.Array:
         lost = np.flatnonzero(finite & ~np.isfinite(cast))
         if len(lost):
             raise ValueError(
-                f'cannot pack {field.name} value {array[int(lost[0])].as_py()}: a carried '
-                f'{field.type} is at most {float(np.finfo(cast.dtype).max):g} in magnitude'
+                f'cannot keep {field.name} value {array[int(lost[0])].as_py()}: a '
+                f'{field.type} attribute is at most {float(np.finfo(cast.dtype).max):g} in magnitude'
             )
     return out
 
@@ -176,7 +185,7 @@ def _attr_values(fields: list[pa.Field], arrays: dict[str, pa.Array], n: int, di
     str_len = np.zeros(n, np.int64)
     str_chunks: list[np.ndarray] = []
     for i, f in enumerate(fields):
-        arr = cast_carried(arrays[f.name], f)
+        arr = cast_attribute(arrays[f.name], f)
         valid = arr.is_valid().to_numpy(zero_copy_only=False)
         present |= valid.astype(np.uint64) << np.uint64(i)
         t = f.type
@@ -192,13 +201,7 @@ def _attr_values(fields: list[pa.Field], arrays: dict[str, pa.Array], n: int, di
                 )
             vals = codes.fill_null(0).to_numpy(zero_copy_only=False).astype(np.uint64)
         elif pa.types.is_integer(t):
-            v = arr.fill_null(0).to_numpy(zero_copy_only=False)
-            if pa.types.is_uint64(t) and (big := v > INT64_MAX).any():
-                raise ValueError(
-                    f'cannot pack {f.name} value {v[big][0]}: carried integers are packed as '
-                    f'int64, at most {INT64_MAX}'
-                )
-            vals = zigzag(v)
+            vals = zigzag(arr.fill_null(0).to_numpy(zero_copy_only=False))
         elif pa.types.is_floating(t):
             bits = {16: np.uint16, 32: np.uint32, 64: np.uint64}[t.bit_width]
             vals = arr.to_numpy(zero_copy_only=False).view(bits).astype(np.uint64)
@@ -239,20 +242,19 @@ def pack(
     family: str,
     parts,
     fields: list[pa.Field],
-    attrs: dict[str, pa.Array],
     spill=None,
     dictionaries: dict[str, list] | None = None,
 ) -> pa.Array:
     """Packed blobs for one batch: `parts` the rows' geometry (ragged arrays
-    for shapes, (x, y) for points), `attrs` the carried attribute arrays, and
-    `spill` optionally (counts per row, tile, id, parts, attrs) for the copies
-    hosted here, entries in row order. Returns a non-null binary array; the
-    caller masks rows not shown."""
+    for shapes, (x, y) for points), and `spill` optionally (counts per row,
+    tile, id, parts, attrs) for the copies hosted here, entries in row order,
+    `attrs` the copies' arrays of the attributes `fields`. Returns a non-null
+    binary array; the caller masks rows not shown."""
     depth = FAMILY_DEPTH[family]
     n = len(parts[0]) if family == 'Point' else len(parts[0]) - 1
     own, own_len = _point_values(*parts) if family == 'Point' else _segment_values(parts, depth)
-    av, a_len, s_len, strings = _attr_values(fields, attrs, n, dictionaries)
-    blocks = [(own, own_len), (av, a_len)]
+    blocks = [(own, own_len)]
+    s_len, strings = np.zeros(n, np.int64), np.zeros(0, np.uint8)
     if spill is None:
         blocks.append((np.zeros(n, np.uint64), np.ones(n, np.int64)))
     else:
@@ -280,7 +282,8 @@ def pack(
         _scatter(sp, entry_dest, ev, e_len)
         blocks.append((sp, sp_len))
         if len(sstrings):
-            strings, s_len = _merge_strings(strings, s_len, sstrings, ss_len, row_entry_start)
+            s_len = _group_sum(ss_len, row_entry_start)
+            strings = sstrings
     # concatenate blocks per row
     row_len = sum(b[1] for b in blocks)
     row_start = np.concatenate([[0], np.cumsum(row_len)])
@@ -294,7 +297,7 @@ def pack(
     out_off = np.concatenate([[0], np.cumsum(v_len + s_len)])
     out = vb
     if len(strings):
-        # each row's varints, then its string bytes
+        # each row's varints, then its copies' string bytes
         is_string = np.repeat(np.tile([False, True], n), np.stack([v_len, s_len], 1).ravel())
         out = np.empty(len(is_string), np.uint8)
         out[~is_string] = vb
@@ -314,14 +317,3 @@ def _scatter(dest: np.ndarray, dest_start: np.ndarray, src: np.ndarray, lens: np
         total
     )
     dest[idx] = src[:total]
-
-
-def _merge_strings(own, own_len, copies, copy_len, row_entry_start):
-    """Each row's string bytes, its own then its hosted copies' in order, and their lengths."""
-    total = own_len + _group_sum(copy_len, row_entry_start)
-    out_off = np.concatenate([[0], np.cumsum(total)])
-    out = np.empty(int(out_off[-1]), np.uint8)
-    _scatter(out, out_off[:-1], own, own_len)
-    dest = np.repeat(out_off[:-1] + own_len, np.diff(row_entry_start))
-    _scatter(out, dest + _within(copy_len, row_entry_start), copies, copy_len)
-    return out, total

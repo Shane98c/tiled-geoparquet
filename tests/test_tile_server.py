@@ -19,8 +19,8 @@ ZOOMS = list(range(5, 13))
 
 @pytest.fixture(scope='module')
 def files(tmp_path_factory):
-    """Buildings near Denver as plain GeoParquet, and written with LODs that
-    carry a number and a string."""
+    """Buildings near Denver as plain GeoParquet, and written with LODs and a
+    number and a string as attributes."""
     tmp = tmp_path_factory.mktemp('tile_server')
     rng = np.random.default_rng(11)
     n = 3000
@@ -47,7 +47,7 @@ def files(tmp_path_factory):
         plain,
         tmp / 'buildings.lod.parquet',
         zooms=ZOOMS,
-        carry=['risk', 'zone'],
+        attributes=['risk', 'zone'],
         workers=1,
         log=lambda *_: None,
     )

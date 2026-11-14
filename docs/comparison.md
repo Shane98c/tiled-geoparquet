@@ -55,7 +55,7 @@ something next to the feature counts.
 - This layout's thinning budgets were calibrated against PMTiles feature
   counts at z8, z11 and z12, as the [Japan evaluation](japan-evaluation.md)
   describes, so the two agree within a few percent where both serve native
-  tiles; this layout's counts run lower because its tiles carry boundary
+  tiles; this layout's counts run lower because its tiles hold boundary
   copies only within two pixels of the edge. It transfers fewer bytes from z11
   up; the remaining byte difference at z8 comes from page layout and geometry
   encoding, not from showing more buildings.
@@ -66,13 +66,13 @@ do not establish whole-session or cross-device parity.
 
 ## What each format stores
 
-| Format           | Row layout                                      | Which rows at coarse zooms                                         | How a tile is found                                           | Overview geometry                                                                           |
-| ---------------- | ----------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| Tiled GeoParquet | One Hilbert order; every feature once           | Per-zoom thinning, need not nest; recorded in nullable LOD columns | Spatial directory in the first 16 KiB over tile-aligned pages | Packed varint rows on a quantized grid per LOD, with carried attributes and boundary copies |
-| COGP             | Coarse-to-fine row-group prefixes; feature once | Cumulative: a level adds row groups                                | Row-group prefix, then bbox statistics and page index         | Optional `quantized_geoarrow` nested int32 column                                           |
-| Esri SOP         | XZ-code clustering; feature once                | All features at every level                                        | Page index predicate skipping on the cluster code             | Per-level protobuf columns, Douglas-Peucker simplified                                      |
-| tylertoo         | `level` column with simplified WKB rows         | Per-level selection, written once per level in duplicating mode    | Level column and bbox                                         | WKB                                                                                         |
-| PMTiles          | Pre-cut MVT tiles                               | tippecanoe's per-zoom dropping                                     | Directory lookup                                              | Gzipped MVT per tile: integer coordinates on a 4096 grid, simplified and clipped per zoom   |
+| Format           | Row layout                                      | Which rows at coarse zooms                                         | How a tile is found                                           | Overview geometry                                                                               |
+| ---------------- | ----------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Tiled GeoParquet | One Hilbert order; every feature once           | Per-zoom thinning, need not nest; recorded in nullable LOD columns | Spatial directory in the first 16 KiB over tile-aligned pages | Packed varint rows on a quantized grid per LOD, with boundary copies; attribute columns per LOD |
+| COGP             | Coarse-to-fine row-group prefixes; feature once | Cumulative: a level adds row groups                                | Row-group prefix, then bbox statistics and page index         | Optional `quantized_geoarrow` nested int32 column                                               |
+| Esri SOP         | XZ-code clustering; feature once                | All features at every level                                        | Page index predicate skipping on the cluster code             | Per-level protobuf columns, Douglas-Peucker simplified                                          |
+| tylertoo         | `level` column with simplified WKB rows         | Per-level selection, written once per level in duplicating mode    | Level column and bbox                                         | WKB                                                                                             |
+| PMTiles          | Pre-cut MVT tiles                               | tippecanoe's per-zoom dropping                                     | Directory lookup                                              | Gzipped MVT per tile: integer coordinates on a 4096 grid, simplified and clipped per zoom       |
 
 The [specification](../spec/SPEC.md#relation-to-other-proposals) discusses the
 design differences and where this layout could fold into those proposals.

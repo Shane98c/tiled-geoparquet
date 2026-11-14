@@ -54,7 +54,7 @@ def packable(parts):
     within[ring[1:-1] - 1] = False
     assert moves[within].all()
     assert shapely.is_valid(polygons(parts)).all()
-    assert len(pack('MultiPolygon', parts, [], {})) == len(geom) - 1
+    assert len(pack('MultiPolygon', parts, [])) == len(geom) - 1
     return True
 
 
@@ -82,7 +82,7 @@ def line_rows(parts):
     assert np.array_equal(part, np.arange(len(part)))
     xy = list(zip((x - AT).tolist(), (y - AT).tolist(), strict=True))
     assert (np.diff(ring) >= 2).all()
-    assert len(pack('MultiLineString', parts, [], {})) == len(geom) - 1
+    assert len(pack('MultiLineString', parts, [])) == len(geom) - 1
     return [
         [xy[ring[r] : ring[r + 1]] for r in range(geom[i], geom[i + 1])]
         for i in range(len(geom) - 1)

@@ -743,7 +743,7 @@ function propertyValue(value: unknown): PropertyValue {
     return { field: Math.fround(value) === value ? 2 : 3, value }
   }
   // a bigint a number holds exactly is encoded as that number, so a value has
-  // one type whether it comes from a carried attribute or a source column
+  // one type whether it comes from an attribute or a source column
   if (
     typeof value === 'bigint' &&
     value >= BigInt(Number.MIN_SAFE_INTEGER) &&

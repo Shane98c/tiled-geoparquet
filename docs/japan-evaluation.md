@@ -9,7 +9,7 @@ GeoParquet tools.
 ## Construction
 
 The overview policy applies `drop_smallest` followed by `tiny_polygons`, with
-height and class carried for styling. It uses one Hilbert order, full detail
+height and class kept for styling. It uses one Hilbert order, full detail
 from z14 in one LOD serving z14 and z15, 16 KiB staging pages and 64 KiB final
 overview pages. Past z15 the reader draws the primary geometry; the hosted
 demo's source has `maxzoom` 15, so MapLibre overzooms z15 there. The indexed

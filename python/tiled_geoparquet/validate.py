@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 import shapely
 
@@ -18,19 +19,18 @@ from .encoding import (
     INT32,
     MAX_ATTRIBUTES,
     PACK_VERSION,
-    STORAGES,
     column_type,
-    is_carried_type,
+    is_attribute_type,
     is_compatible_version,
     source_compatible,
 )
-from .pack import FAMILY_DEPTH
+from .pack import FAMILY_DEPTH, INT64_MAX
 from .spill import MAX_MARGIN_PIXELS
 from .unpack import (
     PageBounds,
     Unpacked,
     UnpackError,
-    carried,
+    attribute_fields,
     leading_rows,
     leads,
     lod_values,
@@ -83,7 +83,7 @@ def validate(path: str | Path, sample_rows: int = 2000, *, full: bool = False) -
             f'margin {margin!r} is not a number of pixels from 0 to {MAX_MARGIN_PIXELS}'
         )
     if md.num_row_groups == 0 or md.num_rows == 0:
-        raise ValidationError('empty file: an empty dataset carries no overviews')
+        raise ValidationError('empty file: an empty dataset has no overviews')
     column = lod.get('column', 'lod')
     names = f.schema_arrow.names
     if column not in names:
@@ -144,6 +144,10 @@ def validate(path: str | Path, sample_rows: int = 2000, *, full: bool = False) -
             raise ValidationError(f'lod {name}: placeholder must be a positive width in grid cells')
     _check_attributes(lod.get('attributes', []))
     columns = _check_attribute_columns(f.schema_arrow, lod)
+    paths = [f.schema.column(i).path for i in range(len(f.schema))]
+    shared = sorted(path for path in set(paths) if paths.count(path) > 1)
+    if shared:
+        raise ValidationError(f'two columns share the path {shared[0]}')
 
     # statistics on the covering and page indexes on every column, in every row group
     for g in range(md.num_row_groups):
@@ -159,17 +163,28 @@ def validate(path: str | Path, sample_rows: int = 2000, *, full: bool = False) -
                 raise ValidationError(f'row group {g}: {c.path_in_schema} has no offset index')
     _check_coverings(f, geometry, 0, sample_rows)
     # every LOD's packed rows: non-empty parts, rings of three or more vertices, valid copies;
-    # own rows leave column attributes to the attribute columns, which hold values only for
-    # the rows their LOD shows
-    fields, dictionaries = carried(lod)
+    # the attribute columns hold values only for the rows their LOD shows
+    fields, dictionaries = attribute_fields(lod)
     column_lods = (lod.get('attribute_columns') or {}).get('lods', [])
     pages = PageBounds(path) if column_lods and leads(f) else None
     checked = dict.fromkeys(lods, 0)
     groups = range(md.num_row_groups) if full else range(1)
+    wide = [a['name'] for a in lod.get('attributes', []) if a['type'] == 'uint64']
     for group in groups:
         if full:
             _check_key_covering(f, group, key_column)
             _check_coverings(f, geometry, group)
+        # an LOD without an attribute column of its own shows the source column's values
+        for name in wide:
+            values = f.read_row_group(group, columns=[name]).column(0).combine_chunks()
+            if not full:
+                values = values.slice(0, sample_rows)
+            past = pc.greater(values, pa.scalar(int(INT64_MAX), pa.uint64())).fill_null(False)
+            rows = np.flatnonzero(past.to_numpy(zero_copy_only=False))
+            if len(rows):
+                raise ValidationError(
+                    f'row group {group}, row {rows[0]}: {name} holds a uint64 past 2^63 - 1'
+                )
         for name, child in lods.items():
             values = lod_values(f, group, column, name)
             if not full:
@@ -177,7 +192,7 @@ def validate(path: str | Path, sample_rows: int = 2000, *, full: bool = False) -
             shown = np.zeros(len(values), bool)
             try:
                 for decoded in unpack_batches(values, child['geometry_type'], fields, dictionaries):
-                    problem = _check_records(decoded, child, md.num_rows, columns)
+                    problem = _check_records(decoded, child, md.num_rows)
                     if problem:
                         record, message = problem
                         raise ValidationError(
@@ -214,21 +229,20 @@ def _shown(u: Unpacked, child: dict) -> np.ndarray:
 
 
 def _check_attribute_columns(schema: pa.Schema, lod: dict) -> list[str]:
-    """Raise unless `attribute_columns` names, exactly when some attribute is
-    stored as a column, a struct of one required struct per listed LOD, each
-    holding a nullable column per column attribute in metadata order, of the
-    type its storage takes, and every column attribute's source column is a
-    flat column whose type the reader can take its values from. Returns the
-    column attributes' names."""
-    attributes = lod.get('attributes', [])
-    columns = [a for a in attributes if a.get('storage') == 'column']
+    """Raise unless `attribute_columns` names, exactly when there are
+    attributes, a struct of one required struct per listed LOD, each holding
+    a nullable column per attribute in metadata order, of the type
+    `column_type` gives it, and every attribute's source column is a flat
+    column whose type the reader can take its values from. Returns the
+    attributes' names."""
+    columns = lod.get('attributes', [])
     spec = lod.get('attribute_columns')
     if not columns:
         if spec is not None:
-            raise ValidationError('attribute_columns without a column attribute')
+            raise ValidationError('attribute_columns without an attribute')
         return []
     if not isinstance(spec, dict) or not isinstance(spec.get('column'), str):
-        raise ValidationError('column attributes need attribute_columns naming their column')
+        raise ValidationError('attributes need attribute_columns naming their column')
     listed = spec.get('lods')
     lods = list(lod.get('lods') or {})
     if (
@@ -255,7 +269,7 @@ def _check_attribute_columns(schema: pa.Schema, lod: dict) -> list[str]:
                 raise ValidationError(f'{name}.{child.name} must be a required struct')
             if [f.name for f in child.type] != [a['name'] for a in columns]:
                 raise ValidationError(
-                    f'{name}.{child.name} must hold the column attributes in metadata order'
+                    f'{name}.{child.name} must hold the attributes in metadata order'
                 )
             for a, field in zip(columns, child.type, strict=True):
                 expected = column_type(a)
@@ -265,13 +279,13 @@ def _check_attribute_columns(schema: pa.Schema, lod: dict) -> list[str]:
                     )
     for a in columns:
         if a['name'] not in schema.names:
-            raise ValidationError(f'column attribute {a["name"]} has no source column')
+            raise ValidationError(f'attribute {a["name"]} has no source column')
         source = schema.field(a['name']).type
         if pa.types.is_nested(source) or not source_compatible(
             source, pa.type_for_alias(a['type'])
         ):
             raise ValidationError(
-                f'column attribute {a["name"]}: source column of type {source} cannot give '
+                f'attribute {a["name"]}: source column of type {source} cannot give '
                 f'{a["type"]} values'
             )
     return [a['name'] for a in columns]
@@ -294,7 +308,7 @@ def _check_column_values(parquet, group, lod, name, columns, shown, bounds=None)
     for a in (a for a in lod['attributes'] if a['name'] in columns):
         path = f'{spec["column"]}.{name}.{a["name"]}'
         values = parquet.read_row_group(group, columns=[path]).column(0).combine_chunks()
-        for part in path.split('.')[1:]:
+        for part in path.split('.', 2)[1:]:
             values = values.field(part)
         values = values.slice(0, len(shown))
         valid = values.is_valid().to_numpy(zero_copy_only=False)
@@ -311,6 +325,14 @@ def _check_column_values(parquet, group, lod, name, columns, shown, bounds=None)
                 raise ValidationError(
                     f'row group {group}, row {row}, lod {name}: {a["name"]} indexes past its '
                     'value table'
+                )
+        if pa.types.is_uint64(values.type):
+            past = pc.greater(values, pa.scalar(int(INT64_MAX), pa.uint64())).fill_null(False)
+            wide = np.flatnonzero(past.to_numpy(zero_copy_only=False))
+            if len(wide):
+                raise ValidationError(
+                    f'row group {group}, row {wide[0]}, lod {name}: {a["name"]} holds a uint64 '
+                    'past 2^63 - 1'
                 )
 
 
@@ -347,9 +369,8 @@ def _check_covering(field: pa.Field, covering, geometry: str) -> None:
 
 
 def _check_attributes(attributes) -> None:
-    """Raise unless every carried attribute has a distinct name, the Arrow
-    name of a type the packer writes, a storage, and a value table only when
-    it is a string."""
+    """Raise unless every attribute has a distinct name, the Arrow name of a
+    type an attribute can have, and a value table only when it is a string."""
     if not isinstance(attributes, list) or not all(isinstance(a, dict) for a in attributes):
         raise ValidationError('attributes must be a list of {name, type} objects')
     if len(attributes) > MAX_ATTRIBUTES:
@@ -362,14 +383,10 @@ def _check_attributes(attributes) -> None:
             t = pa.type_for_alias(kind) if isinstance(kind, str) else None
         except ValueError:
             t = None
-        if t is None or not is_carried_type(t):
+        if t is None or not is_attribute_type(t):
             raise ValidationError(
                 f'attribute {name}: type {json.dumps(kind)} is not an integer, float, bool '
                 'or string type'
-            )
-        if a.get('storage', 'packed') not in STORAGES:
-            raise ValidationError(
-                f'attribute {name}: storage {json.dumps(a.get("storage"))} is not packed or column'
             )
         values = a.get('values')
         if values is not None and (
@@ -493,13 +510,9 @@ def _check_spatial_index(path, parquet, lod):
         raise ValidationError(f'spatial index: {exc}') from exc
 
 
-def _check_records(u: Unpacked, child: dict, num_rows: int, columns=()):
-    """The first record breaking the geometry or copy rules, or an own record
-    packing a column attribute, and how, or None."""
+def _check_records(u: Unpacked, child: dict, num_rows: int):
+    """The first record breaking the geometry or copy rules, and how, or None."""
     found = []
-    for name in columns:
-        packed = np.flatnonzero(~u.copy & u.attrs[name].is_valid().to_numpy(zero_copy_only=False))
-        found += [(i, f'own row packs column attribute {name}') for i in packed[:1]]
     if child['geometry_type'] == 'Point':
         x, y = u.geometry
     else:

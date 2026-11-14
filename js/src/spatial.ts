@@ -30,9 +30,9 @@ import { MAX_LATITUDE } from './web-mercator.js'
 
 export const BOOTSTRAP_BYTES = 16384
 const MAGIC = 'LODIDX01'
-const VERSION = 8
+const VERSION = 9
 const MAX_LEVEL = 32
-/** An attribute slot's length and column attribute, each a u32
+/** An attribute slot's length and attribute, each a u32
  * little-endian, and its leaf's offset, a u64 little-endian */
 const SLOT_HEADER = 16
 /** Primary directory boxes are whole cells of 2^-12 degrees. */
@@ -47,7 +47,7 @@ type ByteRange = { offset: number; length: number }
  * level-one node's last leaf, where the node's slot block starts, that
  * node's leaves and the leaf's position among them. */
 type SlotPlace = { tree: number; leaf: number; end: number; count: number; index: number }
-/** What an attribute slot names: its column attribute's position and its
+/** What an attribute slot names: its attribute's position and its
  * leaf's offset. */
 type SlotFrame = { attribute: number; leaf: number }
 /** A node loaded or loading, read at `length` bytes, from an attribute slot
@@ -70,12 +70,9 @@ type RowSpan = { first: number; count: number }
 type Run = RowSpan & { box: Box }
 /** A geometry page cut into runs, whose rows together are the page's. */
 type PrimaryPage = SourcePage & { runs: Run[] }
-/** A primary directory leaf: geometry pages, and per indexed attribute that
- * column's pages over their rows. */
-type PrimaryLeaf = { level: 0; pages: PrimaryPage[]; sources: SourcePage[][] }
+/** A primary directory leaf: geometry pages cut into runs. */
+type PrimaryLeaf = { level: 0; pages: PrimaryPage[] }
 interface PrimaryIndex {
-  /** Carried attributes, indexed columns, whose pages each leaf locates */
-  attributes: string[]
   /** The top node of the primary directory */
   directory: unknown
 }
@@ -108,11 +105,11 @@ interface SpatialRoot {
   attribute_codec?: string
   /** Per tree, each LOD's in metadata order and then the primary
    * directory's, the size of the attribute slots of its leaves, in a file
-   * with column attributes */
+   * with attributes */
   attribute_slots?: number[]
 }
 
-/** A column attribute's pages over a tile's own rows, from the LOD's
+/** An attribute's pages over a tile's own rows, from the LOD's
  * attribute column, decoded by the declared Arrow `type`. */
 export interface AttributePages {
   name: string
@@ -122,7 +119,7 @@ export interface AttributePages {
   payloads: ArrayBuffer[]
 }
 
-/** CPU work of filling column attributes: the own `rows` of a tile,
+/** CPU work of filling attributes: the own `rows` of a tile,
  * ascending, each one's position among the rows its LOD page shows in
  * `ranks`, the pages holding their values and, in `shown`, the first row of
  * each LOD page of the tile and how many rows it shows. */
@@ -215,25 +212,21 @@ function decodeRanges(stored: unknown, empty = false): ByteRange[] {
  * holds its box's minimum cell column and row minus the previous entry's,
  * its width and height in cells, its page's byte gap after the previous
  * entry's page's end and length, 0 when that is its page too, its first row
- * after the previous entry's end row and its rows; then, per indexed
- * attribute, that column's pages over the entries' rows. The first entry
- * counts from zero, and a page's runs are consecutive entries whose rows
- * follow on.
+ * after the previous entry's end row and its rows. The first entry counts
+ * from zero, and a page's runs are consecutive entries whose rows follow on.
  */
-function decodePrimaryLeaf(stored: unknown, attributes: number): PrimaryLeaf {
+function decodePrimaryLeaf(stored: unknown): PrimaryLeaf {
   const node: unknown[] = Array.isArray(stored) ? stored : []
-  const [level, wests, souths, widths, heights, gaps, lengths, rows, counts, sources] = node as [
+  const [level, wests, souths, widths, heights, gaps, lengths, rows, counts] = node as [
     number,
     ...number[][],
   ]
   if (
     level !== 0 ||
-    node.length !== 10 ||
+    node.length !== 9 ||
     ![wests, souths, widths, heights, gaps, lengths, rows, counts].every(
       (column) => integers(column) && column.length === wests.length,
-    ) ||
-    !Array.isArray(sources) ||
-    sources.length !== attributes
+    )
   )
     throw new Error('malformed primary directory leaf')
   const pages: PrimaryPage[] = []
@@ -269,7 +262,7 @@ function decodePrimaryLeaf(stored: unknown, attributes: number): PrimaryLeaf {
       page.runs.push(run)
     } else throw new Error('malformed primary directory leaf')
   }
-  return { level: 0, pages, sources: (sources as unknown[]).map(decodeSources) }
+  return { level: 0, pages }
 }
 
 /** A row directory leaf: level 0, then one column's consecutive pages in row
@@ -499,14 +492,14 @@ export function hasSpatialIndex(bytes: ArrayBuffer): boolean {
 }
 
 /** The gzip attribute leaf an attribute slot framed `frame` holds: its
- * length, its column attribute and its leaf's offset, the leaf, then zeros. */
+ * length, its attribute and its leaf's offset, the leaf, then zeros. */
 function unslot(bytes: ArrayBuffer, frame: SlotFrame): ArrayBuffer {
   const view = new DataView(bytes)
   const length = bytes.byteLength >= SLOT_HEADER ? view.getUint32(0, true) : 0
   if (!length || length > bytes.byteLength - SLOT_HEADER)
     throw new Error('attribute slot length overruns its slot')
   if (view.getUint32(4, true) !== frame.attribute)
-    throw new Error('attribute slot holds another column attribute')
+    throw new Error('attribute slot holds another attribute')
   if (view.getBigUint64(8, true) !== BigInt(frame.leaf))
     throw new Error('attribute slot is beside another leaf')
   if (new Uint8Array(bytes, SLOT_HEADER + length).some((byte) => byte !== 0))
@@ -599,11 +592,11 @@ export class SpatialReader implements TileReader {
   private readonly directories = new Map<number, Cached<DirectoryNode>>()
   private readonly primaryLeaves = new Map<number, Cached<PrimaryLeaf>>()
   private readonly rowLeaves = new Map<number, Cached<SourcePage[]>>()
-  /** Column attributes, in metadata order */
-  readonly columnAttributes: string[]
-  /** Column attributes' leaves beside the LOD leaves, by offset */
+  /** Attributes, in metadata order */
+  readonly attributeNames: string[]
+  /** Attributes' leaves beside the LOD leaves, by offset */
   private readonly attributeLeaves = new Map<number, Cached<ByteRange[]>>()
-  /** Column attributes' leaves beside the primary leaves, by offset */
+  /** Attributes' leaves beside the primary leaves, by offset */
   private readonly sourceLeaves = new Map<number, Cached<SourcePage[]>>()
   private readonly pages = new Map<number, { size: number; data: SharedLoad<ArrayBuffer> }>()
   private pageBytes = 0
@@ -621,7 +614,7 @@ export class SpatialReader implements TileReader {
       Object.entries(this.lod.lods).map(([name, lod]) => [name, { ...lod, name }]),
     )
     this.fields = attributeFields(this.lod.attributes)
-    this.columnAttributes = this.fields.filter((f) => f.column).map((f) => f.name)
+    this.attributeNames = this.fields.map((f) => f.name)
     this.trees = Object.fromEntries(
       Object.entries(root.directories ?? {}).map(([name, node]) => {
         if (!this.lods[name]) throw new Error(`spatial directory for unknown LOD ${name}`)
@@ -668,20 +661,15 @@ export class SpatialReader implements TileReader {
     if (this.decoders.get(root.primary)?.type !== 'BYTE_ARRAY')
       throw new Error('the primary geometry is not an indexed binary column')
     const index = root.primary_index
-    if (
-      !Array.isArray(index?.attributes) ||
-      !index.attributes.every((a) => a !== root.primary && this.decoders.has(a)) ||
-      new Set(index.attributes).size !== index.attributes.length
-    )
-      throw new Error('malformed primary directory')
-    if (this.columnAttributes.length) {
+    if (!index || typeof index !== 'object') throw new Error('malformed primary directory')
+    if (this.attributeNames.length) {
       const withColumns = this.lod.attribute_columns?.lods ?? []
       if (withColumns.length !== Object.keys(this.lods).length)
         throw new Error('the spatial index needs attribute columns at every LOD')
       if (typeof root.attribute_codec !== 'string')
         throw new Error('the spatial index names no attribute codec')
-      if (!this.columnAttributes.every((name) => this.decoders.has(name)))
-        throw new Error('a column attribute has no indexed source column')
+      if (!this.attributeNames.every((name) => this.decoders.has(name)))
+        throw new Error('an attribute has no indexed source column')
       const slots = root.attribute_slots
       if (
         !Array.isArray(slots) ||
@@ -689,9 +677,7 @@ export class SpatialReader implements TileReader {
         !slots.every((size) => Number.isSafeInteger(size) && size >= SLOT_HEADER)
       )
         throw new Error('malformed attribute slot sizes')
-    } else if (root.attribute_slots) throw new Error('attribute slots without column attributes')
-    if (index.attributes.some((a) => this.columnAttributes.includes(a)))
-      throw new Error('the primary directory locates a column attribute')
+    } else if (root.attribute_slots) throw new Error('attribute slots without attributes')
     this.exactSpan = 4 ** Math.max(0, this.lod.key!.depth - this.finestZoom)
     this.exact = decodeNode(index.directory, this.exactSpan)
     if (!this.exact.level) throw new Error('the primary directory must start above its leaves')
@@ -832,8 +818,9 @@ export class SpatialReader implements TileReader {
    * routes the bbox to the leaves of the tiles holding it, whose runs of
    * geometry rows with boxes reaching it choose the pages; their WKB gives
    * each row's extent, rounded outward to float32 as the covering stores it.
-   * Indexed attributes come from the pages the same leaves locate, fetched
-   * alongside the geometry; others through `readColumns`.
+   * Attributes come from the pages the attribute leaves beside the same
+   * leaves locate, fetched alongside the geometry; other columns through
+   * `readColumns`.
    */
   async readPrimary(
     bbox: Bbox,
@@ -841,9 +828,7 @@ export class SpatialReader implements TileReader {
     signal?: AbortSignal,
   ): Promise<PrimaryRows> {
     signal?.throwIfAborted()
-    const indexed = this.root.primary_index.attributes
-    const columnar = attributes.filter((a) => this.columnAttributes.includes(a))
-    const located = [...attributes.filter((a) => indexed.includes(a)), ...columnar]
+    const located = attributes.filter((a) => this.attributeNames.includes(a))
     const query = cellBox(bbox)
     const depth = this.lod.key!.depth
     const intervals = bboxIntervals(depth, Math.min(depth, this.finestZoom), bbox)
@@ -857,7 +842,7 @@ export class SpatialReader implements TileReader {
       (shard, place) =>
         beside.set(
           shard[2],
-          columnar.map((name) =>
+          located.map((name) =>
             awaited(this.slot(this.sourceLeaves, place, name, decodeSourceLeaf, signal)),
           ),
         ),
@@ -871,27 +856,21 @@ export class SpatialReader implements TileReader {
     )
     // each page with a run reaching the query once, with the runs that do; a
     // neighbouring leaf lists the same page with the same runs
-    const chosen = new Map<
-      number,
-      { page: PrimaryPage; live: Run[]; leaf: PrimaryLeaf; offset: number }
-    >()
+    const chosen = new Map<number, { page: PrimaryPage; live: Run[]; offset: number }>()
     for (const { leaf, offset } of leaves)
       for (const page of leaf.pages) {
         if (chosen.has(page.offset)) continue
         const live = page.runs.filter((run) => overlaps(run.box, query))
-        if (live.length) chosen.set(page.offset, { page, live, leaf, offset })
+        if (live.length) chosen.set(page.offset, { page, live, offset })
       }
     const hits = [...chosen.values()].sort((a, b) => a.page.first - b.page.first)
     const pages = hits.map((hit) => hit.page)
-    // per located attribute, its pages over the live runs' rows, from the
-    // leaves that chose them or the attribute leaves beside those
-    const sources = located.map((name) => {
-      const column = indexed.indexOf(name)
+    // per attribute, its pages over the live runs' rows, from the attribute
+    // leaves beside the leaves that chose them
+    const sources = located.map((_, i) => {
       const wanted = new Map<number, SourcePage>()
-      for (const { leaf, live, offset } of hits)
-        for (const page of column >= 0
-          ? leaf.sources[column]
-          : sides.get(offset)![columnar.indexOf(name)])
+      for (const { live, offset } of hits)
+        for (const page of sides.get(offset)![i])
           if (live.some((r) => page.first < r.first + r.count && page.first + page.count > r.first))
             wanted.set(page.offset, page)
       return [...wanted.values()].sort((a, b) => a.first - b.first)
@@ -951,20 +930,13 @@ export class SpatialReader implements TileReader {
     const shards = entries.filter(([low, high]) =>
       intervals.some(([start, end]) => low < end && high >= start),
     )
-    const attributes = this.root.primary_index.attributes.length
     const selected = await Promise.all(
       shards.map(async (shard) => {
         const [, , offset, length, level] = shard
         if (!level) onLeaf?.(shard, slotPlace(entries, shard, Object.keys(this.lods).length))
         const child = level
           ? await this.directory(shard, this.exactSpan, signal)
-          : await this.load(
-              this.primaryLeaves,
-              offset,
-              length,
-              (stored) => decodePrimaryLeaf(stored, attributes),
-              signal,
-            )
+          : await this.load(this.primaryLeaves, offset, length, decodePrimaryLeaf, signal)
         if (reached.has(offset)) throw new Error('spatial directory node referenced twice')
         reached.add(offset)
         return 'pages' in child
@@ -1030,7 +1002,7 @@ export class SpatialReader implements TileReader {
 
   /** The node a parent's entry locates, which must match that entry's
    * length, level and cell bounds, from cache or loaded, kept with `place`,
-   * where the slots beside it lie, which an LOD leaf of a file with column
+   * where the slots beside it lie, which an LOD leaf of a file with
    * attributes must have. */
   private async directory(
     shard: Shard,
@@ -1039,7 +1011,7 @@ export class SpatialReader implements TileReader {
     place?: SlotPlace,
   ): Promise<DirectoryNode> {
     const [low, high, offset, length, level] = shard
-    if (!level && !place && this.columnAttributes.length)
+    if (!level && !place && this.attributeNames.length)
       throw new Error('an LOD leaf loads without where its slots lie')
     const loading = this.load(
       this.directories,
@@ -1167,18 +1139,17 @@ export class SpatialReader implements TileReader {
     attributes: string[] = [],
     signal?: AbortSignal,
   ): Promise<LodRows> {
-    const carried = attributes.filter((a) => this.lod.attributes.some((f) => f.name === a))
-    const source = attributes.filter((a) => !carried.includes(a))
-    const columns = carried.filter((a) => this.columnAttributes.includes(a))
-    const prepared = await this.prepareTile(lod, z, x, y, signal, source, columns)
-    const { rows, columns: values, geometry } = decodeTile(prepared, carried, signal)
+    const named = attributes.filter((a) => this.attributeNames.includes(a))
+    const source = attributes.filter((a) => !named.includes(a))
+    const prepared = await this.prepareTile(lod, z, x, y, signal, source, named)
+    const { rows, columns: values, geometry } = decodeTile(prepared, named, signal)
     if (source.length) Object.assign(values, await this.readColumns(rows, source, signal))
     return { rows, columns: values, geometry }
   }
 
   /** The pages of a tile, ready to decode. The pages of the indexed
    * `columns` over the tile's own rows start to load alongside, for a
-   * `readColumns` of its rows once it is decoded. The pages of the column
+   * `readColumns` of its rows once it is decoded. The pages of the
    * `attributes` over its own rows are fetched with the overview pages. */
   async prepareTile(
     lod: Lod,
@@ -1228,7 +1199,7 @@ export class SpatialReader implements TileReader {
     }
   }
 
-  /** The pages of the column `attributes` over the own rows of a tile, for
+  /** The pages of the `attributes` over the own rows of a tile, for
    * filling a decoded tile's attributes a later style asks for. */
   async prepareAttributes(
     lod: Lod,
@@ -1243,7 +1214,7 @@ export class SpatialReader implements TileReader {
   }
 
   /** A tile's overview pages and own rows from the LOD's directory, and the
-   * pages of the column `attributes` over those rows, from the attribute
+   * pages of the `attributes` over those rows, from the attribute
    * leaves beside the leaves the tile reaches, which load with them. */
   private async locate(
     lod: Lod,
@@ -1258,8 +1229,7 @@ export class SpatialReader implements TileReader {
     // they are exact only for tiles made of whole cells.
     if (z > Math.max(...lod.zooms)) throw new Error(`zoom ${z} is finer than ${lod.name}`)
     for (const name of attributes)
-      if (!this.columnAttributes.includes(name))
-        throw new Error(`attribute ${name} is not a column attribute`)
+      if (!this.attributeNames.includes(name)) throw new Error(`${name} is not an attribute`)
     const [start, end] = tileInterval(this.lod.key!.depth, z, x, y)
     const tree = this.trees[lod.name]
     if (!tree) throw new Error(`missing spatial directory for ${lod.name}`)
@@ -1337,7 +1307,7 @@ export class SpatialReader implements TileReader {
     }
   }
 
-  /** Start loading the leaves of column `attributes` beside every LOD leaf
+  /** Start loading the leaves of `attributes` beside every LOD leaf
    * the reader holds, in the round of the tile asking, so a later tile over a
    * held leaf, such as one zoomed back out to, needs no round of its own. */
   private spreadAttributeLeaves(attributes: string[]): void {
@@ -1347,9 +1317,9 @@ export class SpatialReader implements TileReader {
           awaited(this.slot(this.attributeLeaves, place, name, decodeAttributeLeaf))
   }
 
-  /** Column attribute `name`'s leaf from `cache` or loaded from its slot
-   * beside the leaf at `place`. A level-one node's slot block follows its
-   * last leaf: per column attribute in metadata order, a slot per leaf in
+  /** Attribute `name`'s leaf from `cache` or loaded from its slot beside
+   * the leaf at `place`. A level-one node's slot block follows its last
+   * leaf: per attribute in metadata order, a slot per leaf in
    * leaf order. */
   private slot<T>(
     cache: Map<number, Cached<T>>,
@@ -1359,7 +1329,7 @@ export class SpatialReader implements TileReader {
     signal?: AbortSignal,
   ): Promise<T> {
     const size = this.root.attribute_slots![place.tree]
-    const attribute = this.columnAttributes.indexOf(name)
+    const attribute = this.attributeNames.indexOf(name)
     const offset = place.end + (attribute * place.count + place.index) * size
     return this.load(cache, offset, size, decode, signal, { attribute, leaf: place.leaf })
   }
@@ -1438,11 +1408,11 @@ export interface PreparedTile {
   hostRow: number
   payloads: ArrayBuffer[]
   margin: number
-  /** Pages of the column attributes requested, over the own rows */
+  /** Pages of the attributes requested, over the own rows */
   attributes?: AttributePages[]
 }
 
-/** A reader of a column attribute's values for ascending rows, from pages
+/** A reader of an attribute's values for ascending rows, from pages
  * that hold every row asked for. A page holds its values on its leading
  * rows: the value of the row at position `rank` among those its LOD page
  * shows is on the page's row `rank`. */
@@ -1492,12 +1462,12 @@ function attributeValues(entry: AttributePages, field: AttributeField) {
   }
 }
 
-/** The values of each column attribute in `task` for its rows, in order. */
+/** The values of each attribute in `task` for its rows, in order. */
 export function decodeAttributes(task: AttributeTask): Record<string, unknown[]> {
   return Object.fromEntries(
     task.attributes.map((entry) => {
       const field = task.fields.find((f) => f.name === entry.name)
-      if (!field?.column) throw new Error(`attribute ${entry.name} is not a column attribute`)
+      if (!field) throw new Error(`${entry.name} is not an attribute`)
       const reader = attributeValues(entry, field)
       const values = task.rows.map((row, k) => reader.value(row, task.ranks[k]))
       reader.check(task.shown)
@@ -1507,7 +1477,7 @@ export function decodeAttributes(task: AttributeTask): Record<string, unknown[]>
 }
 
 /** Pure CPU stage: no reader, cache, or network access is needed in a tile
- * worker. A requested column attribute whose pages the task lacks is
+ * worker. A requested attribute whose pages the task lacks is
  * `pending`: it has no entry in `columns`, and `copies` holds the values its
  * boundary copies pack, in feature order. `own` is 0 for a boundary copy and,
  * for a feature of the tile's own, one more than its position among the rows
@@ -1527,7 +1497,7 @@ export function decodeTile(
   const { lod, z, x, y, fields, codec, pages, firstCell, endCell, hostRow, payloads } = task
   const wanted = attributes.map((a) => fields.findIndex((f) => f.name === a))
   for (const [i, name] of attributes.entries())
-    if (wanted[i] < 0) throw new Error(`attribute ${name} is not carried`)
+    if (wanted[i] < 0) throw new Error(`${name} is not an attribute`)
   const rows: number[] = []
   const own: number[] = []
   const builder = new GeometryBuilder()
@@ -1536,7 +1506,7 @@ export function decodeTile(
     const entry = task.attributes?.find((s) => s.name === a)
     return entry && attributeValues(entry, fields[wanted[i]])
   })
-  const isPending = attributes.map((_, i) => !!fields[wanted[i]].column && !filled[i])
+  const isPending = attributes.map((_, i) => !filled[i])
   const pending = attributes.filter((_, i) => isPending[i])
   const held = attributes.flatMap((_, i) => (isPending[i] ? [] : [i]))
   const sparse = attributes.flatMap((_, i) => (isPending[i] ? [i] : []))

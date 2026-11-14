@@ -7,12 +7,12 @@
 import { attributeKind } from './decode.js'
 import { MAX_ZOOM, sourceLimits } from './source-limits.js'
 import type { TileReader } from './spatial.js'
-import { packedAttributes, renderTile } from './tile.js'
+import { renderTile } from './tile.js'
 
 export interface TileHandlerOptions {
   /** MVT layer name (default `features`). */
   layer?: string
-  /** Attribute names to copy into tile properties (default: the packed attributes, none without LODs). */
+  /** Attribute or source column names to copy into tile properties (default none: geometry only). */
   properties?: string[]
   /** `maxzoom` in the TileJSON (default: the finest LOD zoom, 22 without LODs). Tiles are served at any zoom. */
   maxzoom?: number
@@ -59,18 +59,16 @@ export function tileHandler(
   const base = (options.base ?? '').replace(/\/+$/, '')
   const publicUrl = options.publicUrl?.replace(/\/+$/, '')
   const limits = sourceLimits(reader, options.maxzoom)
-  const carried = new Map((reader.lod?.attributes ?? []).map((a) => [a.name, a.type]))
-  // TileJSON describes a field in words. A carried attribute's type is in the
-  // file's metadata; any other column's is known only from its footer.
+  const declared = new Map((reader.lod?.attributes ?? []).map((a) => [a.name, a.type]))
+  // TileJSON describes a field in words. An attribute's type is in the file's
+  // metadata; any other column's is known only from its footer.
   const describe = (name: string): string => {
-    const type = carried.get(name)
+    const type = declared.get(name)
     if (type === undefined) return 'Source column'
     const kind = attributeKind(type)
     return kind === 'string' ? 'String' : kind === 'bool' ? 'Boolean' : 'Number'
   }
-  const fields = Object.fromEntries(
-    (properties ?? packedAttributes(reader.lod)).map((name) => [name, describe(name)]),
-  )
+  const fields = Object.fromEntries((properties ?? []).map((name) => [name, describe(name)]))
 
   return async (request) => {
     if (request.method === 'OPTIONS')

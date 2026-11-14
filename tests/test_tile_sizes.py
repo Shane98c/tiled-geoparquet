@@ -95,7 +95,7 @@ def branched(built, tmp_path_factory):
     """`built` laid out again with a page per leaf under levels of branches."""
     out = tmp_path_factory.mktemp('branched') / 'branched.parquet'
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(_layout, '_ROOT_TARGET_BYTES', 1000)
+        patch.setattr(_layout, '_ROOT_TARGET_BYTES', 980)
         finalize_layout(built, out, leaf_pages=1, page_bytes=1024, log=lambda *_: None)
     with out.open('rb') as source:
         levels = [top[0] for top in _root(source)['directories'].values()]

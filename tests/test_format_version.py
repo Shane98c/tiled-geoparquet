@@ -49,7 +49,7 @@ def _restated(path, out, version):
 
 def test_only_this_minor_is_compatible_while_the_major_is_zero():
     assert is_compatible_version(LOD_VERSION)
-    for other in ('0.3.0', '0.5.0', '1.4.0', '', None, 2):
+    for other in ('0.4.0', '0.6.0', '1.5.0', '', None, 2):
         assert not is_compatible_version(other)
 
 

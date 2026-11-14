@@ -274,8 +274,8 @@ export const OPTIONS = {
   file: { type: 'string', multiple: true },
   pmtiles: { type: 'string' },
   scenario: { type: 'string', default: 'japan' },
-  carried: { type: 'string', default: 'height' },
-  uncarried: { type: 'string', default: 'subtype' },
+  named: { type: 'string', default: 'height' },
+  other: { type: 'string', default: 'subtype' },
   out: { type: 'string' },
 }
 
@@ -290,7 +290,7 @@ export const variantFiles = async ({ dir, file }) => {
   if (file?.length) return file.map((f) => f.split(/=(.*)/s).slice(0, 2))
   if (!dir) throw new Error('supply --dir BUILD_DIR or --file label=path')
   const builds = JSON.parse(await readFile(join(dir, 'builds.json'), 'utf8'))
-  const order = ['packed', 'columns', 'auto', 'hybrid', 'none']
+  const order = ['columns', 'auto', 'none']
   return Object.keys(builds.variants)
     .sort((a, b) => order.indexOf(a) - order.indexOf(b))
     .map((name) => [name, join(dir, builds.variants[name].file)])
@@ -302,11 +302,12 @@ export const loadScenario = async (name) => {
   return JSON.parse(await readFile(path, 'utf8'))
 }
 
-/** Style name to the properties a tile request asks for. */
-export const styles = ({ carried, uncarried }) => ({
+/** Style name to the properties a tile request asks for: none, the
+ * attribute the columns variant names, and one only the auto variant keeps. */
+export const styles = ({ named, other }) => ({
   geometry: [],
-  carried: [carried],
-  uncarried: [uncarried],
+  named: [named],
+  other: [other],
 })
 
 export const resultPath = (values, name) =>

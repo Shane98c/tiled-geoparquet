@@ -45,7 +45,7 @@ def test_straddler_copies_are_the_same_however_their_rendering_is_split(
         zooms=range(9, 15),
         complete_from=12,
         thinning=drop_rate(1.5),
-        carry=['name'],
+        attributes=['name'],
         log=lambda *_: None,
     )
     # the fixture fits one scan batch and one render job per LOD

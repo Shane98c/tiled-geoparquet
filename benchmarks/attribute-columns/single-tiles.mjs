@@ -1,11 +1,11 @@
 // Cold single-tile reads of each variant, and of PMTiles as the outside reference.
 //
 //   node benchmarks/attribute-columns/single-tiles.mjs --dir BUILD_DIR [--pmtiles FILE_OR_URL]
-//     [--scenario japan|denver|path.json] [--carried height] [--uncarried subtype]
+//     [--scenario japan|denver|path.json] [--named height] [--other subtype]
 //     [--latency 20] [--out result.json]
 //
-// For every named tile, variant and style (geometry only, the carried
-// attribute, the attribute only the auto variant stores) a fresh reader opens
+// For every named tile, variant and style (geometry only, the attribute the
+// columns variant names, an attribute only the auto variant keeps) a fresh reader opens
 // the file, then renders the tile, `cold`, and, on the same reader, the tile
 // east of it, `next`. Another fresh reader first renders, with the same style,
 // the tile four columns west and four rows south, then the tile, `warm`: a
@@ -59,8 +59,8 @@ const measure = async (net, render) => {
 
 const result = {
   scenario: values.scenario,
-  carried: values.carried,
-  uncarried: values.uncarried,
+  named: values.named,
+  other: values.other,
   latency,
   opens: {},
   rows: [],

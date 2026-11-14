@@ -9,7 +9,6 @@ import {
   attributeTask,
   decodePreparedTile,
   filledColumns,
-  packedAttributes,
   renderDecodedTile,
   renderTile,
 } from './tile.js'
@@ -200,16 +199,16 @@ scope.addEventListener('message', (event: MessageEvent<WorkerRequest | CpuReques
             const options = {
               layer: request.config.layer,
               pointLayer: request.config.pointLayer,
-              properties: request.config.properties,
+              properties: request.config.properties ?? [],
               signal: controller.signal,
             }
             const cpu = await getPool()
-            const properties = options.properties ?? packedAttributes(reader.lod)
+            const { properties } = options
             if (reader instanceof SpatialReader && request.z <= reader.finestZoom) {
               const source = properties.filter(
                 (name) => !reader.lod.attributes.some((a) => a.name === name),
               )
-              const wanted = properties.filter((name) => reader.columnAttributes.includes(name))
+              const wanted = properties.filter((name) => reader.attributeNames.includes(name))
               const lod = reader.lodForZoom(request.z)
               const key = JSON.stringify([request.config.url, request.z, request.x, request.y])
               let rendered: ArrayBuffer | undefined
@@ -242,7 +241,7 @@ scope.addEventListener('message', (event: MessageEvent<WorkerRequest | CpuReques
               )
               if (rendered) return rendered
               const missing = source.filter((name) => !Object.hasOwn(tile.columns, name))
-              // a style asking for a column attribute the cached tile lacks
+              // a style asking for an attribute the cached tile lacks
               // fetches that attribute's pages over the tile's own rows
               const unfilled = wanted.filter((name) => tile.pending?.includes(name))
               // another request for this tile may fill its last pending attribute
@@ -292,7 +291,7 @@ scope.addEventListener('message', (event: MessageEvent<WorkerRequest | CpuReques
               controller.signal.throwIfAborted()
               Object.assign(extras, filled)
               visible.addColumns(key, tile, extras)
-              // New styles never modify the cached geometry or carried columns.
+              // New styles never modify the cached geometry or attribute columns.
               const columns = Object.fromEntries(
                 properties.map((name) => [name, extras[name] ?? tile.columns[name]]),
               )

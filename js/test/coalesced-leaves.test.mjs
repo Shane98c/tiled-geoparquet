@@ -1,7 +1,7 @@
-// node test/coalesced-leaves.test.mjs <file> <same source without column attributes> <cases.json>
-// A reader styling by no column attribute, its reads merged by the default
+// node test/coalesced-leaves.test.mjs <file> <same source without attributes> <cases.json>
+// A reader styling by no attribute, its reads merged by the default
 // `coalescing`, makes as many requests and fetches as many bytes for
-// concurrent tiles from a file with column attributes as from the same
+// concurrent tiles from a file with attributes as from the same
 // source written without them, reads directory leaves and LOD pages of
 // both, and renders the same features. The cases give the tiles and, per
 // file, the byte ranges of its directory leaves and of its LOD pages.
@@ -66,7 +66,7 @@ const measure = async (path, { leaves, pages }) => {
 const styled = await measure(withPath, files[0])
 const plain = await measure(withoutPath, files[1])
 console.log(
-  `coalesced leaves: ${tiles.length} tiles, with column attributes ${styled.net.requests} ` +
+  `coalesced leaves: ${tiles.length} tiles, with attributes ${styled.net.requests} ` +
     `requests ${styled.net.bytes} bytes, without ${plain.net.requests} requests ` +
     `${plain.net.bytes} bytes`,
 )

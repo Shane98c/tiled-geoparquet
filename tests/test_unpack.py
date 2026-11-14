@@ -9,7 +9,13 @@ import pyarrow.parquet as pq
 import pytest
 import shapely
 from tiled_geoparquet import read_overview, write
-from tiled_geoparquet.unpack import UnpackError, carried, lod_values, unpack, unpack_batches
+from tiled_geoparquet.unpack import (
+    UnpackError,
+    attribute_fields,
+    lod_values,
+    unpack,
+    unpack_batches,
+)
 from unpacker import Unpacker
 
 
@@ -45,12 +51,13 @@ def as_rows(u, family):
     attrs = {name: values.to_pylist() for name, values in u.attrs.items()}
     rows = {}
     for r, row in enumerate(u.row.tolist()):
-        record = {'geometry': geometry[r], 'attrs': {k: v[r] for k, v in attrs.items()}}
+        values = {k: v[r] for k, v in attrs.items()}
         if u.copy[r]:
-            copy = {'tile': int(u.tile[r]), 'id': int(u.id[r]), **record}
-            rows[row]['spill'].append(copy)
+            copy = {'tile': int(u.tile[r]), 'id': int(u.id[r]), 'geometry': geometry[r]}
+            rows[row]['spill'].append({**copy, 'attrs': values})
         else:
-            rows[row] = {**record, 'spill': []}
+            assert all(v is None for v in values.values()), 'an own record holds no attributes'
+            rows[row] = {'geometry': geometry[r], 'spill': []}
     return rows
 
 
@@ -68,7 +75,7 @@ def assert_agrees(path):
     """Every value of every LOD decodes the same both ways; returns the copies seen."""
     f = pq.ParquetFile(path)
     lod = json.loads(f.schema_arrow.metadata[b'geo'])['lod_columns']
-    fields, dictionaries = carried(lod)
+    fields, dictionaries = attribute_fields(lod)
     copies = 0
     for group in range(f.metadata.num_row_groups):
         table = f.read_row_group(group, columns=['lod'])
@@ -120,8 +127,8 @@ def polygons(tmp_path_factory):
     }
     src = source(work / 'polygons.parquet', geometry, columns, ['Polygon', 'MultiPolygon'])
     out = work / 'out.parquet'
-    carry = [(name, 'halffloat') if name == 'share' else name for name in columns]
-    return write(src, out, carry=carry, row_group_rows=512, workers=1, log=quiet)
+    kept = [(name, 'halffloat') if name == 'share' else name for name in columns]
+    return write(src, out, attributes=kept, row_group_rows=512, workers=1, log=quiet)
 
 
 def test_polygons_agree(polygons):
@@ -132,7 +139,7 @@ def test_polygons_agree(polygons):
 def test_batches_decode_as_one(polygons, batch_bytes):
     f = pq.ParquetFile(polygons)
     lod = json.loads(f.schema_arrow.metadata[b'geo'])['lod_columns']
-    fields, dictionaries = carried(lod)
+    fields, dictionaries = attribute_fields(lod)
     batches = 0
     for group in range(f.metadata.num_row_groups):
         for name, child in lod['lods'].items():
@@ -167,10 +174,13 @@ def test_empty_and_null_columns_decode_to_no_records(values):
 
 
 def test_read_overview(polygons):
+    """Shown rows' overview geometry, as the packed rows hold it, and their
+    attributes, each the row's source value cast to its declared type."""
     f = pq.ParquetFile(polygons)
     assert f.metadata.num_row_groups > 1, 'row indexes continue across row groups'
     lod = json.loads(f.schema_arrow.metadata[b'geo'])['lod_columns']
-    fields, dictionaries = carried(lod)
+    fields, dictionaries = attribute_fields(lod)
+    source = f.read(columns=[a.name for a in fields])
     for zoom in (lod['zooms'][0] + 2, lod['zooms'][-1]):
         name, child = next((n, c) for n, c in lod['lods'].items() if zoom in c['zooms'])
         (sx, sy), (ox, oy) = child['scale'], child['offset']
@@ -190,8 +200,10 @@ def test_read_overview(polygons):
                 [[(ox + sx * x, oy + sy * y) for x, y in r] for r in p] for p in row['geometry']
             ]
             assert rings == grid
+        held = pa.array([i for i, _ in rows], pa.int64())
         for a in fields:
-            assert same(table[a.name].to_pylist(), [row['attrs'][a.name] for _, row in rows])
+            expected = source[a.name].take(held).cast(a.type).to_pylist()
+            assert same(table[a.name].to_pylist(), expected), (zoom, a.name)
     metadata = table.schema.field('geometry').metadata
     assert json.loads(metadata[b'ARROW:extension:metadata'])['crs'] == 'EPSG:3857'
     for zoom in (lod['zooms'][0] - 1, lod['zooms'][-1] + 1):
@@ -210,14 +222,16 @@ def test_read_overview_in_batches(polygons, monkeypatch):
 
 
 @pytest.mark.parametrize('name', ['row', 'geometry'])
-def test_read_overview_refuses_a_carried_attribute_named_like_its_columns(tmp_path, name):
+def test_read_overview_refuses_an_attribute_named_like_its_columns(tmp_path, name):
     x = -105 + np.arange(20) * 1e-3
     shapes = shapely.box(x, 39.7, x + 5e-4, 39.7005)
     columns = {name: pa.array(range(20), pa.int32())}
     src = source(tmp_path / 'source.parquet', shapes, columns, ['Polygon'], name='geom')
-    out = write(src, tmp_path / 'out.parquet', geometry='geom', carry=[name], workers=1, log=quiet)
+    out = write(
+        src, tmp_path / 'out.parquet', geometry='geom', attributes=[name], workers=1, log=quiet
+    )
     zoom = json.loads(pq.read_schema(out).metadata[b'geo'])['lod_columns']['zooms'][-1]
-    with pytest.raises(ValueError, match=f"carried attribute '{name}' collides"):
+    with pytest.raises(ValueError, match=f"attribute '{name}' collides"):
         read_overview(out, zoom)
 
 
@@ -230,35 +244,49 @@ def test_lines_and_points_agree(tmp_path):
         lines.append(shapely.MultiLineString([line, [(x, y - 2e-3), (x + 4e-3, y)]]))
     names = pa.array([f'road {i}' for i in range(300)])
     src = source(tmp_path / 'lines.parquet', lines, {'road': names}, ['MultiLineString'])
-    assert_agrees(write(src, tmp_path / 'lines.lod.parquet', carry=['road'], workers=1, log=quiet))
+    assert_agrees(
+        write(src, tmp_path / 'lines.lod.parquet', attributes=['road'], workers=1, log=quiet)
+    )
     points = shapely.points(-100 + rng.random(800) * 30, 30 + rng.random(800) * 15)
     population = pa.array(rng.integers(10, 1_000_000, 800), pa.uint32())
     src = source(tmp_path / 'points.parquet', points, {'population': population}, ['Point'])
-    out = write(src, tmp_path / 'points.lod.parquet', carry=['population'], workers=1, log=quiet)
+    out = write(
+        src, tmp_path / 'points.lod.parquet', attributes=['population'], workers=1, log=quiet
+    )
     assert_agrees(out)
 
 
-SQUARE = [1, 1, 4, 0, 0, 4, 0, 0, 4, 3, 0]  # one open ring, before attributes and copies
+SQUARE = [1, 1, 4, 0, 0, 4, 0, 0, 4, 3, 0]  # one open ring, before copies
+
+
+def hosting(*attrs):
+    """A square hosting one copy of a square, for tile 0 and row 0, whose
+    attribute section is `attrs`."""
+    return bytes([*SQUARE, 1, 0, 0, *SQUARE, *attrs])
 
 
 @pytest.mark.parametrize(
     'value, message',
     [
-        (bytes([*SQUARE, 0]), 'runs past the end'),
-        (bytes([*SQUARE, 0, 0, 7]), 'trailing bytes'),
-        (bytes([*SQUARE, 0, 0x80]), 'cut short'),
-        (bytes([1, 1, 9, 0, 0, 4, 0, 0, 4, 3, 0, 0, 0]), 'count runs past'),
-        (bytes([1, 1, 4, *[0xFF] * 9, 2, 0, 4, 0, 0, 4, 3, 0, 0, 0]), 'wider than 64 bits'),
-        (bytes([*SQUARE, 1, 3, 0]), 'string bytes run past'),
-        (bytes([*SQUARE, 2, 9, 0]), 'past its value table'),
+        (bytes(SQUARE), 'runs past the end'),
+        (bytes([*SQUARE, 0, 7]), 'trailing bytes'),
+        (bytes([*SQUARE, 0x80]), 'cut short'),
+        (bytes([1, 1, 9, 0, 0, 4, 0, 0, 4, 3, 0, 0]), 'count runs past'),
+        (bytes([1, 1, 4, *[0xFF] * 9, 2, 0, 4, 0, 0, 4, 3, 0, 0]), 'wider than 64 bits'),
+        (hosting(), 'runs past the end'),
+        (hosting(1, 3), 'string bytes run past'),
+        (hosting(2, 9), 'past its value table'),
     ],
 )
 def test_malformed_values_name_their_row(value, message):
     fields = [pa.field('name', pa.string()), pa.field('zone', pa.string())]
-    good = bytes([*SQUARE, 0b01, 2, 0, *b'ab'])
+    good = hosting(0b11, 2, 1, *b'ab')
     values = pa.array([good, None, good, value, good], pa.binary())
     zones = {'zone': ['a', 'b']}
-    assert unpack(values.slice(0, 3), 'MultiPolygon', fields, zones).row.tolist() == [0, 2]
+    decoded = unpack(values.slice(0, 3), 'MultiPolygon', fields, zones)
+    assert decoded.row.tolist() == [0, 0, 2, 2]
+    assert decoded.attrs['name'].to_pylist() == [None, 'ab', None, 'ab']
+    assert decoded.attrs['zone'].to_pylist() == [None, 'b', None, 'b']
     with pytest.raises(UnpackError, match=message) as error:
         unpack(values, 'MultiPolygon', fields, zones)
     assert error.value.row == 3
@@ -270,10 +298,10 @@ def test_malformed_values_name_their_row(value, message):
 
 def test_a_float16_wider_than_16_bits_names_its_row():
     fields = [pa.field('v', pa.float16())]
-    one = bytes([*SQUARE, 1, 0x80, 0x78, 0])  # 1.0, the bit pattern 0x3c00
-    wide = bytes([*SQUARE, 1, 0x80, 0x80, 0x04, 0])  # 0x10000
+    one = hosting(1, 0x80, 0x78)  # 1.0, the bit pattern 0x3c00
+    wide = hosting(1, 0x80, 0x80, 0x04)  # 0x10000
     values = pa.array([one, wide], pa.binary())
-    assert unpack(values.slice(0, 1), 'MultiPolygon', fields).attrs['v'].to_pylist() == [1.0]
+    assert unpack(values.slice(0, 1), 'MultiPolygon', fields).attrs['v'].to_pylist() == [None, 1.0]
     with pytest.raises(UnpackError, match='v has a float16 wider than 16 bits') as error:
         unpack(values, 'MultiPolygon', fields)
     assert error.value.row == 1

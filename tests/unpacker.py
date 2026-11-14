@@ -83,7 +83,6 @@ class Unpacker:
 
     def row(self):
         geometry = self.geometry()
-        attrs = self.attrs()
         spill = []
         for _ in range(self.varint()):
             tile = self.varint()
@@ -92,10 +91,12 @@ class Unpacker:
                 {'tile': tile, 'id': rid, 'geometry': self.geometry(), 'attrs': self.attrs()}
             )
         # string payloads follow, in order
-        for record in [attrs, *[s['attrs'] for s in spill]]:
+        for record in [s['attrs'] for s in spill]:
             for name, v in record.items():
                 if isinstance(v, tuple) and v[0] == 'string':
                     n = v[1]
                     record[name] = self.b[self.pos : self.pos + n].decode('utf-8', 'replace')
                     self.pos += n
-        return {'geometry': geometry, 'attrs': attrs, 'spill': spill}
+        if self.pos != len(self.b):
+            raise ValueError('trailing bytes after the packed row')
+        return {'geometry': geometry, 'spill': spill}

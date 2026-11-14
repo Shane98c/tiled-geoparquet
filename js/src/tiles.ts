@@ -16,6 +16,7 @@ export interface SourceConfig {
   url: string
   layer?: string
   pointLayer?: string
+  /** Attribute or column names in the tiles (default none: geometry only). */
   properties?: string[]
 }
 

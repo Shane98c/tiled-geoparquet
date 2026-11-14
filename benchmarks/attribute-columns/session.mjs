@@ -1,7 +1,7 @@
 // A scripted map session replayed through the reader, without a browser.
 //
 //   node benchmarks/attribute-columns/session.mjs --dir BUILD_DIR [--pmtiles FILE_OR_URL]
-//     [--scenario japan|denver|path.json] [--carried height] [--uncarried subtype]
+//     [--scenario japan|denver|path.json] [--named height] [--other subtype]
 //     [--latency 0,100] [--connections 0,6] [--repeat 3] [--out result.json]
 //
 // The route is a list of viewports (centre, zoom, size in pixels), some
@@ -172,8 +172,8 @@ const median = async (job, repeat) => {
   const repeat = Number(values.repeat)
   const result = {
     scenario: values.scenario,
-    carried: values.carried,
-    uncarried: values.uncarried,
+    named: values.named,
+    other: values.other,
     viewport: scenario.viewport,
     runs: [],
   }

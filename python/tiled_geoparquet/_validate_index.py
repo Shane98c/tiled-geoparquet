@@ -88,7 +88,7 @@ def check_index(path, parquet, lod):
         groups = get(metadata, 4)[1]
         starts, first, locations = [], 0, {name: [] for name in lod['lods']}
         sources = {}
-        column_names = [a['name'] for a in lod['attributes'] if a.get('storage') == 'column']
+        column_names = [a['name'] for a in lod['attributes']]
         attribute_column = (lod.get('attribute_columns') or {}).get('column')
         column_lods = (lod.get('attribute_columns') or {}).get('lods', [])
         # (LOD, attribute) -> per row group, its attribute chunk's pages
@@ -136,7 +136,7 @@ def check_index(path, parquet, lod):
         }:
             raise ValueError('spatial index advertisement missing or of another version')
         if column_names and column_lods != list(lod['lods']):
-            raise ValueError('a spatial index needs every LOD to hold the column attributes')
+            raise ValueError('a spatial index needs every LOD to hold the attributes')
         root_length = int.from_bytes(source.read(4), 'little')
         if not 0 < root_length <= BOOTSTRAP_BYTES - 16:
             raise ValueError('invalid spatial root length')
@@ -224,15 +224,6 @@ def check_index(path, parquet, lod):
         index = root.get('primary_index')
         if not isinstance(index, dict):
             raise ValueError('spatial root has no primary directory')
-        attributes = index.get('attributes')
-        if (
-            not isinstance(attributes, list)
-            or len(set(map(str, attributes))) != len(attributes)
-            or any(type(a) is not str or a == primary or a not in eligible for a in attributes)
-        ):
-            raise ValueError('primary directory attributes must be distinct indexed columns')
-        if any(a in column_names for a in attributes):
-            raise ValueError('the primary directory locates a column attribute')
         if primary not in eligible or get(columns[primary][0], 1) != 6:
             raise ValueError('the primary geometry is not an indexed binary column')
 
@@ -258,7 +249,7 @@ def check_index(path, parquet, lod):
                     raise ValueError('a directory node is referenced twice')
                 reached[offset] = int(entries['length'][i])
                 raw = read(offset, int(entries['length'][i]))
-                child_level, child = read_primary_node(json.loads(gzip.decompress(raw)), attributes)
+                child_level, child = read_primary_node(json.loads(gzip.decompress(raw)))
                 if child_level != level - 1:
                     raise ValueError('inconsistent directory depth')
                 child['range'] = (offset, int(entries['length'][i]))
@@ -268,7 +259,7 @@ def check_index(path, parquet, lod):
                 leaves += walk_primary(child_level, child, low, high)
             return leaves
 
-        level, top = read_primary_node(index.get('directory'), attributes)
+        level, top = read_primary_node(index.get('directory'))
         if level < 1:
             raise ValueError('a directory tree must start above its leaves')
         found = walk_primary(level, top, 0, 4**zoom - 1)
@@ -307,15 +298,6 @@ def check_index(path, parquet, lod):
         runs = {k: v[~again] for k, v in runs.items()}
         if (runs['first'][1:] < (runs['first'] + runs['count'])[:-1]).any():
             raise ValueError('primary directory leaves cut a page differently')
-        for i, name in enumerate(attributes):
-            parts = [_index_part(*chunk) for chunk in sources[name]]
-            pages = {k: np.concatenate([part[k] for part in parts]) for k in SOURCE_FIELDS}
-            for leaf in leaves:
-                over = pages_over(pages, leaf['first'], leaf['first'] + leaf['count'])
-                if any(
-                    not np.array_equal(leaf['sources'][i][k], pages[k][over]) for k in SOURCE_FIELDS
-                ):
-                    raise ValueError(f'primary directory leaf misplaces {name} pages')
         reach = coarsest_zoom(firsts, zoom)
         coarse = firsts >> 2 * (zoom - reach)
         edges = tile_edges(reach) if len(leaves) > 1 else None
@@ -607,7 +589,7 @@ def _attribute_pages(read, parquet, leaf, lod_chunks, chunks, shown, led):
     ):
         byte, length, bounds, cm, _ = chunk
         values = parquet.read_row_group(g, columns=[leaf]).column(0).combine_chunks()
-        for part in leaf.split('.')[1:]:
+        for part in leaf.split('.', 2)[1:]:
             values = values.field(part)
         if len(values) != lod_bounds[-1]:
             raise ValueError(f'{leaf} disagrees with its row group')
@@ -640,7 +622,7 @@ def _attribute_pages(read, parquet, leaf, lod_chunks, chunks, shown, led):
 def _check_attribute_slots(read, reached, root, leaves, columns, pages):
     """Raise unless the leaves under each level-one node of each tree, each
     LOD's and then the primary directory's, lie back to back, and the root
-    gives attribute slot sizes exactly when there are column attributes
+    gives attribute slot sizes exactly when there are attributes
     `columns`. With them, each level-one node's leaves are followed by its
     slot block: per attribute, a slot of its tree's size per leaf, in leaf
     order, framed with the attribute's position and the leaf's offset and
@@ -665,7 +647,7 @@ def _check_attribute_slots(read, reached, root, leaves, columns, pages):
     slots = root.get('attribute_slots')
     if not columns:
         if slots is not None:
-            raise ValueError('the spatial root gives attribute slots without column attributes')
+            raise ValueError('the spatial root gives attribute slots without attributes')
         return
     if (
         not isinstance(slots, list)

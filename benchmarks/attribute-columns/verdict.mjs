@@ -1,4 +1,4 @@
-// Pass or fail for attribute columns, from the results in a build directory.
+// Pass or fail for attributes, from the results in a build directory.
 //
 //   node benchmarks/attribute-columns/verdict.mjs --dir BUILD_DIR
 //
@@ -11,17 +11,14 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { kb, loadScenario, parse } from './lib.mjs'
 
-/** hybrid against packed and auto against none, geometry-only and packed-attribute
- * tiles, cold and next: bytes, with the same requests and rounds */
+/** auto against none, geometry-only tiles, and auto against columns, tiles
+ * styled by the attribute both hold, cold and next: bytes, with the same
+ * requests and rounds */
 export const SAME_BYTES = 0.02
-/** hybrid against packed, a style on an attribute packed does not carry, on a
- * reader that has styled another tile by it: rounds at most, with fewer
- * requests than packed */
-export const UNCARRIED_ROUNDS = 2
-/** columns against packed, carried attribute, cold tiles at thinned zooms:
- * bytes, with no more rounds at any zoom */
-export const STYLED_BYTES = 0.1
-/** hybrid against packed, whole-session time at SESSION_LATENCY ms per request */
+/** auto, a style on the attribute only it keeps, on a reader that has styled
+ * another tile by it: rounds at most */
+export const OTHER_ROUNDS = 2
+/** auto against columns, whole-session time at SESSION_LATENCY ms per request */
 export const SESSION_TIME = 0
 export const SESSION_LATENCY = 100
 
@@ -50,7 +47,7 @@ export async function verdict({ dir, single: singlePath, session: sessionPath, s
   const single = await readJson(singlePath ?? join(dir, 'single-tiles.json'))
   const session = await readJson(sessionPath ?? join(dir, 'session.json'))
   const dense =
-    (await denseZooms(dir, 'packed')) ??
+    (await denseZooms(dir, 'columns')) ??
     (scenario?.dense_from !== undefined
       ? { has: (z) => z >= scenario.dense_from }
       : { has: () => false })
@@ -93,46 +90,53 @@ export async function verdict({ dir, single: singlePath, session: sessionPath, s
   const sameText = `same requests and rounds, bytes within ${SAME_BYTES * 100}%`
 
   add(
-    `hybrid vs packed, geometry only and carried attribute, cold and next tile, every zoom: ${sameText}`,
-    pair('hybrid', 'packed', ['geometry', 'carried'], ['cold', 'next'], every, same),
-  )
-  add(
     `auto vs none, geometry only, cold and next tile, every zoom: ${sameText}`,
     pair('auto', 'none', ['geometry'], ['cold', 'next'], every, same),
   )
   add(
-    `hybrid vs packed, un-carried attribute, a tile on a reader that has styled another: at most ${UNCARRIED_ROUNDS} rounds and fewer requests`,
-    pair('hybrid', 'packed', ['uncarried'], ['warm'], every, (h, p, name) => ({
-      pass: h.rounds <= UNCARRIED_ROUNDS && h.requests < p.requests,
-      text: `${name}: ${counts(h, p)}, ${signed(ratio(h.bytes, p.bytes))} bytes`,
-    })),
+    `auto vs columns, the attribute both hold, cold and next tile, every zoom: ${sameText}`,
+    pair('auto', 'columns', ['named'], ['cold', 'next'], every, same),
   )
   add(
-    `columns vs packed, carried attribute, cold tiles: no more rounds; bytes within ${STYLED_BYTES * 100}% at thinned zooms, reported at dense ones`,
-    pair('columns', 'packed', ['carried'], ['cold'], every, (c, p, name, isDense) => ({
-      pass: c.rounds <= p.rounds && (isDense || ratio(c.bytes, p.bytes) <= STYLED_BYTES),
-      text: `${name}${isDense ? ' (dense)' : ''}: ${counts(c, p)}, ${signed(ratio(c.bytes, p.bytes))} bytes`,
-    })),
+    'auto, the attribute both hold vs geometry only, cold and next tile, every zoom: the same rounds',
+    single &&
+      tiles('auto', 'named', every)?.flatMap((r) => {
+        const plain = single.rows.find(
+          (o) => o.variant === 'auto' && o.style === 'geometry' && o.index === r.index,
+        )
+        return ['cold', 'next'].map((read) => ({
+          pass: r[read].rounds === plain[read].rounds,
+          text: `z${r.z} ${r.tile}, ${read}: ${counts(r[read], plain[read])}${dense.has(r.z) ? ' (dense)' : ''}`,
+        }))
+      }),
+  )
+  add(
+    `auto, the attribute only it keeps, a tile on a reader that has styled another: at most ${OTHER_ROUNDS} rounds`,
+    single &&
+      tiles('auto', 'other', every)?.map((r) => ({
+        pass: r.warm.rounds <= OTHER_ROUNDS,
+        text: `z${r.z} ${r.tile}: ${r.warm.requests} / ${kb(r.warm.bytes)} KB / ${r.warm.rounds}`,
+      })),
   )
   const sessions =
-    session && session.runs.filter((r) => r.variant === 'hybrid' && r.latency === SESSION_LATENCY)
+    session && session.runs.filter((r) => r.variant === 'auto' && r.latency === SESSION_LATENCY)
   add(
-    `hybrid vs packed, session at ${SESSION_LATENCY} ms per request: total time no more than ${SESSION_TIME * 100}% longer, each step reported`,
+    `auto vs columns, session at ${SESSION_LATENCY} ms per request: total time no more than ${SESSION_TIME * 100}% longer, each step reported`,
     sessions?.length
-      ? sessions.flatMap((h) => {
-          const p = session.runs.find(
+      ? sessions.flatMap((a) => {
+          const c = session.runs.find(
             (r) =>
-              r.variant === 'packed' && r.latency === h.latency && r.connections === h.connections,
+              r.variant === 'columns' && r.latency === a.latency && r.connections === a.connections,
           )
-          const limit = h.connections ? `${h.connections} connections` : 'no connection limit'
+          const limit = a.connections ? `${a.connections} connections` : 'no connection limit'
           return [
             {
-              pass: ratio(h.totalMs, p.totalMs) <= SESSION_TIME,
-              text: `${limit}, total: ${Math.round(h.totalMs)} vs ${Math.round(p.totalMs)} ms, ${signed(ratio(h.totalMs, p.totalMs))}`,
+              pass: ratio(a.totalMs, c.totalMs) <= SESSION_TIME,
+              text: `${limit}, total: ${Math.round(a.totalMs)} vs ${Math.round(c.totalMs)} ms, ${signed(ratio(a.totalMs, c.totalMs))}`,
             },
-            ...h.steps.map((step, i) => ({
+            ...a.steps.map((step, i) => ({
               pass: true,
-              text: `${limit}, step ${i + 1} ${step.label} z${step.zoom} ${step.style}: ${step.requests} / ${kb(step.bytes)} KB / ${step.rounds} / ${Math.round(step.ms)} ms vs ${p.steps[i].requests} / ${kb(p.steps[i].bytes)} KB / ${p.steps[i].rounds} / ${Math.round(p.steps[i].ms)} ms`,
+              text: `${limit}, step ${i + 1} ${step.label} z${step.zoom} ${step.style}: ${step.requests} / ${kb(step.bytes)} KB / ${step.rounds} / ${Math.round(step.ms)} ms vs ${c.steps[i].requests} / ${kb(c.steps[i].bytes)} KB / ${c.steps[i].rounds} / ${Math.round(c.steps[i].ms)} ms`,
             })),
           ]
         })
@@ -145,7 +149,7 @@ export async function verdict({ dir, single: singlePath, session: sessionPath, s
       status: 'REPORT',
       details: variants.map(
         ([name, v]) =>
-          `${name}: ${v.storage.file_bytes.toLocaleString()} bytes, built in ${v.build_s} s`,
+          `${name}: ${v.sizes.file_bytes.toLocaleString()} bytes, built in ${v.build_s} s`,
       ),
     })
   return checks

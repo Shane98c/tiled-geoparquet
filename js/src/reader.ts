@@ -32,9 +32,9 @@ import { MAX_LATITUDE } from './web-mercator.js'
 export type Bbox = [number, number, number, number]
 
 export const LOD_KEY = 'lod_columns'
-export const LOD_VERSION = '0.4.0'
+export const LOD_VERSION = '0.5.0'
 export const ENCODING = 'packed'
-export const PACK_VERSION = 2
+export const PACK_VERSION = 3
 const MAX_MARGIN = 128
 
 /** Same major version, and the same minor while the major is 0. */
@@ -67,11 +67,12 @@ export interface LodMetadata {
   key?: { column: string; depth: number }
   encoding: string
   pack_version: number
-  /** Carried attributes; `storage` says where a row's own value is: its
-   * packed row, as when it is absent, or a column. */
-  attributes: { name: string; type: string; values?: string[]; storage?: 'packed' | 'column' }[]
-  /** The struct of attribute columns, and the LODs with one per column
-   * attribute; other LODs read the source columns. */
+  /** Attributes a map can style by: a row's own value is in an attribute
+   * column, or the source column at an LOD without one, and its boundary
+   * copies pack it. */
+  attributes: { name: string; type: string; values?: string[] }[]
+  /** The struct of attribute columns, and the LODs with one per attribute;
+   * other LODs read the source columns. */
   attribute_columns?: { column: string; lods: string[] }
   thinning: Record<string, unknown>
   lods: Record<string, Omit<Lod, 'name'>>
@@ -160,6 +161,8 @@ export class GeoParquetReader {
   private wholeColumnBytes = 0
   private readonly schema: SchemaTree
   private readonly elements = new Map<string, SchemaTree['element']>()
+  /** Each leaf's path by its dotted form, whose names may hold dots. */
+  private readonly leafPaths = new Map<string, string[]>()
   /** The covering's xmin, ymin, xmax and ymax leaf paths; absent when a file
    * without LODs has no covering. */
   private readonly bboxLeaves: string[] | undefined
@@ -204,7 +207,13 @@ export class GeoParquetReader {
     })
     const visit = (node: SchemaTree) => {
       if (node.children.length) node.children.forEach(visit)
-      else this.elements.set(node.path.join('.'), node.element)
+      else {
+        const path = node.path.join('.')
+        // a leaf is named by its dotted path, which two leaves must not share
+        if (this.elements.has(path)) throw new Error(`two columns share the path ${path}`)
+        this.elements.set(path, node.element)
+        this.leafPaths.set(path, node.path)
+      }
     }
     this.schema = parquetSchema(metadata)
     visit(this.schema)
@@ -337,7 +346,7 @@ export class GeoParquetReader {
     const led =
       this.leads &&
       !!this.lod?.attribute_columns?.lods.includes(lod.name) &&
-      wanted.some((i) => this.fields[i]?.column)
+      wanted.some((i) => i >= 0)
 
     // groups adjacent in key order are spatial neighbours: warm their indexes so a pan
     // seldom meets a group cold
@@ -366,8 +375,8 @@ export class GeoParquetReader {
     const rows: number[] = []
     const columns: Record<string, unknown[]> = Object.fromEntries(attributes.map((a) => [a, []]))
     const builder = new GeometryBuilder()
-    // positions of the tile's own features, whose column attributes come from
-    // columns, and the row holding each one's
+    // positions of the tile's own features, whose attributes come from the
+    // attribute columns, and the row holding each one's
     const own: number[] = []
     const holders: number[] = []
     let holder = 0
@@ -379,7 +388,7 @@ export class GeoParquetReader {
       rows.push(id)
       attributes.forEach((a, i) => columns[a].push(attrs[wanted[i]]))
     }
-    const carried = wanted.some((i) => i >= 0)
+    const copied = wanted.some((i) => i >= 0)
     for (const { g, own, values, held } of perGroup) {
       const first = this.rowGroupStarts[g]
       for (const [row, raw] of values) {
@@ -394,13 +403,13 @@ export class GeoParquetReader {
           first + row,
           tile,
           add,
-          carried,
+          copied,
         )
       }
     }
     const out = { rows, columns, geometry: builder.finish(lod.scale, lod.offset) }
     await Promise.all([
-      this.columnAttributes(out, own, holders, lod, attributes, signal),
+      this.ownAttributes(out, own, holders, lod, attributes, signal),
       this.hydrateColumns(out, attributes, signal),
       ...perGroup.map(({ g, spans }) => this.checkLeading(g, spans, lod, attributes, signal)),
     ])
@@ -408,7 +417,7 @@ export class GeoParquetReader {
   }
 
   /** For each row of `own` in group `g` that the LOD of leaf `leaf` shows,
-   * the row holding its column attributes where they lead the LOD's pages:
+   * the row holding its attributes where they lead the LOD's pages:
    * its page's row at its position among the rows the page shows. `spans`
    * are, for each page a row of `own` is read from, its rows past as many
    * as it shows, which hold no value. */
@@ -440,7 +449,7 @@ export class GeoParquetReader {
     return { rows, spans }
   }
 
-  /** Raise if a requested column attribute of `lod` holds a value on the
+  /** Raise if a requested attribute of `lod` holds a value on the
    * rows `spans` of group `g`: past the rows its LOD page shows, it would be
    * no row's. */
   private async checkLeading(
@@ -453,7 +462,7 @@ export class GeoParquetReader {
     const spec = this.lod?.attribute_columns
     const ranges = spans.filter(([a, b]) => a < b)
     if (!spec || !ranges.length) return
-    const fields = this.fields.filter((f) => f.column && attributes.includes(f.name))
+    const fields = this.fields.filter((f) => attributes.includes(f.name))
     await Promise.all(
       fields.map(async (field) => {
         const path = `${spec.column}.${lod.name}.${field.name}`
@@ -465,10 +474,10 @@ export class GeoParquetReader {
     )
   }
 
-  /** The own features' values of the requested column attributes, from the
-   * LOD's attribute column or, at an LOD without one, the source column:
+  /** The own features' values of the requested attributes, from the LOD's
+   * attribute column or, at an LOD without one, the source column:
    * `holders` is the row holding each own feature's. */
-  private async columnAttributes(
+  private async ownAttributes(
     out: { rows: number[]; columns: Record<string, unknown[]> },
     own: number[],
     holders: number[],
@@ -477,7 +486,7 @@ export class GeoParquetReader {
     signal?: AbortSignal,
   ): Promise<void> {
     const spec = this.lod?.attribute_columns
-    const fields = this.fields.filter((f) => f.column && attributes.includes(f.name))
+    const fields = this.fields.filter((f) => attributes.includes(f.name))
     if (!spec || !fields.length || !own.length) return
     await Promise.all(
       fields.map(async (field) => {
@@ -609,7 +618,7 @@ export class GeoParquetReader {
     return out
   }
 
-  /** Attributes that are not carried in the LOD payload come from the source columns. */
+  /** Requested columns that are not attributes come from the source columns. */
   private async hydrateColumns(
     out: { rows: number[]; columns: Record<string, unknown[]> },
     attributes: string[],
@@ -636,14 +645,16 @@ export class GeoParquetReader {
     for (const column of columns) {
       const exactTop = this.schema.children.find((node) => node.element.name === column)
       if (exactTop && !exactTop.children.length) continue
-      if (!/^[^.[\]]+(?:\.[^.[\]]+|\[\d+\])*$/.test(column))
+      // a leaf's own dotted path names it, whatever characters its parts hold
+      const leaf = this.leafPaths.get(column)
+      if (!leaf && !/^[^.[\]]+(?:\.[^.[\]]+|\[\d+\])*$/.test(column))
         throw new Error(`invalid column path ${column}`)
-      const parts = column.replace(/\[(\d+)\]/g, '.$1').split('.')
+      const parts = leaf ?? column.replace(/\[(\d+)\]/g, '.$1').split('.')
       const top = this.schema.children.find((node) => node.element.name === parts[0])
       // An explicit physical LIST/MAP leaf path reads that leaf directly.
       if (
-        this.elements.has(column) &&
-        getSchemaPath(this.metadata.schema, column.split('.')).some(
+        leaf &&
+        getSchemaPath(this.metadata.schema, leaf).some(
           (node) => isListLike(node) || isMapLike(node),
         )
       )
@@ -1292,16 +1303,11 @@ export function checkLod(lod: LodMetadata): void {
   }
   if (!lod.key) throw new Error(`${LOD_KEY} file stores no key column`)
   if (lod.attributes.length > MAX_ATTRIBUTES)
-    throw new Error(`${LOD_KEY} carries more than ${MAX_ATTRIBUTES} attributes`)
-  for (const a of lod.attributes) {
-    if (a.storage !== undefined && a.storage !== 'packed' && a.storage !== 'column')
-      throw new Error(`attribute ${a.name} has unknown storage ${a.storage}`)
-    attributeFields([a])
-  }
+    throw new Error(`${LOD_KEY} has more than ${MAX_ATTRIBUTES} attributes`)
+  for (const a of lod.attributes) attributeFields([a])
   const spec = lod.attribute_columns
-  const columns = lod.attributes.some((a) => a.storage === 'column')
-  if (columns !== (spec !== undefined))
-    throw new Error(`${LOD_KEY} attribute_columns must be given exactly with column attributes`)
+  if (lod.attributes.length > 0 !== (spec !== undefined))
+    throw new Error(`${LOD_KEY} attribute_columns must be given exactly with attributes`)
   if (
     spec &&
     (typeof spec.column !== 'string' ||

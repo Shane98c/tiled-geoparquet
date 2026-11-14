@@ -48,7 +48,7 @@ def main(directory: Path):
         str(source),
         indexed,
         thinning=chain(drop_smallest(850_000), tiny_polygons()),
-        carry=['height', 'class'],
+        attributes=['height', 'class'],
         zooms=list(range(8, 17)),
         complete_from=14,
         workers=2,

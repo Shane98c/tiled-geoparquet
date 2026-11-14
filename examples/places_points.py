@@ -19,5 +19,5 @@ if __name__ == '__main__':
         out,
         thinning=importance('population', per_tile=300),
         zooms=range(0, 15),
-        carry=['name', 'population'],
+        attributes=['name', 'population'],
     )

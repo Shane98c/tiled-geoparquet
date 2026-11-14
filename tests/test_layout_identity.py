@@ -38,7 +38,7 @@ def test_indexed_layout_keeps_feature_identity(tmp_path):
             zooms=range(10, 15),
             complete_from=13,
             thinning=drop_rate(2.5),
-            carry=['name'],
+            attributes=['name'],
             row_group_rows=256,
             workers=1,
             log=lambda *_: None,

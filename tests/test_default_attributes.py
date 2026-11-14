@@ -1,4 +1,4 @@
-"""The attributes a file keeps when the caller names none, or only packed ones."""
+"""The attributes a file keeps when the caller names none, or names some."""
 
 import importlib
 import json
@@ -39,15 +39,20 @@ def source(tmp_path_factory):
     return path
 
 
+def _lod(path):
+    return json.loads(pq.read_schema(path).metadata[b'geo'])['lod_columns']
+
+
 def _attributes(path):
-    lod = json.loads(pq.read_schema(path).metadata[b'geo'])['lod_columns']
-    return [(a['name'], a.get('storage', 'packed')) for a in lod['attributes']]
+    return [(a['name'], a['type']) for a in _lod(path)['attributes']]
 
 
-def test_every_cheap_column_is_a_column_attribute_by_default(source, tmp_path):
+def test_every_cheap_column_is_an_attribute_by_default(source, tmp_path):
     out = write(source, tmp_path / 'out.parquet', **OPTIONS)
     validate(out, full=True)
-    assert _attributes(out) == [('height', 'column'), ('kind', 'column')]
+    assert _attributes(out) == [('height', 'double'), ('kind', 'string')]
+    lod = _lod(out)
+    assert lod['attribute_columns'] == {'column': 'lod_attributes', 'lods': list(lod['lods'])}
 
 
 def test_a_column_named_as_read_overview_names_its_own_is_left_out(source, tmp_path):
@@ -58,15 +63,19 @@ def test_a_column_named_as_read_overview_names_its_own_is_left_out(source, tmp_p
     assert overview.column('row').to_pylist() == list(range(400))
 
 
-def test_carry_packs_what_it_names_and_the_rest_stay_columns(source, tmp_path):
-    out = write(source, tmp_path / 'out.parquet', carry=['height'], **OPTIONS)
+def test_named_attributes_are_kept_and_no_others(source, tmp_path):
+    out = write(source, tmp_path / 'out.parquet', attributes=[('height', 'float')], **OPTIONS)
     validate(out, full=True)
-    assert _attributes(out) == [('height', 'packed'), ('kind', 'column')]
+    assert _attributes(out) == [('height', 'float')]
+    assert pq.read_schema(out).field('lod_attributes').type[0].type == pa.struct(
+        [pa.field('height', pa.float32())]
+    )
 
 
-def test_no_column_attributes_when_none_are_asked_for(source, tmp_path):
-    out = write(source, tmp_path / 'out.parquet', carry_columns=(), **OPTIONS)
+def test_no_attributes_when_none_are_asked_for(source, tmp_path):
+    out = write(source, tmp_path / 'out.parquet', attributes=(), **OPTIONS)
     assert _attributes(out) == []
+    assert 'attribute_columns' not in _lod(out)
     assert 'lod_attributes' not in pq.read_schema(out).names
 
 
@@ -80,6 +89,9 @@ def test_the_cli_keeps_cheap_columns_unless_told_none(source, tmp_path, monkeypa
     runner = CliRunner()
     args = ['write', str(source), str(tmp_path / 'out.parquet')]
     assert runner.invoke(cli, args).exit_code == 0
-    assert given['carry_columns'] == 'auto'
-    assert runner.invoke(cli, [*args, '--carry-columns', 'none']).exit_code == 0
-    assert given['carry_columns'] == ()
+    assert given['attributes'] == 'auto'
+    assert runner.invoke(cli, [*args, '--attributes', 'none']).exit_code == 0
+    assert given['attributes'] == ()
+    named = [*args, '--attributes', 'height:float', '--attributes', 'kind']
+    assert runner.invoke(cli, named).exit_code == 0
+    assert given['attributes'] == [('height', 'float'), 'kind']

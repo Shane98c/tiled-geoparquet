@@ -2,9 +2,9 @@
 
 Each LOD is a nullable `binary` child of the `lod` struct: null means the row
 is not shown there, and a value is the row packed as `pack` describes, so a
-tile reads one leaf per LOD. A packed attribute is inside the blob; a column
-attribute is inside it only on boundary copies, and a row's own value is in
-an attribute column or, at an LOD without one, the source column.
+tile reads one leaf per LOD. Attributes are inside it only on boundary
+copies; a row's own value is in an attribute column or, at an LOD without
+one, the source column.
 """
 
 from __future__ import annotations
@@ -12,17 +12,14 @@ from __future__ import annotations
 import numpy as np
 import pyarrow as pa
 
-LOD_VERSION = '0.4.0'
+LOD_VERSION = '0.5.0'
 ENCODING = 'packed'
-PACK_VERSION = 2
-# a row's presence bitmap is one 64-bit varint, a bit per carried attribute
+PACK_VERSION = 3
+# a copy's presence bitmap is one 64-bit varint, a bit per attribute
 MAX_ATTRIBUTES = 64
-# the columns `read_overview` returns beside the carried attributes
+# the columns `read_overview` returns beside the attributes
 OVERVIEW_COLUMNS = ('row', 'geometry')
 GEOMETRY_TYPES = {'point': 'Point', 'line': 'MultiLineString', 'polygon': 'MultiPolygon'}
-# where an attribute's own-row values live: in the packed row, the default,
-# or in columns
-STORAGES = ('packed', 'column')
 
 
 def is_compatible_version(version) -> bool:
@@ -51,9 +48,9 @@ def lod_type() -> pa.DataType:
     return pa.binary()
 
 
-def is_carried_type(t: pa.DataType) -> bool:
-    """Whether the packer writes values of type `t`: integers, floats, booleans
-    and strings."""
+def is_attribute_type(t: pa.DataType) -> bool:
+    """Whether an attribute can have type `t`: integers, floats, booleans and
+    strings."""
     return (
         pa.types.is_integer(t)
         or pa.types.is_floating(t)
@@ -63,11 +60,11 @@ def is_carried_type(t: pa.DataType) -> bool:
     )
 
 
-def infer_attributes(schema: pa.Schema, carry) -> list[pa.Field]:
-    """`carry` is a list of column names or (name, Arrow type alias) pairs. Only
-    scalar types are carried: integers, floats, booleans and strings."""
+def infer_attributes(schema: pa.Schema, attributes) -> list[pa.Field]:
+    """`attributes` is a list of column names or (name, Arrow type alias)
+    pairs. Only scalar types are kept: integers, floats, booleans and strings."""
     out = []
-    for item in carry:
+    for item in attributes:
         if isinstance(item, pa.Field):
             out.append(pa.field(item.name, item.type, nullable=True))
         elif isinstance(item, tuple):
@@ -76,17 +73,17 @@ def infer_attributes(schema: pa.Schema, carry) -> list[pa.Field]:
         else:
             out.append(pa.field(item, schema.field(item).type, nullable=True))
     if len(out) > MAX_ATTRIBUTES:
-        raise ValueError(f'cannot carry {len(out)} attributes: at most {MAX_ATTRIBUTES}')
+        raise ValueError(f'cannot keep {len(out)} attributes: at most {MAX_ATTRIBUTES}')
     for f in out:
-        if not is_carried_type(f.type):
+        if not is_attribute_type(f.type):
             raise ValueError(
-                f'cannot carry {f.name}: {f.type} is not an integer, float, bool or string'
+                f'cannot keep {f.name}: {f.type} is not an integer, float, bool or string'
             )
     return out
 
 
 def column_type(attribute: dict) -> pa.DataType:
-    """The Arrow type of a column attribute's LOD columns, from its metadata
+    """The Arrow type of an attribute's attribute columns, from its metadata
     entry: the declared type, a string with a value table as the uint8 index
     into it, and a large string as a string."""
     if 'values' in attribute:
@@ -96,7 +93,7 @@ def column_type(attribute: dict) -> pa.DataType:
 
 
 def source_compatible(source: pa.DataType, declared: pa.DataType) -> bool:
-    """Whether a source column of type `source` can serve a column attribute
+    """Whether a source column of type `source` can serve an attribute
     declared `declared` where an LOD reads the source column: the reader
     rounds a number to a declared float type, and takes anything else as it
     is, so the kinds must agree."""

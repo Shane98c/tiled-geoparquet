@@ -1,7 +1,7 @@
 # Tiled GeoParquet
 
 _The `lod_columns` extension: a layout and metadata contract for GeoParquet
-files that serve a zoomable map directly. Implemented by the writer and reader in this repository. Draft 0.4.0._
+files that serve a zoomable map directly. Implemented by the writer and reader in this repository. Draft 0.5.0._
 
 The key words MUST, SHOULD and MAY are to be interpreted as in RFC 2119.
 'Layout', 'Metadata' and 'Geometry' are the contract; 'Reading without the
@@ -26,19 +26,18 @@ column alongside the source columns.
   `crs` means unknown and does not qualify. LOD geometry is stored in
   EPSG:3857 metres, so a grid cell is the same size on screen at every
   latitude; the bbox covering stays in the primary geometry's degrees.
-- **LOD**: one stored display representation (row selection, carried
-  attributes and geometry) serving a contiguous range of zooms. Zooms may
-  share an LOD only when row selection and carried attributes agree, and an
-  LOD uses its finest zoom's grid.
+- **LOD**: one stored display representation (row selection, attribute
+  values and geometry) serving a contiguous range of zooms. Zooms may share
+  an LOD only when row selection and attribute values agree, and an LOD uses
+  its finest zoom's grid.
 - **LOD column**: one nullable binary child per LOD in the required `lod`
-  struct. Each value packs quantized geometry, carried attributes, and any
-  boundary copies it hosts. Attribute types are declared in metadata.
-- **Carried attribute**: a source column a renderer styles with, declared in
-  metadata with the type the LODs hold it in. A _packed_ attribute is in every
-  packed row. A _column attribute_ is in the packed rows of boundary copies
-  only; a row's own value is in an attribute column at an LOD that has one
-  (Layout 5) and in the source column of the same name at any other LOD, so a
-  tile reads it only when a style asks for it.
+  struct. Each value packs quantized geometry and any boundary copies it
+  hosts, with their attributes.
+- **Attribute**: a source column a renderer styles with, declared in
+  metadata with the type the LODs hold it in. A row's own value is in an
+  attribute column at an LOD that has one (Layout 5) and in the source column
+  of the same name at any other LOD, so a tile reads it only when a style
+  asks for it. The boundary copies of the row pack it (Geometry).
 - **Thinning**: the rule selecting displayed features independently at each
   zoom. Membership need not nest across zooms. The reference writer can force
   completeness from a chosen zoom; primary geometries without finite bounds
@@ -71,7 +70,7 @@ A conforming file MUST satisfy:
    pixels holds a line or outline up to `2m` pixels wide drawn along the
    edge. A reader that clips a tile's geometry SHOULD keep at least `margin`
    pixels past the tile, or it cuts those strokes again. A
-   straddler's row is in another interval, so each packed LOD row carries the
+   straddler's row is in another interval, so each packed LOD row holds the
    copies it hosts: the tile each serves as `zoom << 48 | x * 2^zoom + y`, the
    feature's file row index, its geometry on that LOD's grid and its
    attributes. The writer MUST place every
@@ -103,19 +102,22 @@ A conforming file MUST satisfy:
    a null page of the column index; the row keeps its WKB as the source had
    it. A reader may therefore take a row's bbox from its WKB or its covering
    and select the same rows.
-3. **Page indexes.** Every column has an offset index.
+3. **Page indexes.** Every column has an offset index. A reader names a leaf
+   column by its dotted path, so no two leaf columns share one: a column
+   whose name holds a dot MUST NOT read as the path of another column's
+   nested field.
 4. **LOD columns.** A top-level required struct column named by `column`
    with one nullable binary child per LOD, named by the LOD. The child is
    non-null for a row when it is shown at the LOD's zooms or hosts boundary copies;
    since zooms sharing an LOD agree on row selection, that is one condition
    per LOD. Each child is a nullable `binary` column, one Parquet leaf,
-   holding the row packed as Geometry describes: its geometry, its carried
-   attributes and the straddler copies it hosts, see Layout 1. A host-only row has empty own geometry. A row whose
+   holding the row packed as Geometry describes: its geometry and the
+   straddler copies it hosts, see Layout 1. A host-only row has empty own geometry. A row whose
    primary geometry has no finite bounds is shown at no LOD.
 5. **Attribute columns.** When `attribute_columns.lods` lists an LOD, a
    top-level required struct column named by `attribute_columns.column`
    holds one required struct child per listed LOD, in that order and named by
-   the LOD, each holding one nullable flat column per column attribute, in
+   the LOD, each holding one nullable flat column per attribute, in
    metadata order and named by the attribute. A column holds a value only
    for a row the LOD shows, one with its own geometry there: that row's value
    at the LOD, the source value cast to the declared type, or the value the
@@ -131,22 +133,21 @@ A conforming file MUST satisfy:
    64 bits and the indexes as INT32 with their INT logical type, the 64-bit
    integers as INT64, `halffloat` as FIXED_LEN_BYTE_ARRAY of 2 with the
    FLOAT16 logical type, `float` as FLOAT, `double` as DOUBLE and strings as
-   BYTE_ARRAY. When no LOD is listed the column is absent. Every column
+   BYTE_ARRAY. When no LOD is listed the column is absent. Every
    attribute is also a flat top-level source column of the same name, whose
    values an LOD that is not listed shows, cast to the declared type: so the
    source is an integer for a declared integer, a number for a declared
    float, a boolean for `bool` and a string for a string. An LOD whose
-   thinning gives a column attribute values of its own MUST be listed, and a
+   thinning gives an attribute values of its own MUST be listed, and a
    file with the [spatial index](SPATIAL-INDEX.md) lists every LOD.
 
 The validator checks the version, margin, encoding and per-LOD metadata, the
-attributes and their storage, the schema shapes, the attribute columns' shape
-and types against the attributes and `attribute_columns`, each column
-attribute's source column type, the covering declaration and its GeoParquet
-version, covering statistics, page indexes, and a sample from the first row
-group: every LOD's values there decode, own rows pack no column attribute, an
-attribute column holds values only for rows its LOD shows, where the file
-places them, and value indexes
+attributes, the schema shapes, the attribute columns' shape and types against
+the attributes and `attribute_columns`, each attribute's source column type,
+the covering declaration and its GeoParquet version, covering statistics,
+page indexes, and a sample from the first row group: every LOD's values
+there decode, an attribute column holds values only for rows its LOD shows,
+where the file places them, and value indexes
 within `values`, and each row's covering is its primary geometry's bounds
 rounded outward, null on exactly the rows whose geometry has no finite
 bounds. In full mode it decodes
@@ -171,32 +172,31 @@ The following SHOULD hold and are what the reference writer does:
   LOD, attribute or bbox columns. Packed LODs are binary values rather than
   separate coordinate leaves. The standard footer reader also handles
   dictionary pages.
-- Every LOD holds the column attributes in attribute columns, those showing
-  every row too, so the pages a styled tile reads hold the rows of its
-  overview pages; the [spatial index](SPATIAL-INDEX.md) requires it. On 1.75
-  million Denver buildings keeping `height` as a column, that makes the file
-  254.2 MB against 248.5 MB with the LODs showing every row reading the
-  source column.
+- Every LOD holds the attributes in attribute columns, those showing every
+  row too, so the pages a styled tile reads hold the rows of its overview
+  pages; the [spatial index](SPATIAL-INDEX.md) requires it. On 1.75 million
+  Denver buildings keeping `height`, the attribute column of the LOD showing
+  every row takes 3.0 MB of the 253.2 MB file.
 
 ## Metadata
 
 Under the `geo` key, a `lod_columns` object:
 
-| field               | type     | meaning                                                                                                                                                                                                                                                                                                         |
-| ------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `version`           | string   | `0.4.0`; readers reject a different major version, and while the major is 0 a different minor as well, since minors may change the layout                                                                                                                                                                       |
-| `column`            | string   | name of the LOD struct column                                                                                                                                                                                                                                                                                   |
-| `order`             | string   | `hilbert_webmercator`, see Layout 1                                                                                                                                                                                                                                                                             |
-| `key`               | object   | `{column, depth}`: the nullable int64 column holding each row's Hilbert index at `depth` of its Web Mercator cell, with statistics and a page index, see Layout 1                                                                                                                                               |
-| `zooms`             | int[]    | every zoom the file serves, ascending                                                                                                                                                                                                                                                                           |
-| `tile_size`         | int      | pixels per tile the zooms assume (512)                                                                                                                                                                                                                                                                          |
-| `margin`            | number   | pixels of a `tile_size` tile, from 0 to 128, past a tile's edge within which a feature centred outside the tile is copied into it as a straddler, see Layout 1                                                                                                                                                  |
-| `encoding`          | string   | `packed`, see Geometry                                                                                                                                                                                                                                                                                          |
-| `pack_version`      | int      | `2`, the packed row format version; readers reject any other value                                                                                                                                                                                                                                              |
-| `attributes`        | object[] | `{name, type, values?, storage?}` of carried attributes; `type` is the Arrow name of the packed type, see Geometry; optional `values` is a string dictionary holding every value packed for the attribute; optional `storage` is `column` for a column attribute and `packed`, as when absent, for a packed one |
-| `thinning`          | object   | description of the rule used; informational                                                                                                                                                                                                                                                                     |
-| `lods`              | object   | LOD name to `{zooms, geometry_type, scale, offset, placeholder}`; `scale` and `offset` are `[x, y]` pairs in EPSG:3857 metres, `placeholder` the width in grid cells of the square drawn for a shape too small for the grid                                                                                     |
-| `attribute_columns` | object   | `{column, lods}`: the name of the attribute column struct and the LODs that hold column attributes in it, in declared order, see Layout 5; present exactly when some attribute's `storage` is `column`                                                                                                          |
+| field               | type     | meaning                                                                                                                                                                                                                     |
+| ------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version`           | string   | `0.5.0`; readers reject a different major version, and while the major is 0 a different minor as well, since minors may change the layout                                                                                   |
+| `column`            | string   | name of the LOD struct column                                                                                                                                                                                               |
+| `order`             | string   | `hilbert_webmercator`, see Layout 1                                                                                                                                                                                         |
+| `key`               | object   | `{column, depth}`: the nullable int64 column holding each row's Hilbert index at `depth` of its Web Mercator cell, with statistics and a page index, see Layout 1                                                           |
+| `zooms`             | int[]    | every zoom the file serves, ascending                                                                                                                                                                                       |
+| `tile_size`         | int      | pixels per tile the zooms assume (512)                                                                                                                                                                                      |
+| `margin`            | number   | pixels of a `tile_size` tile, from 0 to 128, past a tile's edge within which a feature centred outside the tile is copied into it as a straddler, see Layout 1                                                              |
+| `encoding`          | string   | `packed`, see Geometry                                                                                                                                                                                                      |
+| `pack_version`      | int      | `3`, the packed row format version; readers reject any other value                                                                                                                                                          |
+| `attributes`        | object[] | `{name, type, values?}` of attributes; `type` is the Arrow name of the declared type, see Geometry; optional `values` is a string dictionary holding every value of the attribute                                           |
+| `thinning`          | object   | description of the rule used; informational                                                                                                                                                                                 |
+| `lods`              | object   | LOD name to `{zooms, geometry_type, scale, offset, placeholder}`; `scale` and `offset` are `[x, y]` pairs in EPSG:3857 metres, `placeholder` the width in grid cells of the square drawn for a shape too small for the grid |
+| `attribute_columns` | object   | `{column, lods}`: the name of the attribute column struct and the LODs that hold the attributes in it, in declared order, see Layout 5; present exactly when there are attributes                                           |
 
 All fields but `attribute_columns` are required; readers MUST ignore fields they do not know. Every
 zoom in `zooms` MUST appear in exactly one LOD and lie in `0..key.depth`, so
@@ -213,15 +213,14 @@ complete zooms when the full-detail geometry is small.
 
 ### Example
 
-Abbreviated metadata for a building file with two carried attributes, one
-packed and one a column attribute, under the `geo` key beside the usual
-GeoParquet fields (only two LOD entries shown). `f8` shows a fraction of the
-rows and holds `class` in an attribute column; `f13` shows nearly every row
-and reads `class` from the source column:
+Abbreviated metadata for a building file with two attributes, under the
+`geo` key beside the usual GeoParquet fields (only two LOD entries shown).
+`f8` shows a fraction of the rows and `f13` nearly every row; each holds both
+attributes in an attribute column, `class` as an index into its values:
 
 ```json
 "lod_columns": {
-  "version": "0.4.0",
+  "version": "0.5.0",
   "column": "lod",
   "order": "hilbert_webmercator",
   "key": { "column": "hilbert", "depth": 24 },
@@ -229,12 +228,12 @@ and reads `class` from the source column:
   "tile_size": 512,
   "margin": 2,
   "encoding": "packed",
-  "pack_version": 2,
+  "pack_version": 3,
   "attributes": [
     { "name": "height", "type": "float" },
-    { "name": "class", "type": "string", "values": ["commercial", "house"], "storage": "column" }
+    { "name": "class", "type": "string", "values": ["commercial", "house"] }
   ],
-  "attribute_columns": { "column": "lod_attributes", "lods": ["f8"] },
+  "attribute_columns": { "column": "lod_attributes", "lods": ["f8", "f13"] },
   "thinning": { "name": "combine(size_threshold(4), drop_rate(2.5))" },
   "lods": {
     "f8": { "zooms": [8], "geometry_type": "MultiPolygon", "scale": [76.437, 76.437], "offset": [-11699678.5, 4807984.5], "placeholder": 2 },
@@ -254,7 +253,8 @@ lod: struct<
   f13: binary
 > not null
 lod_attributes: struct<
-  f8: struct<class: uint8> not null
+  f8: struct<height: float, class: uint8> not null,
+  f13: struct<height: float, class: uint8> not null
 > not null
 height: float
 class: string
@@ -264,31 +264,30 @@ geometry: binary (WKB)
 ## Geometry
 
 Every LOD value is one packed row, a byte string a tile reads in one run:
-the row's geometry on the LOD's grid, its carried attributes, and on a host
-row the straddler copies it carries. Everything is an unsigned LEB128 varint
+the row's geometry on the LOD's grid and, on a host row, the straddler copies
+it hosts with their attributes. Everything is an unsigned LEB128 varint
 of at most ten bytes, the most a 64-bit value takes,
 except string bytes, which follow all of a row's varints in order, so a
 reader walks the varints knowing the structure and then takes string
 payloads in turn:
 
 ```
-row    := geometry attrs spill strings...
+row    := geometry spill strings...
 geometry :=
   MultiPolygon:    n, per polygon: rings, per ring: vertices, then per vertex
                    zigzag(dx) zigzag(dy), steps within the ring and the first
                    vertex from the origin; the closing vertex is not stored
   MultiLineString: n parts, per part: vertices, steps as above
   Point:           zigzag(x) zigzag(y)
+spill  := count, per copy: tile (zoom << 48 | x * 2^zoom + y), file row
+          index, geometry, attrs
 attrs  := presence bitmap (one varint, bit i for attribute i in metadata
           order), then each present value: integers zigzag, float16 as its
           bit pattern, float32 as its bit pattern, float64 as its bit
           pattern, bool 0/1, string as its byte length, or its zero-based
           dictionary index when the attribute declares `values` (no trailing
-          string bytes for dictionary values); a row's own attrs leave every
-          column attribute's bit clear, while a copy's attrs hold every
-          carried attribute
-spill  := count, per copy: tile (zoom << 48 | x * 2^zoom + y), file row
-          index, geometry, attrs
+          string bytes for dictionary values); a copy's attrs hold every
+          attribute
 ```
 
 `zigzag(v)` is `(v << 1) ^ (v >> 63)`. A decoded grid coordinate is
@@ -301,7 +300,7 @@ stored vertices; a reader closes it by repeating its first vertex, so decoded
 rings are closed as WKB and GeoArrow expect. Every line part has at least two
 vertices, and a row shown only to host copies has zero polygons; empty
 geometry is otherwise never written. Ring steps make a building a handful of
-one-byte varints: a placeholder square packs to 13 to 18 bytes before
+one-byte varints: a placeholder square packs to 12 to 17 bytes before
 compression, a footprint to about two bytes per vertex.
 The reference writer projects the primary geometry to Web Mercator, with
 latitude clamped to the Mercator limit, and uses a quarter of the LOD's
@@ -321,22 +320,22 @@ is a quarter of a Web Mercator pixel at the LOD's finest zoom, close to
 tippecanoe's eighth-pixel tolerance; features a pixel or two across keep
 their own shape.
 
-Carried attributes keep their declared Arrow types and nulls. A file carries
-at most 64, a bit of the presence bitmap each. The types
-are the integer types (`int8` to `uint64`), `halffloat`, `float`, `double`,
-`bool`, `string` and `large_string`. Integers are zigzagged as int64, so a
-packed carried uint64 value MUST NOT exceed 2^63 - 1; the source column
-itself is unrestricted. A float is packed in its declared type, so a source
-column carried as `halffloat` packs each value rounded to the nearest
-half-precision float, ties to even, a varint of at most two bytes in [0, 2)
-and of three otherwise. A finite value that would round to infinity in the
-declared type MUST NOT be packed, and the reference writer refuses it; NaN
-and the infinities pack as themselves. A copy MUST carry the
-attribute values its row has at the LOD: a thinning that overrides an
-attribute writes the overridden value, cast to the declared type, into that
-LOD's rows and their copies, so a feature reads the same in every tile it
-reaches. For a column attribute that value is in the LOD's attribute column
-for the row and packed on its copies.
+Attributes keep their declared Arrow types and nulls. A file has at most 64,
+a bit of a copy's presence bitmap each. The types are the integer types
+(`int8` to `uint64`), `halffloat`, `float`, `double`, `bool`, `string` and
+`large_string`. Integers are zigzagged as int64, so a uint64 attribute value
+MUST NOT exceed 2^63 - 1; the reference writer refuses one on any row,
+whether or not the row has copies. A float is held in its declared type, so
+a source column declared `halffloat` has each value rounded to the nearest
+half-precision float, ties to even, in its attribute columns and copies,
+where it packs as a varint of at most two bytes in [0, 2) and of three
+otherwise. A finite value that would round to infinity in the declared type
+MUST NOT be held, and the reference writer refuses it; NaN and the
+infinities are held as themselves. A copy MUST hold the attribute values its
+row has at the LOD: a thinning that overrides an attribute writes the
+overridden value, cast to the declared type, into that LOD's attribute
+column for the row and onto its copies, so a feature reads the same in every
+tile it reaches.
 
 ## Reading without the spatial index
 
@@ -369,7 +368,7 @@ reader serves files without the index and how it reaches analytical rows.
    merging adjacent pages into one range. Decode each row: an own row with
    geometry is a feature, and each hosted copy whose tile is this tile is a
    feature with the copy's row index as its id. A copy's attributes are those
-   it packs. An own feature's column attributes are its row's values in the
+   it packs. An own feature's attributes are its row's values in the
    LOD's attribute column, or in the source column cast to the declared type
    at an LOD without one; the reference reader reads them by row once the
    tile is decoded, a further request round. In a file with the spatial
@@ -383,10 +382,11 @@ reader serves files without the index and how it reaches analytical rows.
 No bbox statistics or pages are read for an LOD tile; the covering serves
 analysis readers and the primary geometry fallback.
 
-The reference JS reader returns a carried integer as a JavaScript number, on
-this path and the indexed one, so exactly only up to 2^53 in magnitude. Past
-that it raises no error and rounds the value to 53 significant bits. The reference Python reader, `read_overview`, decodes in 64
-bits and returns every carried integer exactly.
+The reference JS reader returns an integer attribute as a JavaScript number,
+on this path and the indexed one, so exactly only up to 2^53 in magnitude.
+Past that it raises no error and rounds the value to 53 significant bits.
+The reference Python reader, `read_overview`, decodes in 64 bits and returns
+every integer attribute exactly.
 
 ## Choosing zooms
 

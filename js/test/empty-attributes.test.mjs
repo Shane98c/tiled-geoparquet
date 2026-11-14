@@ -1,5 +1,5 @@
 // node test/empty-attributes.test.mjs <file> <cases.json>
-// An overview page whose rows hold no value of a column attribute has an
+// An overview page whose rows hold no value of an attribute has an
 // empty entry in its attribute leaf. A tile styled by the attribute holds
 // its value or null on every feature, requests no byte of a page of nulls,
 // and, where every overview page it reads is empty of the attribute,
@@ -78,7 +78,7 @@ for (const tile of tiles) {
     bare++
   }
 }
-assert.ok(valued > 0 && nulls > 0, `features carry ${attribute} and nulls`)
+assert.ok(valued > 0 && nulls > 0, `features hold ${attribute} and nulls`)
 assert.ok(fetching > 0, `some tiles fetch ${attribute} pages`)
 assert.ok(bare > 0, 'some tiles read only overview pages empty of the attribute')
 console.log(

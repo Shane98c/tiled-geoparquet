@@ -18,6 +18,6 @@ if __name__ == '__main__':
         src,
         out,
         thinning=combine(size_threshold(pixels=4), drop_rate(2.5)),
-        carry=['height', 'class'],
+        attributes=['height', 'class'],
         workers=4,
     )

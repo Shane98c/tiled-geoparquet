@@ -120,7 +120,7 @@
         >Style
         <select id="style">
           <option value="geometry">Geometry</option>
-          <option value="height">Height (carried)</option>
+          <option value="height">Height (attribute)</option>
           <option value="subtype">Subtype (source column)</option>
         </select></label
       >
@@ -220,24 +220,18 @@
         'fill-opacity': 0.5,
         'fill-outline-color': '#7a1f08',
       }
-      // The style menu lists every attribute of the file by where a tile reads it
-      // from. Names come from the file: they are set as text, never as markup.
+      // The style menu lists the file's attributes, then its other source columns.
+      // Names come from the file: they are set as text, never as markup.
       const metadata = enabled('lod') ? await readMetadata(fileUrl) : undefined
       const styleSelect = document.getElementById('style')
       if (metadata?.lod) {
         const attributes = metadata.lod.attributes
-        const carried = new Set(attributes.map((a) => a.name))
+        const held = new Set(attributes.map((a) => a.name))
         const groups = [
-          [
-            'Packed with the geometry',
-            attributes.filter((a) => a.storage !== 'column').map((a) => a.name),
-          ],
-          ['Per-zoom columns', attributes.filter((a) => a.storage === 'column').map((a) => a.name)],
+          ['Attributes', attributes.map((a) => a.name)],
           [
             'Source columns (slow: reads the whole column)',
-            metadata.columns.filter(
-              (name) => !carried.has(name) && name !== metadata.lod.key?.column,
-            ),
+            metadata.columns.filter((name) => !held.has(name) && name !== metadata.lod.key?.column),
           ],
         ]
         styleSelect.replaceChildren(

@@ -28,6 +28,7 @@ from tiled_geoparquet._layout import (
 )
 from tiled_geoparquet.cli import cli
 from tiled_geoparquet.validate import BOUNDS, ValidationError, _outward
+from tiled_geoparquet.writer import _write_unindexed
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -272,10 +273,11 @@ def test_directory_nodes_are_reached_once(leafy, tmp_path, monkeypatch):
 
 
 @pytest.fixture(scope='module')
-def carried(tmp_path_factory):
-    """A file carrying an attribute, so primary leaves locate its pages too,
-    and the same laid out again with one page per leaf."""
-    work = tmp_path_factory.mktemp('carried')
+def styled(tmp_path_factory):
+    """A file with an attribute, whose pages the slots beside primary leaves
+    locate, the same laid out again with one page per leaf, and the file it
+    was laid out from, which holds each attribute value on its own row."""
+    work = tmp_path_factory.mktemp('styled')
     n = 240
     boxes = [
         shapely.box(x, y, x + 0.08, y + 0.08)
@@ -294,18 +296,21 @@ def carried(tmp_path_factory):
     )
     src = work / 'source.parquet'
     pq.write_table(table.replace_schema_metadata({b'geo': json.dumps(geo).encode()}), src)
-    out = write(
+    staged = work / 'styled.staged.parquet'
+    _write_unindexed(
         src,
-        work / 'carried.parquet',
+        staged,
         zooms=[6, 8],
         complete_from=8,
-        carry=['height'],
+        attributes=['height'],
         row_group_rows=64,
         page_rows=16,
         workers=1,
         log=lambda *_: None,
     )
-    return out, finalize_layout(out, work / 'leafy.parquet', leaf_pages=1, log=lambda *_: None)
+    out = finalize_layout(staged, work / 'styled.parquet', log=lambda *_: None)
+    leafy = finalize_layout(out, work / 'leafy.parquet', leaf_pages=1, log=lambda *_: None)
+    return out, leafy, staged
 
 
 @pytest.mark.parametrize(
@@ -314,21 +319,20 @@ def carried(tmp_path_factory):
         ('box', "run box is not the union of its rows' covering"),
         ('rows', "runs do not add up to their page's rows"),
         ('offset', 'run outside the geometry pages'),
-        ('sources', 'misplaces height pages'),
-        ('attributes', 'distinct indexed columns'),
+        ('width', 'malformed primary directory leaf'),
         ('level', 'malformed directory node'),
         ('top', 'must start above its leaves'),
         ('missing', 'no primary directory'),
     ],
 )
-def test_primary_directory_corruption(carried, tmp_path, mutation, message):
+def test_primary_directory_corruption(styled, tmp_path, mutation, message):
     """A primary leaf lists geometry pages as runs of their rows, each boxed
-    by the union of its rows' coverings, and each attribute's pages over
-    those rows; the root holds a node above the leaves."""
-    raw, root = _root(carried[0])
+    by the union of its rows' coverings, and nothing else; the root holds a
+    node above the leaves."""
+    raw, root = _root(styled[0])
     index = root['primary_index']
     level, top = read_node(index['directory'])
-    assert level == 1 and len(top['low']) == 1 and index['attributes'] == ['height'], 'one leaf'
+    assert level == 1 and len(top['low']) == 1 and list(index) == ['directory'], 'one leaf'
     start, length = int(top['offset'][0]), int(top['length'][0])
     leaf = json.loads(gzip.decompress(raw[start : start + length]))
     if mutation == 'box':
@@ -337,10 +341,8 @@ def test_primary_directory_corruption(carried, tmp_path, mutation, message):
         leaf[8][-1] -= 1
     elif mutation == 'offset':
         leaf[5][max(i for i, length in enumerate(leaf[6]) if length)] += 1
-    elif mutation == 'sources':
-        leaf[9][0][1][0] += 1
-    elif mutation == 'attributes':
-        index['attributes'] = ['bbox']
+    elif mutation == 'width':
+        leaf.append([[], [], [], []])
     elif mutation == 'level':
         leaf[0] = 1
     store = _Appended(raw)
@@ -373,11 +375,11 @@ def test_primary_directory_corruption(carried, tmp_path, mutation, message):
         ('shared', 'referenced twice'),
     ],
 )
-def test_row_directory_corruption(carried, tmp_path, mutation, message):
+def test_row_directory_corruption(styled, tmp_path, mutation, message):
     """The root lists every flat column whose pages decode on their own, with
     its codec, schema and a row directory whose leaves list each of its pages
     once, in row order, with the byte range and rows of its offset index."""
-    raw, root = _root(carried[1])
+    raw, root = _root(styled[1])
     index = root['column_index']
     footer = len(raw) - 8 - int.from_bytes(raw[-8:-4], 'little')
     assert index['columns'] == ['hilbert', 'height', 'geometry'], 'flat columns, in schema order'
@@ -442,7 +444,7 @@ def _leaves(raw, index):
     level, entries = read_node(index['directory'])
     assert level == 1
     return entries, [
-        read_primary_node(json.loads(gzip.decompress(raw[o : o + n])), index['attributes'])[1]
+        read_primary_node(json.loads(gzip.decompress(raw[o : o + n])))[1]
         for o, n in zip(entries['offset'], entries['length'], strict=True)
     ]
 
@@ -456,11 +458,11 @@ def _leaves(raw, index):
         ('shared', 'referenced twice'),
     ],
 )
-def test_primary_leaves_hold_every_cell_and_reaching_page(carried, tmp_path, mutation, message):
+def test_primary_leaves_hold_every_cell_and_reaching_page(styled, tmp_path, mutation, message):
     """Leaves hold every cell of the directory's zoom once, and each lists
     every page holding a row whose box reaches its cells, cut into the same
     runs wherever it is listed; a leaf is located once."""
-    raw, root = _root(carried[1])
+    raw, root = _root(styled[1])
     index = root['primary_index']
     entries, leaves = _leaves(raw, index)
     low, high = entries['low'], entries['high']
@@ -471,18 +473,18 @@ def test_primary_leaves_hold_every_cell_and_reaching_page(carried, tmp_path, mut
     leaf = leaves[i]
     keep = leaf['offset'] != leaf['offset'][leaf['first'] == page][0]
     if mutation == 'omitted':
-        leaf = {k: v[keep] for k, v in leaf.items() if k != 'sources'}
+        leaf = {k: v[keep] for k, v in leaf.items()}
     elif mutation == 'cut':
         run = int(np.flatnonzero(~keep)[0])
         assert leaf['count'][run] > 1, 'the fixture lists a page of several rows'
-        leaf = {k: np.insert(v, run + 1, v[run]) for k, v in leaf.items() if k != 'sources'}
+        leaf = {k: np.insert(v, run + 1, v[run]) for k, v in leaf.items()}
         leaf['count'][run], leaf['count'][run + 1] = 1, leaf['count'][run] - 1
         leaf['first'][run + 1] += 1
     else:
         leaf = None
     store = _Appended(raw)
     copies = [
-        store(primary_leaf(leaf, leaves[i]['sources']) if j == i and leaf else raw[o : o + n])
+        store(primary_leaf(leaf) if j == i and leaf else raw[o : o + n])
         for j, (o, n) in enumerate(zip(entries['offset'], entries['length'], strict=True))
     ]
     if mutation == 'cells':
@@ -554,10 +556,11 @@ def test_overview_pages_are_v1_plain(indexed, tmp_path, monkeypatch):
         validate(out, full=True)
 
 
-def test_v2_source_pages_are_indexed(carried, tmp_path):
-    """Source chunks are copied byte for byte, so the primary directory
-    locates v2 geometry and attribute pages as it does v1 ones."""
-    table = pq.read_table(carried[0])
+def test_v2_source_pages_are_indexed(styled, tmp_path):
+    """Source chunks are copied byte for byte, so the primary directory and
+    the attribute leaves beside it locate v2 geometry and attribute pages as
+    they do v1 ones."""
+    table = pq.read_table(styled[2])
     metadata = dict(table.schema.metadata)
     metadata.pop(b'lod_spatial_index', None)
     packed = tmp_path / 'packed.parquet'
@@ -581,7 +584,7 @@ def test_v2_source_pages_are_indexed(carried, tmp_path):
         )
         header, _ = loads_prefix(raw[chunk.data_page_offset :])
         assert get(header, 1) == 3, f'{name} pages are DATA_PAGE_V2'
-    assert _root(out)[1]['primary_index']['attributes'] == ['height']
+    assert _root(out)[1]['lod']['attributes'] == [{'name': 'height', 'type': 'int32'}]
     validate(out, full=True)
 
 
@@ -725,10 +728,10 @@ def varints(*values):
 @pytest.mark.parametrize(
     'value, message',
     [
-        # one polygon of one ring storing two vertices, no attributes, no copies
-        (varints(1, 1, 2, 0, 0, 2, 0, 0, 0), 'polygon ring with fewer than three vertices'),
-        (varints(0, 0, 0), 'empty geometry on a shown row'),
-        (varints(1, 1, 3, 2**33, 0, 2, 0, 0, 2, 0, 0), 'a grid coordinate outside int32'),
+        # one polygon of one ring storing two vertices, no copies
+        (varints(1, 1, 2, 0, 0, 2, 0, 0), 'polygon ring with fewer than three vertices'),
+        (varints(0, 0), 'empty geometry on a shown row'),
+        (varints(1, 1, 3, 2**33, 0, 2, 0, 0, 2, 0), 'a grid coordinate outside int32'),
     ],
 )
 def test_invalid_geometry_names_its_row(indexed, tmp_path, monkeypatch, value, message):
@@ -773,7 +776,6 @@ def test_invalid_spill_identifiers(indexed, tmp_path, mutation):
                 continue
             u = Unpacker(blob, family, [], {})
             u.geometry()
-            u.attrs()
             if not u.varint():
                 continue
             start = u.pos
@@ -938,7 +940,7 @@ def test_the_margin_is_a_number_of_pixels(indexed, tmp_path, margin, message):
         validate(bad, sample_rows=0)
 
 
-@pytest.mark.parametrize('version', ['0.3.0', '0.5.0', '1.4.0'])
+@pytest.mark.parametrize('version', ['0.4.0', '0.6.0', '1.5.0'])
 def test_another_format_version_is_refused(indexed, tmp_path, version):
     def change(table, geo):
         geo['lod_columns']['version'] = version
@@ -959,12 +961,14 @@ def test_another_format_version_is_refused(indexed, tmp_path, version):
         (None, 'attribute id: type null is not an integer, float, bool or string type'),
     ],
 )
-def test_carried_attribute_types_are_checked(indexed, tmp_path, kind, message):
-    """A carried attribute declares the Arrow name of a type the packer writes."""
+def test_attribute_types_are_checked(indexed, tmp_path, kind, message):
+    """An attribute declares the Arrow name of a type an attribute can have."""
 
     def change(table, geo):
-        geo['lod_columns']['attributes'] = [{'name': 'id', 'type': kind}]
-        return table
+        name = 'label' if kind == 'large_string' else 'id'
+        geo['lod_columns']['attributes'] = [{'name': name, 'type': kind}]
+        geo['lod_columns']['attribute_columns'] = {'column': 'lod_attributes', 'lods': []}
+        return table.append_column('label', pa.array([f'l{i}' for i in range(table.num_rows)]))
 
     bad = _rewritten(indexed, tmp_path / 'attributes.parquet', change)
     if message is None:

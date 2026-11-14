@@ -11,7 +11,18 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 import pytest
 import shapely
-from tiled_geoparquet import cluster, drop_rate, importance, only, size_threshold, validate, write
+from tiled_geoparquet import (
+    cluster,
+    drop_rate,
+    importance,
+    only,
+    read_overview,
+    size_threshold,
+    validate,
+    write,
+)
+from tiled_geoparquet.pack import cast_attribute, pack
+from tiled_geoparquet.unpack import attribute_fields, lod_values, unpack, unpack_batches
 from tiled_geoparquet.writer import DICTIONARY_MAX, is_native_crs84
 from unpacker import Unpacker
 
@@ -94,20 +105,34 @@ def unpacked(values, family, fields=()):
     return [Unpacker(b, family, fields).row() for b in values.to_pylist()]
 
 
+def hosting(fields, attrs):
+    """Packed points at the origin, the i-th hosting one copy at the origin,
+    of row i for tile 0, holding the i-th value of each of `attrs`."""
+    n = len(next(iter(attrs.values())))
+    zeros = np.zeros(n, np.int32)
+    copies = (np.ones(n, np.int64), np.zeros(n, np.int64), np.arange(n), (zeros, zeros), attrs)
+    return pack('Point', (zeros, zeros), fields, copies)
+
+
+def copied(blobs, fields, name, dictionaries=None):
+    """The values of attribute `name` the copies in `blobs` hold."""
+    u = unpack(blobs, 'Point', fields, dictionaries)
+    return u.attrs[name].filter(pa.array(u.copy))
+
+
 def test_polygons_roundtrip(buildings, tmp_path):
     out = write(
         buildings,
         tmp_path / 'out.parquet',
         thinning=only('risk > 0.2', drop_rate(2.5)),
-        carry=['risk', ('floors', 'int32'), 'name'],
-        carry_columns=(),
+        attributes=['risk', ('floors', 'int32'), 'name'],
         workers=1,
         log=lambda *_: None,
     )
     summary = validate(out)
     assert summary['rows'] == 3000
     meta = json.loads(pq.read_schema(out).metadata[b'geo'])['lod_columns']
-    assert meta['encoding'] == 'packed' and meta['pack_version'] == 2
+    assert meta['encoding'] == 'packed' and meta['pack_version'] == 3
     finest = max(meta['zooms'])
     shape = next(n for n, lod in meta['lods'].items() if finest in lod['zooms'])
     assert meta['lods'][shape]['geometry_type'] == 'MultiPolygon'
@@ -121,9 +146,9 @@ def test_polygons_roundtrip(buildings, tmp_path):
     polygons = [d['geometry'] for d in decoded]
     assert polygons[0][0][0][0] == polygons[0][0][0][-1], 'rings are closed'
     # attribute nulls survive as nulls
-    everything = unpacked(values, 'MultiPolygon', fields)
-    assert any(d['attrs']['floors'] is None for d in everything)
-    assert all(isinstance(d['attrs']['name'], str) for d in everything)
+    everything = read_overview(out, finest)
+    assert everything['floors'].null_count and everything.schema.field('floors').type == pa.int32()
+    assert everything['name'].null_count == 0 and everything['name'].to_pylist()[0].startswith('b')
     # a shape LOD decodes back near the source
     lod = meta['lods'][shape]
     x, y = polygons[0][0][0][0]
@@ -143,21 +168,19 @@ def test_polygons_roundtrip(buildings, tmp_path):
 
 def test_polygon_rings_are_stored_open():
     """A ring's closing vertex is not stored; decoding repeats the first vertex."""
-    from tiled_geoparquet.pack import pack
-
     square = [(0, 0), (2, 0), (2, 2), (0, 2), (0, 0)]
     x, y = (np.array(c, np.int32) for c in zip(*square, strict=True))
     parts = (np.array([0, 1]), np.array([0, 1]), np.array([0, 5]), x, y)
-    blob = pack('MultiPolygon', parts, [], {}).to_pylist()[0]
+    blob = pack('MultiPolygon', parts, []).to_pylist()[0]
     # one polygon of one ring of four vertices: the first from the origin, then three steps
-    assert blob == bytes([1, 1, 4, 0, 0, 4, 0, 0, 4, 3, 0, 0, 0])
+    assert blob == bytes([1, 1, 4, 0, 0, 4, 0, 0, 4, 3, 0, 0])
     assert Unpacker(blob, 'MultiPolygon', []).row()['geometry'] == [[square]]
-    lines = pack('MultiLineString', parts, [], {}).to_pylist()[0]
+    lines = pack('MultiLineString', parts, []).to_pylist()[0]
     assert Unpacker(lines, 'MultiLineString', []).row()['geometry'] == [square]
     for ring in ([(0, 0), (2, 0), (2, 2), (0, 2)], [(0, 0), (2, 0), (0, 0)]):
         x, y = (np.array(c, np.int32) for c in zip(*ring, strict=True))
         with pytest.raises(ValueError, match='closed'):
-            pack('MultiPolygon', (*parts[:2], np.array([0, len(ring)]), x, y), [], {})
+            pack('MultiPolygon', (*parts[:2], np.array([0, len(ring)]), x, y), [])
 
 
 INT64_MAX = 2**63 - 1
@@ -188,15 +211,12 @@ def int64_limits(path, value):
     return geoparquet(path, table, ['Polygon'])
 
 
-def test_carried_integers_reach_the_int64_limits(tmp_path):
-    from tiled_geoparquet import read_overview
-    from tiled_geoparquet.unpack import carried, lod_values, unpack_batches
-
+def test_integer_attributes_reach_the_int64_limits(tmp_path):
     src = int64_limits(tmp_path / 'limits.parquet', INT64_MAX)
     out = write(
         src,
         tmp_path / 'limits.lod.parquet',
-        carry=['big', 'signed'],
+        attributes=['big', 'signed'],
         zooms=range(9, 13),
         workers=1,
         log=lambda *_: None,
@@ -204,7 +224,7 @@ def test_carried_integers_reach_the_int64_limits(tmp_path):
     validate(out, full=True)
     f = pq.ParquetFile(out)
     lod = json.loads(f.schema_arrow.metadata[b'geo'])['lod_columns']
-    fields, dictionaries = carried(lod)
+    fields, dictionaries = attribute_fields(lod)
     copies = set()
     for name, child in lod['lods'].items():
         values = lod_values(f, 0, 'lod', name)
@@ -218,13 +238,14 @@ def test_carried_integers_reach_the_int64_limits(tmp_path):
     assert table['big'].null_count == 101
 
 
-def test_carried_uint64_above_int64_is_refused(tmp_path):
+def test_a_uint64_attribute_above_int64_is_refused(tmp_path):
+    """On any row, whether or not a tile holds a copy of it."""
     src = int64_limits(tmp_path / 'over.parquet', INT64_MAX + 1)
-    with pytest.raises(ValueError, match=f'cannot pack big value {INT64_MAX + 1}'):
+    with pytest.raises(ValueError, match=f'cannot keep big value {INT64_MAX + 1}'):
         write(
             src,
             tmp_path / 'over.lod.parquet',
-            carry=['big', 'signed'],
+            attributes=['big', 'signed'],
             zooms=range(9, 13),
             workers=1,
             log=lambda *_: None,
@@ -232,14 +253,10 @@ def test_carried_uint64_above_int64_is_refused(tmp_path):
 
 
 def test_copies_refuse_uint64_above_int64():
-    """The packer checks the values of the copies a row hosts as well as its own."""
-    from tiled_geoparquet.pack import pack
-    from tiled_geoparquet.unpack import unpack
-
+    """The packer checks the values of the copies a row hosts."""
     x, y = np.array([0, 2, 2, 0, 0], np.int32), np.array([0, 0, 2, 2, 0], np.int32)
     parts = (np.array([0, 1]), np.array([0, 1]), np.array([0, 5]), x, y)
     fields = [pa.field('big', pa.uint64())]
-    own = {'big': pa.array([None], pa.uint64())}
 
     def host(copy):
         spill = (
@@ -249,11 +266,11 @@ def test_copies_refuse_uint64_above_int64():
             parts,
             {'big': pa.array([copy], pa.uint64())},
         )
-        return pack('MultiPolygon', parts, fields, own, spill)
+        return pack('MultiPolygon', parts, fields, spill)
 
     decoded = unpack(host(INT64_MAX), 'MultiPolygon', fields)
     assert decoded.attrs['big'].to_pylist() == [None, INT64_MAX]
-    with pytest.raises(ValueError, match=f'cannot pack big value {INT64_MAX + 1}'):
+    with pytest.raises(ValueError, match=f'cannot keep big value {INT64_MAX + 1}'):
         host(INT64_MAX + 1)
 
 
@@ -262,15 +279,11 @@ def test_copies_refuse_uint64_above_int64():
 )
 def test_every_integer_type_packs_its_range(kind):
     """Every integer type packs whole except uint64, which packs up to the int64 maximum."""
-    from tiled_geoparquet.pack import pack
-    from tiled_geoparquet.unpack import unpack
-
     t = pa.type_for_alias(kind)
     limits = np.iinfo(kind)
     values = pa.array([int(limits.min), min(int(limits.max), INT64_MAX), None], t)
     fields = [pa.field('v', t)]
-    blobs = pack('Point', (np.zeros(3, np.int32), np.zeros(3, np.int32)), fields, {'v': values})
-    assert unpack(blobs, 'Point', fields).attrs['v'].equals(values)
+    assert copied(hosting(fields, {'v': values}), fields, 'v').equals(values)
 
 
 def varint(value: int) -> bytes:
@@ -283,11 +296,9 @@ def varint(value: int) -> bytes:
 
 
 def test_float16_packs_its_bit_pattern():
-    """A carried float16 packs as a varint of its half-precision bits, two
+    """A float16 attribute packs as a varint of its half-precision bits, two
     bytes below 2.0 and three for larger or negative values. Values round to
     the nearest float16, and NaN and the infinities pack as themselves."""
-    from tiled_geoparquet.pack import pack
-    from tiled_geoparquet.unpack import unpack
 
     values = pa.array(
         [0.1, 1.5, 1.999, 2.0, -0.5, 65504.0, 65519.0, math.inf, -math.inf, math.nan, None],
@@ -297,18 +308,20 @@ def test_float16_packs_its_bit_pattern():
     bits = half.to_numpy(zero_copy_only=False).view(np.uint16)[:-1].tolist()
     assert bits[:7] == [0x2E66, 0x3E00, 0x3FFF, 0x4000, 0xB800, 0x7BFF, 0x7BFF]
     fields = [pa.field('v', pa.float16())]
-    points = (np.zeros(len(values), np.int32),) * 2
-    blobs = pack('Point', points, fields, {'v': values})
-    # a point at the origin, the presence bitmap, the value and no copies
-    assert blobs.to_pylist() == [bytes([0, 0, 1, *varint(b), 0]) for b in bits] + [bytes(4)]
+    blobs = hosting(fields, {'v': values})
+    # a point at the origin hosting one copy, for tile 0, of row i, at the
+    # origin: its presence bitmap and value
+    assert blobs.to_pylist() == [
+        bytes([0, 0, 1, 0, i, 0, 0, 1, *varint(b)]) for i, b in enumerate(bits)
+    ] + [bytes([0, 0, 1, 0, len(bits), 0, 0, 0])]
     assert [len(varint(b)) for b in bits[:5]] == [2, 2, 2, 3, 3]
-    decoded = unpack(blobs, 'Point', fields).attrs['v']
+    decoded = copied(blobs, fields, 'v')
     assert decoded.type == pa.float16() and decoded.null_count == 1
     assert decoded.to_numpy(zero_copy_only=False).view(np.uint16)[:-1].tolist() == bits
 
 
 @pytest.mark.parametrize(
-    'source, carried, value, largest',
+    'source, declared, value, largest',
     [
         (pa.float32(), pa.float16(), 65520.0, '65504'),
         (pa.float32(), pa.float16(), -70000.0, '65504'),
@@ -317,16 +330,16 @@ def test_float16_packs_its_bit_pattern():
         (pa.float64(), pa.float32(), 1e39, '3.40282e+38'),
     ],
 )
-def test_a_finite_value_too_large_for_its_float_type_is_refused(source, carried, value, largest):
+def test_a_finite_value_too_large_for_its_float_type_is_refused(source, declared, value, largest):
     """Casting would make it infinite. A value rounding to the largest packs."""
-    from tiled_geoparquet.pack import cast_carried
-
-    field = pa.field('v', carried)
-    held = cast_carried(pa.array([1, -65519, None], source), field)
-    assert held.to_pylist() == [1.0, -65504.0 if carried == pa.float16() else -65519.0, None]
-    message = f'cannot pack v value {value}: a carried {carried} is at most {largest} in magnitude'
+    field = pa.field('v', declared)
+    held = cast_attribute(pa.array([1, -65519, None], source), field)
+    assert held.to_pylist() == [1.0, -65504.0 if declared == pa.float16() else -65519.0, None]
+    message = (
+        f'cannot keep v value {value}: a {declared} attribute is at most {largest} in magnitude'
+    )
     with pytest.raises(ValueError, match=re.escape(message)):
-        cast_carried(pa.array([1, value], source), field)
+        cast_attribute(pa.array([1, value], source), field)
 
 
 @pytest.mark.parametrize('where', ['source', 'thinning'])
@@ -349,21 +362,21 @@ def test_the_writer_refuses_a_value_float16_cannot_hold(tmp_path, where):
         values = pa.array([7e4] * kept.num_rows, pa.float32())
         return kept.set_column(kept.schema.get_field_index('share'), 'share', values)
 
-    with pytest.raises(ValueError, match=re.escape('cannot pack share value 70000.0')):
+    with pytest.raises(ValueError, match=re.escape('cannot keep share value 70000.0')):
         write(
             src,
             tmp_path / 'share.lod.parquet',
             thinning=large if where == 'thinning' else None,
             zooms=[13, 14],
             complete_from=14,
-            carry=[('share', 'halffloat')],
+            attributes=[('share', 'halffloat')],
             workers=1,
             log=lambda *_: None,
         )
 
 
-@pytest.mark.parametrize('carried', ['float', 'halffloat'])
-def test_the_writer_refuses_an_override_wider_than_its_column(tmp_path, carried):
+@pytest.mark.parametrize('declared', ['float', 'halffloat'])
+def test_the_writer_refuses_an_override_wider_than_its_column(tmp_path, declared):
     """A thinning's float64 value that the float32 source column can't hold is
     refused, not packed as infinity."""
     x = -105 + np.arange(40) * 1e-3
@@ -380,14 +393,14 @@ def test_the_writer_refuses_an_override_wider_than_its_column(tmp_path, carried)
         values = pa.array([1e39] * kept.num_rows, pa.float64())
         return kept.set_column(kept.schema.get_field_index('share'), 'share', values)
 
-    with pytest.raises(ValueError, match=re.escape('cannot pack share value 1e+39')):
+    with pytest.raises(ValueError, match=re.escape('cannot keep share value 1e+39')):
         write(
             src,
             tmp_path / 'share.lod.parquet',
             thinning=wider,
             zooms=[13, 14],
             complete_from=14,
-            carry=[('share', carried)],
+            attributes=[('share', declared)],
             workers=1,
             log=lambda *_: None,
         )
@@ -396,14 +409,10 @@ def test_the_writer_refuses_an_override_wider_than_its_column(tmp_path, carried)
 def test_float16_overviews_hold_the_source_rounded(buildings, tmp_path):
     """The source column keeps its float32 values; every LOD, its copies
     included, holds them rounded to float16."""
-    from tiled_geoparquet import read_overview
-    from tiled_geoparquet.unpack import carried, lod_values, unpack_batches
-
     out = write(
         buildings,
         tmp_path / 'half.parquet',
-        carry=[('risk', 'halffloat')],
-        carry_columns=(),
+        attributes=[('risk', 'halffloat')],
         workers=1,
         log=lambda *_: None,
     )
@@ -414,22 +423,22 @@ def test_float16_overviews_hold_the_source_rounded(buildings, tmp_path):
     risk = pq.read_table(out, columns=['risk']).column('risk').combine_chunks()
     assert risk.type == pa.float32(), 'the source column keeps full precision'
     rounded = risk.cast(pa.float16()).to_numpy(zero_copy_only=False)
-    fields, dictionaries = carried(lod)
+    fields, dictionaries = attribute_fields(lod)
     copies = 0
     for name, child in lod['lods'].items():
         for u in unpack_batches(lod_values(f, 0, 'lod', name), child['geometry_type'], fields):
-            rows = np.where(u.copy, u.id, u.row)
-            got = u.attrs['risk'].to_numpy(zero_copy_only=False)
-            assert got.dtype == np.float16 and np.array_equal(got, rounded[rows], equal_nan=True)
+            got = u.attrs['risk'].filter(pa.array(u.copy)).to_numpy(zero_copy_only=False)
+            assert got.dtype == np.float16 and np.array_equal(got, rounded[u.id[u.copy]])
             copies += int(u.copy.sum())
     assert copies, 'the fixture has boundary copies'
-    table = read_overview(out, max(lod['zooms']))
-    assert table.schema.field('risk').type == pa.float16()
-    assert np.array_equal(table['risk'].to_numpy(), rounded[table['row'].to_numpy()])
+    for zoom in lod['zooms']:
+        table = read_overview(out, zoom)
+        assert table.schema.field('risk').type == pa.float16()
+        assert np.array_equal(table['risk'].to_numpy(), rounded[table['row'].to_numpy()]), zoom
 
 
 def test_js_rounds_to_float16_as_numpy_does(tmp_path):
-    """Exact tiles round a carried float16 in JS, which has no Float16Array
+    """Exact tiles round a float16 attribute in JS, which has no Float16Array
     everywhere: every half value, the ties between neighbours and the values
     either side of them, subnormals, overflow and NaN round as numpy's cast."""
     import subprocess
@@ -463,9 +472,9 @@ def test_js_rounds_to_float16_as_numpy_does(tmp_path):
     assert f'{len(values)} values round as numpy' in result.stdout
 
 
-def test_exact_tiles_carry_their_finest_lods_values(buildings, tmp_path):
-    """Past the finest LOD a tile reads carried attributes from their source
-    columns and packs them as the LODs do, so a feature shows the same
+def test_exact_tiles_hold_their_finest_lods_values(buildings, tmp_path):
+    """Past the finest LOD a tile reads attributes from their source columns
+    and casts them to their declared types as the LODs hold them, so a feature shows the same
     float16 value on both sides of the finest zoom; exact reads keep the
     source's precision."""
     import subprocess
@@ -473,7 +482,7 @@ def test_exact_tiles_carry_their_finest_lods_values(buildings, tmp_path):
     out = write(
         buildings,
         tmp_path / 'half.parquet',
-        carry=[('risk', 'halffloat'), 'floors'],
+        attributes=[('risk', 'halffloat'), 'floors'],
         workers=1,
         log=lambda *_: None,
     )
@@ -493,30 +502,30 @@ def test_exact_tiles_carry_their_finest_lods_values(buildings, tmp_path):
         if (np.abs(scaled % 1 - 0.5) > 0.48).any():
             continue
         tiles = [[int(z), *map(int, np.floor(xy))] for z, xy in zip(zooms, scaled, strict=True)]
-        carried = {'risk': float(risk[row].astype(np.float16))}
+        held = {'risk': float(risk[row].astype(np.float16))}
         if floors[row] is not None:
-            carried['floors'] = floors[row]
+            held['floors'] = floors[row]
         cases.append(
             {
                 'row': row,
                 'bbox': list(t['bbox'][row].as_py().values()),
                 'tiles': tiles,
                 'source': {'risk': float(risk[row])},
-                'carried': carried,
+                'held': held,
             }
         )
         if len(cases) == 30:
             break
-    assert any(c['source']['risk'] != c['carried']['risk'] for c in cases)
+    assert any(c['source']['risk'] != c['held']['risk'] for c in cases)
     (tmp_path / 'cases.json').write_text(json.dumps(cases))
-    script = Path(__file__).resolve().parents[1] / 'js' / 'test' / 'exact-carried.test.mjs'
+    script = Path(__file__).resolve().parents[1] / 'js' / 'test' / 'exact-attributes.test.mjs'
     result = subprocess.run(
         ['node', str(script), str(out), str(tmp_path / 'cases.json')],
         capture_output=True,
         text=True,
         check=True,
     )
-    assert f'exact tiles: {len(cases)} features carry' in result.stdout
+    assert f'exact tiles: {len(cases)} features hold' in result.stdout
 
 
 def test_points_importance_and_cluster(points, tmp_path):
@@ -524,7 +533,7 @@ def test_points_importance_and_cluster(points, tmp_path):
         points,
         tmp_path / 'imp.parquet',
         thinning=importance('population', per_tile=20),
-        carry=['population'],
+        attributes=['population'],
         workers=1,
         log=lambda *_: None,
     )
@@ -533,16 +542,15 @@ def test_points_importance_and_cluster(points, tmp_path):
         points,
         tmp_path / 'cl.parquet',
         thinning=cluster(pixels=8, count='count'),
-        carry=['count'],
+        attributes=['count'],
         workers=1,
         log=lambda *_: None,
     )
     meta = json.loads(pq.read_schema(out2).metadata[b'geo'])['lod_columns']
-    coarsest = min(meta['lods'], key=lambda n: meta['lods'][n]['zooms'][0])
-    values = shown(out2, coarsest)
-    decoded = unpacked(values, 'Point', [('count', pa.uint32())])
-    assert sum(d['attrs']['count'] for d in decoded) == 2000, 'cluster counts add up to every point'
-    assert len(values) < 2000
+    coarsest = min(meta['zooms'])
+    counts = read_overview(out2, coarsest)['count']
+    assert pc.sum(counts).as_py() == 2000, 'cluster counts add up to every point'
+    assert len(counts) < 2000
 
 
 def test_explicit_zooms(buildings, tmp_path):
@@ -580,7 +588,9 @@ def test_lines_roundtrip(tmp_path):
         }
     )
     src = geoparquet(tmp_path / 'lines.parquet', table, ['LineString', 'MultiLineString'])
-    out = write(src, tmp_path / 'lines.lod.parquet', carry=['road'], workers=1, log=lambda *_: None)
+    out = write(
+        src, tmp_path / 'lines.lod.parquet', attributes=['road'], workers=1, log=lambda *_: None
+    )
     meta = json.loads(pq.read_schema(out).metadata[b'geo'])['lod_columns']
     finest = next(n for n, lod in meta['lods'].items() if max(meta['zooms']) in lod['zooms'])
     assert meta['lods'][finest]['geometry_type'] == 'MultiLineString'
@@ -608,7 +618,9 @@ def test_null_geometry_and_source_columns(buildings, tmp_path):
     t = t.append_column('id', pa.array([f'src{i}' for i in range(t.num_rows)]))
     t = t.append_column('area', pa.array(np.full(t.num_rows, 7.0)))
     src = geoparquet(tmp_path / 'nulls.parquet', t, ['Polygon'])
-    out = write(src, tmp_path / 'nulls.lod.parquet', carry=['risk'], workers=1, log=lambda *_: None)
+    out = write(
+        src, tmp_path / 'nulls.lod.parquet', attributes=['risk'], workers=1, log=lambda *_: None
+    )
     # a sample of every row reaches the null and empty geometry, which sorts last
     validate(out, sample_rows=t.num_rows, full=True)
     f = pq.ParquetFile(out)
@@ -639,16 +651,15 @@ def test_null_override_and_combined_tiny(points, tmp_path):
         points,
         tmp_path / 'null_override.parquet',
         thinning=nullify,
-        carry=['population'],
+        attributes=['population'],
         workers=1,
         log=lambda *_: None,
     )
     meta = json.loads(pq.read_schema(out).metadata[b'geo'])['lod_columns']
-    coarsest = min(meta['lods'], key=lambda n: meta['lods'][n]['zooms'][0])
-    decoded = unpacked(shown(out, coarsest), 'Point', [('population', pa.uint32())])
-    assert all(d['attrs']['population'] is None for d in decoded), (
-        'an explicit null override is written'
-    )
+    thinned = [read_overview(out, zoom)['population'] for zoom in meta['zooms'][:-1]]
+    assert sum(map(len, thinned)), 'the thinned zooms show rows'
+    assert all(p.null_count == len(p) for p in thinned), 'an explicit null override is written'
+    assert read_overview(out, meta['zooms'][-1])['population'].null_count == 0
 
     # tiny_polygons keeps accumulating area when composed
     from tiled_geoparquet.thinning import Context
@@ -676,7 +687,7 @@ def test_null_override_and_combined_tiny(points, tmp_path):
     k2 = both(rows, 1, ctx)
     assert k1.num_rows == k2.num_rows == 4
     assert sum(k2.column('area').to_pylist()) == pytest.approx(sum(k1.column('area').to_pylist()))
-    # the four carry a square each; one zoom coarser they make one square of four
+    # the four hold a square each; one zoom coarser they make one square of four
     assert both(k2, 0, ctx).num_rows == solo(k1, 0, ctx).num_rows == 1
     assert both.placeholder_pixels == 2.0
 
@@ -692,7 +703,7 @@ def test_straddlers_are_copied_into_the_tiles_they_reach(buildings, tmp_path):
     from tiled_geoparquet.key import hilbert_key
 
     out = write(
-        buildings, tmp_path / 'spill.parquet', carry_columns=(), workers=1, log=lambda *_: None
+        buildings, tmp_path / 'spill.parquet', attributes=(), workers=1, log=lambda *_: None
     )
     validate(out)
     meta = json.loads(pq.read_schema(out).metadata[b'geo'])['lod_columns']
@@ -735,7 +746,7 @@ def test_reader_finds_straddler_copies(buildings, tmp_path):
     out = write(
         buildings,
         tmp_path / 'spill.parquet',
-        carry=['floors', 'zone'],
+        attributes=['floors', 'zone'],
         workers=1,
         log=lambda *_: None,
     )
@@ -936,7 +947,7 @@ def test_a_string_a_thinning_introduces_joins_the_value_table(tmp_path, monkeypa
     while the table holds DICTIONARY_MAX values or fewer; past that the
     attribute packs plain strings. The thinning's values are counted a few
     rows at a time, its new one in the last batch."""
-    from tiled_geoparquet import read_overview, writer
+    from tiled_geoparquet import writer
 
     monkeypatch.setattr(writer, 'DICTIONARY_SCAN_ROWS', 7)
     labels = [f'v{i:03d}' for i in range(count)]
@@ -958,7 +969,7 @@ def test_a_string_a_thinning_introduces_joins_the_value_table(tmp_path, monkeypa
         thinning=rename,
         zooms=[13, 14],
         complete_from=14,
-        carry=['label'],
+        attributes=['label'],
         workers=1,
         log=lambda *_: None,
     )
@@ -979,7 +990,7 @@ def test_a_string_past_the_value_table_limit_is_not_counted_in_python(tmp_path, 
     strings the thinning gives `kind` take over a megabyte as Python objects."""
     import tracemalloc
 
-    from tiled_geoparquet import read_overview, writer
+    from tiled_geoparquet import writer
 
     n = 20_000
     rng = np.random.default_rng(5)
@@ -1030,7 +1041,7 @@ def test_a_string_past_the_value_table_limit_is_not_counted_in_python(tmp_path, 
         thinning=relabel,
         zooms=[13, 14],
         complete_from=14,
-        carry=['label', 'kind', 'zone'],
+        attributes=['label', 'kind', 'zone'],
         workers=1,
         log=lambda *_: None,
     )
@@ -1044,14 +1055,23 @@ def test_a_string_past_the_value_table_limit_is_not_counted_in_python(tmp_path, 
 
 
 def test_pack_refuses_a_string_outside_its_value_table():
-    from tiled_geoparquet.pack import pack
-
     fields = [pa.field('label', pa.string())]
-    points = (np.zeros(2, np.int32), np.zeros(2, np.int32))
+    zeros = np.zeros(2, np.int32)
     tables = {'label': ['A', 'B']}
-    pack('Point', points, fields, {'label': pa.array(['B', None])}, dictionaries=tables)
+
+    def copies(values):
+        spill = (
+            np.ones(2, np.int64),
+            zeros,
+            np.arange(2),
+            (zeros, zeros),
+            {'label': pa.array(values)},
+        )
+        return pack('Point', (zeros, zeros), fields, spill, dictionaries=tables)
+
+    assert copied(copies(['B', None]), fields, 'label', tables).to_pylist() == ['B', None]
     with pytest.raises(ValueError, match="cannot pack label value 'NEW'"):
-        pack('Point', points, fields, {'label': pa.array(['A', 'NEW'])}, dictionaries=tables)
+        copies(['A', 'NEW'])
 
 
 def test_placeholder_pixels_sets_the_square_size(buildings, tmp_path):

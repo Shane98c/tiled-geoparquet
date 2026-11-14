@@ -16,9 +16,9 @@ const reader = await openReader(coalescing(await httpSource([url])))
 const mvt = await renderTile(reader, z, x, y, { properties: ['height'] })
 ```
 
-A tile holds the attributes `properties` names: packed attributes, column
-attributes or source columns. Without it, in `renderTile`, `vectorSource`,
-`tileUrl` and the tile server alike, a tile holds the packed attributes only.
+A tile holds the attributes and source columns `properties` names. Without
+it, in `renderTile`, `vectorSource`, `tileUrl` and the tile server alike, a
+tile holds geometry only.
 
 `httpSource(urls, { cache, connections })` sends a tile's requests past the
 browser's HTTP cache, which answers the range requests of one URL one at a

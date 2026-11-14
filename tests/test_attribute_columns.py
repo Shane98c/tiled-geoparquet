@@ -1,10 +1,11 @@
-"""Attributes kept as columns read as packed ones, from every reader."""
+"""Attributes held in attribute columns read as their source holds them, from every reader."""
 
 import gzip
 import importlib
 import io
 import itertools
 import json
+import math
 import struct
 import subprocess
 from pathlib import Path
@@ -70,7 +71,13 @@ def _source(path, n=2400, seed=5):
             'name': [f'building-{i}' if i % 9 else None for i in range(n)],
             'kind': [['house', 'shed', None, 'garage'][i % 4] for i in range(n)],
             'height': pa.array([None if i % 7 == 0 else i % 80 for i in range(n)], pa.int32()),
-            'rps': pa.array(np.where(np.arange(n) % 11 == 0, np.nan, rng.random(n) * 3)),
+            'rps': pa.array(
+                np.select(
+                    [np.arange(n) % 11 == 0, np.arange(n) % 23 == 0, np.arange(n) % 29 == 0],
+                    [np.nan, np.inf, -np.inf],
+                    rng.random(n) * 3,
+                )
+            ),
             'flag': pa.array([i % 3 == 0 for i in range(n)]),
             'code': pa.array(np.arange(n) * 7, pa.int64()),
         }
@@ -97,42 +104,93 @@ def _build(src, out, **options):
 
 @pytest.fixture(scope='module')
 def built(tmp_path_factory):
+    """The source and the file keeping `flag` and COLUMNS as attributes, with
+    LOD trees that branch."""
     work = tmp_path_factory.mktemp('columns')
     src = work / 'source.parquet'
     _source(src)
     layout = importlib.import_module('tiled_geoparquet._layout')
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(layout, '_ROOT_TARGET_BYTES', 1500)
-        packed = _build(src, work / 'packed.parquet', thinning=_thinning, carry=['flag', *COLUMNS])
         columns = _build(
-            src,
-            work / 'columns.parquet',
-            thinning=_thinning,
-            carry=['flag'],
-            carry_columns=COLUMNS,
+            src, work / 'columns.parquet', thinning=_thinning, attributes=['flag', *COLUMNS]
         )
-    return src, packed, columns
+    return src, columns
 
 
 @pytest.fixture(scope='module')
-def hybrid(tmp_path_factory, built):
-    """Files keeping every cheap column as a column, `auto`, or packing two
-    and keeping the rest, `hybrid`, a file packing only those two, and one
-    packing all of them in the same types, to read the others against."""
+def auto(tmp_path_factory, built):
+    """Files of the same source keeping every cheap column, `auto`, and
+    keeping none, `plain`."""
     src = built[0]
-    work = tmp_path_factory.mktemp('hybrid')
+    work = tmp_path_factory.mktemp('auto')
     options = dict(thinning=_thinning)
-    packed = _build(
-        src, work / 'packed.parquet', carry=['kind', 'height', 'rps', 'flag'], **options
+    auto = _build(src, work / 'auto.parquet', attributes='auto', **options)
+    plain = _build(src, work / 'plain.parquet', attributes=(), **options)
+    return auto, plain
+
+
+def _staged(path):
+    """The file `path` was laid out from, without the spatial index, which
+    holds each attribute value on its own row."""
+    return path.with_suffix('.staged.parquet')
+
+
+def _cell(value):
+    """`value` as JSON holds it: a float JSON cannot hold as {'number': name}."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return {'number': 'NaN' if math.isnan(value) else 'Infinity' if value > 0 else '-Infinity'}
+    return value
+
+
+def _expected(path, overridden=()):
+    """Per zoom of the file at `path`, per attribute, the value of each row
+    shown there: the row's source value cast to the attribute's declared
+    type, or for the attributes `overridden`, which a thinning gives values
+    of its own, the value the file it was laid out from holds at the zoom,
+    read through `read_overview`. The rows shown are those that file shows.
+    JSON-ready."""
+    lod = json.loads(pq.read_schema(path).metadata[b'geo'])['lod_columns']
+    names = [a['name'] for a in lod['attributes']]
+    source = pq.read_table(path, columns=names)
+    out = {}
+    for zoom in lod['zooms']:
+        staged = read_overview(_staged(path), zoom)
+        rows = staged.column('row')
+        out[zoom] = {}
+        for a in lod['attributes']:
+            if a['name'] in overridden:
+                values = staged.column(a['name'])
+            else:
+                values = source.column(a['name']).take(rows).cast(pa.type_for_alias(a['type']))
+                assert _same(pa.table([values], [a['name']]), staged.select([a['name']]))
+            out[zoom][a['name']] = {
+                str(row): _cell(value)
+                for row, value in zip(rows.to_pylist(), values.to_pylist(), strict=True)
+            }
+    return out
+
+
+def _check_overviews(path, expected):
+    """Raise unless `read_overview` of each zoom of `path` holds the rows and
+    values `expected` gives."""
+    for zoom, by_name in expected.items():
+        table = read_overview(path, zoom)
+        rows = [str(row) for row in table.column('row').to_pylist()]
+        for name, values in by_name.items():
+            assert rows == list(values), (zoom, name)
+            got = [_cell(value) for value in table.column(name).to_pylist()]
+            assert json.dumps(got) == json.dumps(list(values.values())), (zoom, name)
+
+
+def _render(path, cases):
+    result = subprocess.run(
+        ['node', str(ROOT / 'js/test/columns.test.mjs'), str(path), str(cases)],
+        capture_output=True,
+        text=True,
     )
-    auto = _build(src, work / 'auto.parquet', carry_columns='auto', **options)
-    mixed = _build(
-        src, work / 'hybrid.parquet', carry=['flag', 'height'], carry_columns='auto', **options
-    )
-    plain = _build(
-        src, work / 'plain.parquet', carry=['flag', 'height'], carry_columns=(), **options
-    )
-    return packed, auto, mixed, plain
+    assert result.returncode == 0, result.stdout + result.stderr
+    return result.stdout
 
 
 def _same(a, b):
@@ -172,91 +230,74 @@ def _tiles(path, zooms=range(10, 17)):
     return sorted(tiles)
 
 
-def test_metadata_names_the_column_lods(built):
-    _, packed, columns = built
+def test_metadata_declares_the_attribute_columns(built):
+    _, columns = built
     lod = json.loads(pq.read_schema(columns).metadata[b'geo'])['lod_columns']
-    storage = {a['name']: a.get('storage', 'packed') for a in lod['attributes']}
-    assert storage == {
-        'flag': 'packed',
-        'height': 'column',
-        'kind': 'column',
-        'rps': 'column',
-        'name': 'column',
-    }
+    assert lod['version'] == '0.5.0' and lod['pack_version'] == 3
+    assert [a['name'] for a in lod['attributes']] == ['flag', 'height', 'kind', 'rps', 'name']
+    assert all(set(a) <= {'name', 'type', 'values'} for a in lod['attributes'])
     # every LOD holds them, those showing every row too
     assert lod['attribute_columns'] == {'column': 'lod_attributes', 'lods': list(lod['lods'])}
     schema = pq.read_schema(columns).field('lod_attributes').type
     assert [f.name for f in schema] == list(lod['lods'])
     assert {f.name: f.type for f in schema.field('f10').type} == {
+        'flag': pa.bool_(),
         'height': pa.int32(),
         'kind': pa.uint8(),
         'rps': pa.float16(),
         'name': pa.string(),
     }
-    packed_lod = json.loads(pq.read_schema(packed).metadata[b'geo'])['lod_columns']
-    assert 'attribute_columns' not in packed_lod
-    assert all('storage' not in a for a in packed_lod['attributes'])
 
 
-def test_columns_render_and_read_as_packed(built, tmp_path):
-    src, packed, columns = built
+def test_attributes_read_as_their_source_holds_them(built, tmp_path):
+    """Every reader gives each shown row its source value cast to the
+    declared type, and draws the copies a neighbouring tile holds with them."""
+    src, columns = built
     raw, root = _root(columns)
     assert any(top[0] > 1 for top in root['directories'].values()), 'LOD trees branch'
-    assert validate(columns, full=True)['rows'] == validate(packed, full=True)['rows']
-    for z in range(10, 16):
-        a, b = read_overview(packed, z), read_overview(columns, z)
-        assert _same(b.select(a.column_names), a), z
-    # the source columns hold the values the packed file holds
-    source = pq.read_table(packed)
-    table = pq.read_table(columns)
+    validate(columns, full=True)
+    # the file's source columns are the source's, in the file's order
+    original = pq.read_table(src).sort_by('code')
+    table = pq.read_table(columns).sort_by('code')
     for name in ('height', 'kind', 'rps', 'name', 'flag', 'code', 'geometry'):
-        assert _same(table.select([name]), source.select([name])), name
+        assert _same(table.select([name]), original.select([name])), name
+    expected = _expected(columns)
+    _check_overviews(columns, expected)
     query = {'bbox': [-104.95, 39.65, -104.9, 39.7], 'resolution': 360 / 512 / 2**12}
     cases = tmp_path / 'cases.json'
     cases.write_text(
         json.dumps(
             {
-                'tiles': _tiles(packed),
+                'tiles': _tiles(columns),
                 'styles': [[], ['height'], ['kind', 'rps'], ['flag', 'height', 'kind', 'name']],
-                'query': {**query, 'columns': ['height', 'kind', 'name', 'flag']},
+                'query': {**query, 'columns': ['height', 'kind', 'name', 'flag', 'rps']},
+                'expected': expected,
             }
         )
     )
-    assert ' 0 boundary copies' not in _render_as_packed(packed, columns, cases)
+    assert ' 0 boundary copies' not in _render(columns, cases)
 
 
-def _render_as_packed(packed, columns, cases):
-    result = subprocess.run(
-        ['node', str(ROOT / 'js/test/columns.test.mjs'), str(packed), str(columns), str(cases)],
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    return result.stdout
-
-
-def test_auto_and_hybrid_render_and_read_as_packed(hybrid, tmp_path):
-    """Every cheap column kept as a column, or two of them packed and the
-    rest kept, renders and reads as the same attributes all packed."""
-    packed, auto, mixed, _ = hybrid
-    for variant in (auto, mixed):
-        validate(variant, full=True)
-        for z in range(10, 16):
-            a, b = read_overview(packed, z), read_overview(variant, z)
-            assert _same(b.select(a.column_names), a), (variant.name, z)
+def test_auto_reads_as_its_source_holds_it(auto, tmp_path):
+    """Every cheap column kept as an attribute renders and reads as its source
+    holds it."""
+    out, _ = auto
+    validate(out, full=True)
+    expected = _expected(out)
+    _check_overviews(out, expected)
     query = {'bbox': [-104.95, 39.65, -104.9, 39.7], 'resolution': 360 / 512 / 2**12}
     cases = tmp_path / 'cases.json'
     cases.write_text(
         json.dumps(
             {
-                'tiles': _tiles(packed),
-                'styles': [[], ['height'], ['kind', 'rps'], ['flag', 'height', 'kind', 'name']],
+                'tiles': _tiles(out),
+                'styles': [[], ['height'], ['kind', 'rps'], ['flag', 'height', 'kind']],
                 'query': {**query, 'columns': ['height', 'kind', 'rps', 'flag']},
+                'expected': expected,
             }
         )
     )
-    for variant in (auto, mixed):
-        _render_as_packed(packed, variant, cases)
+    _render(out, cases)
 
 
 def _lod_trees(path):
@@ -277,14 +318,13 @@ def _lod_trees(path):
     return {name: nodes(*read_node(top)) for name, top in root['directories'].items()}
 
 
-def test_a_hybrid_files_lod_trees_are_a_packed_files(hybrid):
-    """Keeping the other cheap columns as columns leaves the directories a
-    tile not styled by them reads as in a file packing only the packed
-    attributes."""
-    _, _, mixed, plain = hybrid
-    assert _lod_trees(mixed) == _lod_trees(plain)
-    (_, ours), (_, theirs) = _root(mixed), _root(plain)
-    assert ours['primary_index']['attributes'] == theirs['primary_index']['attributes']
+def test_attributes_leave_the_lod_trees_as_without_them(auto):
+    """Keeping the cheap columns as attributes leaves the directories a tile
+    not styled by them reads as in a file without attributes."""
+    out, plain = auto
+    assert _lod_trees(out) == _lod_trees(plain)
+    (_, ours), (_, theirs) = _root(out), _root(plain)
+    assert ours['primary_index'].keys() == theirs['primary_index'].keys() == {'directory'}
     assert ours['primary_index']['directory'][0] == theirs['primary_index']['directory'][0]
 
 
@@ -315,12 +355,12 @@ def _overview_runs(present, starts, rows):
 
 
 def test_attribute_pages_are_cut_where_overview_pages_are(built):
-    _, _, columns = built
+    _, columns = built
     f = pq.ParquetFile(columns)
     merged = 0
     for lod in json.loads(pq.read_schema(columns).metadata[b'geo'])['lod_columns']['lods']:
         cut = _chunk_pages(columns, f'lod.{lod}')
-        for name in ('height', 'kind', 'rps', 'name'):
+        for name in ('flag', 'height', 'kind', 'rps', 'name'):
             for g, (starts, got) in enumerate(
                 zip(cut, _chunk_pages(columns, f'lod_attributes.{lod}.{name}'), strict=True)
             ):
@@ -332,25 +372,25 @@ def test_attribute_pages_are_cut_where_overview_pages_are(built):
     assert merged, 'some overview pages without a value share an attribute page'
 
 
-def test_source_columns_keep_their_pages(built):
-    """A column attribute's source column is copied as it was written."""
-    _, packed, columns = built
-    for name in ('height', 'kind', 'rps', 'name', 'code', 'geometry'):
-        assert _chunk_pages(columns, name) == _chunk_pages(packed, name), name
+def test_source_columns_keep_their_pages(auto):
+    """An attribute's source column is copied as it was written."""
+    out, plain = auto
+    for name in ('height', 'kind', 'rps', 'name', 'flag', 'code', 'geometry'):
+        assert _chunk_pages(out, name) == _chunk_pages(plain, name), name
 
 
-def test_tile_sizes_report_attribute_pages(built):
-    _, packed, columns = built
-    for zoom in tile_sizes(columns):
-        assert set(zoom['attributes']) == {'height', 'kind', 'rps', 'name'}
+def test_tile_sizes_report_attribute_pages(auto):
+    out, plain = auto
+    for zoom in tile_sizes(out):
+        assert set(zoom['attributes']) == {'height', 'kind', 'rps', 'flag'}
         if zoom['tiles']:
             assert all(a['max_bytes'] > 0 for a in zoom['attributes'].values())
-    assert all('attributes' not in zoom for zoom in tile_sizes(packed))
+    assert all('attributes' not in zoom for zoom in tile_sizes(plain))
 
 
 def test_cluster_counts_are_kept_in_columns(tmp_path):
-    """A thinning's override is what the column holds at its LOD, as packed
-    rows and their copies hold it."""
+    """A thinning's override is what the attribute column holds at its LOD,
+    as the row's copies hold it."""
     rng = np.random.default_rng(3)
     n = 2000
     x, y = -105 + rng.random(n) * 0.25, 39.6 + rng.random(n) * 0.25
@@ -365,8 +405,7 @@ def test_cluster_counts_are_kept_in_columns(tmp_path):
     src = tmp_path / 'points.parquet'
     pq.write_table(table.replace_schema_metadata({b'geo': json.dumps(geo).encode()}), src)
     options = dict(zooms=range(10, 15), complete_from=14, thinning=cluster(8, count='count'))
-    packed = _build(src, tmp_path / 'packed.parquet', carry=['count', 'label'], **options)
-    columns = _build(src, tmp_path / 'columns.parquet', carry_columns=['count', 'label'], **options)
+    columns = _build(src, tmp_path / 'columns.parquet', attributes=['count', 'label'], **options)
     lod = json.loads(pq.read_schema(columns).metadata[b'geo'])['lod_columns']
     shown = {
         name: read_overview(columns, info['zooms'][0]).num_rows
@@ -374,71 +413,115 @@ def test_cluster_counts_are_kept_in_columns(tmp_path):
     }
     assert any(0.8 * n <= shown[name] < n for name in lod['lods']), 'an LOD showing most rows'
     assert lod['attribute_columns']['lods'] == list(lod['lods'])
+    expected = _expected(columns, overridden=['count'])
+    _check_overviews(columns, expected)
+    for z in range(10, 14):
+        assert max(expected[z]['count'].values()) > 1, z
+    assert set(expected[14]['count'].values()) == {1}
+    # every point is counted once at each zoom, whatever file the counts were read from
     for z in range(10, 15):
-        a, b = read_overview(packed, z), read_overview(columns, z)
-        assert _same(b.select(a.column_names), a)
-        if z < 14:
-            assert pa.compute.max(b.column('count')).as_py() > 1
+        assert sum(expected[z]['count'].values()) == n, z
     validate(columns, full=True)
     cases = tmp_path / 'cases.json'
     cases.write_text(
         json.dumps(
             {
-                'tiles': _tiles(packed, range(10, 16)),
+                'tiles': _tiles(columns, range(10, 16)),
                 'styles': [['count'], ['count', 'label']],
                 'query': {
                     'bbox': [-104.95, 39.65, -104.9, 39.7],
                     'resolution': 360 / 512 / 2**11,
                     'columns': ['count'],
                 },
+                'expected': expected,
             }
         )
     )
-    result = subprocess.run(
-        ['node', str(ROOT / 'js/test/columns.test.mjs'), str(packed), str(columns), str(cases)],
-        capture_output=True,
-        text=True,
+    _render(columns, cases)
+
+
+def test_a_thinnings_values_are_the_ones_each_zoom_reads(tmp_path, built):
+    """A thinning gives `height` a value made from the row's `code` and the
+    zoom. The values expected at each zoom come from that rule and from the
+    source columns, not from a file the writer made."""
+    src, _ = built
+
+    def stamped(rows, zoom, ctx):
+        kept = _thinning(rows, zoom, ctx)
+        codes = kept.column('code').to_numpy()
+        values = pa.array(1000 * zoom + codes // 7 % 5, pa.int32())
+        return kept.set_column(kept.schema.get_field_index('height'), 'height', values)
+
+    out = _build(
+        src,
+        tmp_path / 'stamped.parquet',
+        thinning=stamped,
+        columns=['code'],
+        attributes=['height', 'kind'],
     )
-    assert result.returncode == 0, result.stdout + result.stderr
+    validate(out, full=True)
+    source = pq.read_table(out, columns=['height', 'code'])
+    rows = source.num_rows
+    height, code = source.column('height').to_pylist(), source.column('code').to_pylist()
+    expected = _expected(out, overridden=['height'])
+    for zoom, by_name in expected.items():
+        shown = [int(row) for row in by_name['height']]
+        if zoom >= 14:
+            assert shown == list(range(rows)), 'every row from the complete zoom'
+        stamps = {
+            str(row): height[row] if zoom >= 14 else 1000 * zoom + code[row] // 7 % 5
+            for row in shown
+        }
+        assert by_name['height'] == stamps, zoom
+    assert any(len(by_name['height']) < rows / 2 for by_name in expected.values())
+    _check_overviews(out, expected)
+    cases = tmp_path / 'cases.json'
+    cases.write_text(
+        json.dumps(
+            {
+                'tiles': _tiles(out, range(10, 16)),
+                'styles': [['height'], ['height', 'kind']],
+                'query': {
+                    'bbox': [-104.95, 39.65, -104.9, 39.7],
+                    'resolution': 360 / 512 / 2**12,
+                    'columns': ['height'],
+                },
+                'expected': expected,
+            }
+        )
+    )
+    _render(out, cases)
 
 
 def test_auto_keeps_cheap_flat_columns(tmp_path, built):
-    src, _, _ = built
+    src, _ = built
     out = tmp_path / 'auto.parquet'
     logged = []
-    _write_unindexed(
-        src,
-        out,
-        zooms=range(10, 13),
-        carry=['flag'],
-        carry_columns='auto',
-        workers=1,
-        log=logged.append,
-    )
+    _write_unindexed(src, out, zooms=range(10, 13), attributes='auto', workers=1, log=logged.append)
     lod = json.loads(pq.read_schema(out).metadata[b'geo'])['lod_columns']
-    kept = [a['name'] for a in lod['attributes'] if a.get('storage') == 'column']
+    kept = [a['name'] for a in lod['attributes']]
     # not `name`, a string of many values, nor `code`, an integer of distinct values
-    assert kept == ['kind', 'height', 'rps']
-    assert any('carry_columns auto: kind, height, rps' in line for line in logged)
+    assert kept == ['kind', 'height', 'rps', 'flag']
+    assert any('attributes auto: kind, height, rps, flag' in line for line in logged)
 
 
 @pytest.mark.parametrize(
     'options,message',
     [
-        (dict(carry=['height'], carry_columns=['height']), 'more than once'),
-        (dict(carry_columns=[('kind', 'int32')]), 'cannot keep kind'),
-        (dict(carry_columns='everything'), "'auto'"),
-        (dict(carry_columns=['missing']), 'missing'),
+        (dict(attributes=['height', 'height']), 'more than once'),
+        (dict(attributes=[('kind', 'int32')]), 'cannot keep kind'),
+        (dict(attributes='everything'), "'auto'"),
+        (dict(attributes=['missing']), 'missing'),
     ],
 )
-def test_column_attributes_are_checked(tmp_path, built, options, message):
-    src, _, _ = built
+def test_attributes_are_checked(tmp_path, built, options, message):
+    src, _ = built
     with pytest.raises((ValueError, KeyError), match=message):
         _write_unindexed(src, tmp_path / 'out.parquet', zooms=range(10, 12), log=_quiet, **options)
 
 
-def test_cli_takes_carry_columns(tmp_path, built, monkeypatch):
-    src, _, _ = built
+def test_cli_takes_attributes(tmp_path, built, monkeypatch):
+    src, _ = built
     given = {}
     monkeypatch.setattr(
         importlib.import_module('tiled_geoparquet.cli'),
@@ -446,22 +529,19 @@ def test_cli_takes_carry_columns(tmp_path, built, monkeypatch):
         lambda src, out, **options: given.update(options),
     )
     runner = CliRunner()
-    args = ['write', str(src), str(tmp_path / 'out.parquet'), '--carry', 'flag']
-    result = runner.invoke(
-        cli, [*args, '--carry-columns', 'height', '--carry-columns', 'rps:halffloat']
-    )
+    args = ['write', str(src), str(tmp_path / 'out.parquet')]
+    result = runner.invoke(cli, [*args, '--attributes', 'height', '--attributes', 'rps:halffloat'])
     assert result.exit_code == 0, result.output
-    assert given['carry'] == ['flag']
-    assert given['carry_columns'] == ['height', ('rps', 'halffloat')]
-    result = runner.invoke(cli, [*args, '--carry-columns', 'auto'])
+    assert given['attributes'] == ['height', ('rps', 'halffloat')]
+    result = runner.invoke(cli, [*args, '--attributes', 'auto'])
     assert result.exit_code == 0, result.output
-    assert given['carry_columns'] == 'auto'
+    assert given['attributes'] == 'auto'
 
 
 def _large_root(attributes):
     """The root of a file of fifteen LODs, twenty-five indexed columns and
-    fifty million rows, carrying `attributes` as column attributes, before
-    its directories are placed."""
+    fifty million rows, keeping `attributes`, before its directories are
+    placed."""
     lods = {
         f'f{z}': {
             'zooms': [z] if z < 14 else [14, 15],
@@ -473,7 +553,7 @@ def _large_root(attributes):
         for z in range(15)
     }
     lod = {
-        'version': '0.4.0',
+        'version': '0.5.0',
         'column': 'lod',
         'order': 'hilbert_webmercator',
         'key': {'column': 'hilbert', 'depth': 24},
@@ -481,15 +561,15 @@ def _large_root(attributes):
         'tile_size': 512,
         'margin': 2,
         'encoding': 'packed',
-        'pack_version': 2,
-        'attributes': [{'name': 'height', 'type': 'float'}, *attributes],
+        'pack_version': 3,
+        'attributes': list(attributes),
         'thinning': {'name': 'chain(drop_smallest(850000), tiny_polygons())'},
         'lods': lods,
     }
     names = [f'attribute_{i}' for i in range(17)] + [f'class_{i}' for i in range(3)]
     indexed = ['hilbert', 'id', 'height', *names, 'region', 'geometry']
     root = {
-        'version': 7,
+        'version': 9,
         'lod': lod,
         'primary': 'geometry',
         'codecs': {name: 'ZSTD' for name in lods},
@@ -500,7 +580,7 @@ def _large_root(attributes):
             'codecs': ['ZSTD'] * len(indexed),
             'schema': 'A' * 1600,
         },
-        'primary_index': {'attributes': ['height']},
+        'primary_index': {},
     }
     if attributes:
         lod['attribute_columns'] = {'column': 'lod_attributes', 'lods': list(lods)}
@@ -576,27 +656,25 @@ def test_row_directories_branch_before_a_tree_overview_tiles_read():
 
 
 @pytest.mark.parametrize('rows', [50_000_000, 500_000_000])
-def test_a_large_file_reads_its_lods_as_without_column_attributes(rows):
+def test_a_large_file_reads_its_lods_as_without_attributes(rows):
     """Fifteen LODs, twenty-five indexed columns and fifty or five hundred
-    million rows, with and without twenty of the columns as column
-    attributes: the root fits the bootstrap once the largest top nodes
-    branch, and the LOD and primary trees branch the same way, so a tile not
-    styled by a column attribute reads the same nodes in the same rounds."""
-    attributes = [
-        {'name': f'attribute_{i}', 'type': 'double', 'storage': 'column'} for i in range(17)
-    ]
+    million rows, with and without twenty-one of the columns as attributes:
+    the root fits the bootstrap once the largest top nodes branch, and the
+    LOD and primary trees branch the same way, so a tile not styled by an
+    attribute reads the same nodes in the same rounds."""
+    attributes = [{'name': 'height', 'type': 'float'}]
+    attributes += [{'name': f'attribute_{i}', 'type': 'double'} for i in range(17)]
     attributes += [
         {
             'name': f'class_{i}',
             'type': 'string',
-            'storage': 'column',
             'values': [f'value {j}' for j in range(12 * (i + 1))],
         }
         for i in range(3)
     ]
     found = []
-    for carried in ([], attributes):
-        root, lods, indexed = _large_root(carried)
+    for kept in ([], attributes):
+        root, lods, indexed = _large_root(kept)
         target = io.BytesIO()
         target.write(bytes(16384))
         fit_root(target, root, _large_trees(lods, indexed, rows), lods, indexed)
@@ -641,7 +719,6 @@ def _leaves(raw, root):
     for top in root['directories'].values():
         level, entries = read_node(top)
         trees.append(list(directory_leaves(read, level, entries, {})))
-    attributes = root['primary_index']['attributes']
 
     def primary(level, entries):
         if not level:
@@ -652,18 +729,18 @@ def _leaves(raw, root):
             zip(entries['offset'], entries['length'], strict=True)
         ):
             node = json.loads(gzip.decompress(read(offset, length)))
-            child_level, child = read_primary_node(node, attributes)
+            child_level, child = read_primary_node(node)
             child['range'] = (int(offset), int(length))
             child['group'] = (end, len(entries['offset']), i)
             found += primary(child_level, child)
         return found
 
-    trees.append(primary(*read_primary_node(root['primary_index']['directory'], attributes)))
+    trees.append(primary(*read_primary_node(root['primary_index']['directory'])))
     return trees
 
 
 def _slot_at(root, tree, leaf, attribute):
-    """The byte range of the slot of the `attribute`th column attribute
+    """The byte range of the slot of the `attribute`th attribute
     beside `leaf` of tree `tree`, and the leaf's offset its frame names."""
     end, count, index = leaf['group']
     size = root['attribute_slots'][tree]
@@ -705,19 +782,19 @@ def _offset_pages(path):
 
 def test_slots_beside_each_leaf_hold_its_attribute_leaves(built):
     """The leaves under each level-one node lie back to back, followed by
-    the node's slot block: per column attribute, a slot per leaf, in leaf
+    the node's slot block: per attribute, a slot per leaf, in leaf
     order, framed with the attribute's position and the leaf's offset.
     Beside each LOD leaf, an attribute leaf
-    per column attribute lists the attribute column's page beside each page
+    per attribute lists the attribute column's page beside each page
     the LOD leaf lists, or none beside one without a value; beside each primary leaf, a row leaf lists the
     source column's pages over its rows, as the offset indexes give them. A
     tree's slots are all 16 bytes longer than its largest attribute leaf."""
-    _, _, columns = built
+    _, columns = built
     raw, root = _root(columns)
     assert 'attribute_directory' not in root
     trees = _leaves(raw, root)
-    names = [a['name'] for a in root['lod']['attributes'] if a.get('storage') == 'column']
-    assert names == ['height', 'kind', 'rps', 'name']
+    names = [a['name'] for a in root['lod']['attributes']]
+    assert names == ['flag', 'height', 'kind', 'rps', 'name']
     lods = list(root['lod']['lods'])
     assert len(root['attribute_slots']) == len(trees) == len(lods) + 1
     blocks = _blocks(root, trees, len(names))
@@ -884,11 +961,11 @@ def _set_attribute(table, lod, name, row, value):
 @pytest.mark.parametrize(
     'change,message',
     [
-        (lambda lod, _: lod['attributes'][1].update(storage='columnar'), 'storage'),
+        (lambda lod, _: lod['attributes'].clear(), 'attribute_columns without an attribute'),
         (lambda lod, _: lod.pop('attribute_columns'), 'need attribute_columns'),
         (lambda lod, _: lod['attribute_columns']['lods'].pop(), 'one child per LOD'),
         (lambda lod, _: lod['attribute_columns']['lods'].append('f99'), 'declared LODs'),
-        (lambda lod, _: lod['attributes'][0].update(storage='column'), 'metadata order'),
+        (lambda lod, _: lod['attributes'].reverse(), 'metadata order'),
         (lambda lod, _: lod['attributes'][1].update(type='int64'), 'nullable int64 column'),
         (
             lambda _, table: table.set_column(
@@ -901,21 +978,32 @@ def _set_attribute(table, lod, name, row, value):
     ],
 )
 def test_validator_refuses_attribute_column_metadata(built, tmp_path, change, message):
-    _, _, columns = built
+    _, columns = built
     bad = _relabel(columns, tmp_path / 'bad.parquet', change)
     with pytest.raises(ValidationError, match=message):
         validate(bad)
 
 
-def test_validator_refuses_a_packed_own_value_of_a_column_attribute(built, tmp_path):
-    _, packed, _ = built
+def test_validator_refuses_an_own_row_packing_attributes(built, tmp_path):
+    """A row's own value holds its geometry and its copies, and no
+    attribute section: one more varint after its geometry is refused."""
+    _, columns = built
 
-    def change(lod, _):
-        lod['attributes'][1]['storage'] = 'column'
-        lod['attribute_columns'] = {'column': 'lod_attributes', 'lods': []}
+    def change(_, table):
+        lod = table.column('lod').combine_chunks()
+        values = lod.field('f10').to_pylist()
+        row = next(i for i, v in enumerate(values) if v and v[-1] == 0)
+        values[row] = values[row][:-1] + b'\x00\x00'
+        children = [
+            pa.array(values, pa.binary()) if f.name == 'f10' else lod.field(f.name)
+            for f in lod.type
+        ]
+        column = pa.StructArray.from_arrays(children, fields=list(lod.type))
+        index = table.schema.get_field_index('lod')
+        return table.set_column(index, table.schema.field(index), column)
 
-    bad = _relabel(packed, tmp_path / 'bad.parquet', change)
-    with pytest.raises(ValidationError, match='own row packs column attribute height'):
+    bad = _relabel(columns, tmp_path / 'bad.parquet', change)
+    with pytest.raises(ValidationError, match='lod f10: invalid packed row: trailing bytes'):
         validate(bad)
 
 
@@ -924,7 +1012,7 @@ def test_validator_refuses_a_packed_own_value_of_a_column_attribute(built, tmp_p
     [('height', 5, 'for no row the LOD shows'), ('kind', 200, 'past its value table')],
 )
 def test_validator_refuses_stray_attribute_values(built, tmp_path, name, value, message):
-    _, _, columns = built
+    _, columns = built
     shown = pq.read_table(columns, columns=['lod']).column('lod').combine_chunks().field('f10')
     hidden = int(np.flatnonzero(shown.is_null().to_numpy(zero_copy_only=False))[0])
     row = hidden if name == 'height' else int(np.flatnonzero(shown.is_valid())[0])
@@ -934,6 +1022,132 @@ def test_validator_refuses_stray_attribute_values(built, tmp_path, name, value, 
 
     with pytest.raises(ValidationError, match=message):
         validate(_relabel(columns, tmp_path / 'bad.parquet', change))
+
+
+def test_validator_refuses_a_uint64_past_the_int64_maximum(built, tmp_path):
+    """A copy packs a uint64 as a signed varint, so no row holds one past 2^63 - 1."""
+    src, _ = built
+    out = _build(
+        src, tmp_path / 'wide.parquet', thinning=_thinning, attributes=[('code', 'uint64')]
+    )
+    validate(out, full=True)
+    shown = pq.read_table(out, columns=['lod']).column('lod').combine_chunks().field('f10')
+    row = int(np.flatnonzero(shown.is_valid())[0])
+
+    def change(_, table):
+        return _set_attribute(table, 'f10', 'code', row, 2**63)
+
+    with pytest.raises(ValidationError, match='code holds a uint64 past'):
+        validate(_relabel(out, tmp_path / 'bad.parquet', change))
+
+
+def test_two_columns_cannot_share_a_dotted_path(built, tmp_path):
+    """A column named `a.b` beside a struct `a` with a field `b` has that
+    field's dotted path, which readers name a column by: the writer and the
+    validator refuse the pair, and so does the reader that reads a footer."""
+    src, columns = built
+    table = pq.read_table(src)
+    nested = pa.StructArray.from_arrays([pa.array(range(table.num_rows))], ['b'])
+    clash = table.append_column('a', nested).append_column('a.b', pa.array(range(table.num_rows)))
+    twice = tmp_path / 'twice.parquet'
+    pq.write_table(clash, twice)
+    with pytest.raises(ValueError, match="two columns share the path 'a.b'"):
+        _build(twice, tmp_path / 'out.parquet', thinning=_thinning, attributes=['height'])
+
+    def change(_, staged):
+        rows = staged.num_rows
+        field = pa.StructArray.from_arrays([pa.array(range(rows))], ['b'])
+        return staged.append_column('a', field).append_column('a.b', pa.array(range(rows)))
+
+    bad = _relabel(columns, tmp_path / 'bad.parquet', change)
+    with pytest.raises(ValidationError, match='two columns share the path a.b'):
+        validate(bad)
+    result = subprocess.run(
+        ['node', str(ROOT / 'js/test/shared-path.test.mjs'), str(bad)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_a_column_named_as_a_field_the_writer_adds_is_refused_before_any_work(built, tmp_path):
+    src, _ = built
+    table = pq.read_table(src)
+    thinned = []
+
+    def thinning(rows, zoom, ctx):
+        thinned.append(zoom)
+        return _thinning(rows, zoom, ctx)
+
+    for name, owner in [
+        ('lod.f10', 'lod'),
+        ('lod_attributes.f10.height', 'lod_attributes'),
+        ('bbox.xmin', 'bbox'),
+    ]:
+        clash = tmp_path / 'clash.parquet'
+        pq.write_table(table.append_column(name, pa.array(range(table.num_rows))), clash)
+        with pytest.raises(ValueError, match=f"reads as a field of '{owner}'"):
+            _build(clash, tmp_path / 'out.parquet', thinning=thinning, attributes=['height'])
+    assert not thinned, 'refused before the rows are thinned'
+
+
+def test_attribute_names_may_hold_any_dots(built, tmp_path):
+    """A name that begins with a dot or holds two together is no nested path,
+    and every reader takes it as the column's name."""
+    src, _ = built
+    table = pq.read_table(src)
+    odd = table.append_column('.height', table.column('height')).append_column(
+        'a..b', pa.array(np.arange(table.num_rows) % 5, pa.int32())
+    )
+    named = tmp_path / 'named.parquet'
+    pq.write_table(odd, named)
+    out = _build(
+        named, tmp_path / 'out.parquet', thinning=_thinning, attributes=['.height', 'a..b']
+    )
+    validate(out, full=True)
+    expected = _expected(out)
+    _check_overviews(out, expected)
+    cases = tmp_path / 'cases.json'
+    cases.write_text(
+        json.dumps(
+            {
+                'tiles': _tiles(out, range(10, 16)),
+                'styles': [['.height'], ['a..b', '.height']],
+                'query': {
+                    'bbox': [-104.95, 39.65, -104.9, 39.7],
+                    'resolution': 360 / 512 / 2**12,
+                    'columns': ['a..b'],
+                },
+                'expected': expected,
+            }
+        )
+    )
+    _render(out, cases)
+
+
+def test_validator_refuses_a_uint64_past_the_int64_maximum_in_a_source_column(built, tmp_path):
+    """An LOD without an attribute column of its own shows the source
+    column's values, which the same limit binds."""
+    src, _ = built
+    table = pq.read_table(src)
+    wide = tmp_path / 'wide.parquet'
+    pq.write_table(table.append_column('big', pa.array(range(table.num_rows), pa.uint64())), wide)
+    out = _build(wide, tmp_path / 'out.parquet', thinning=_thinning, attributes=['big'])
+    validate(out, full=True)
+
+    def change(lod, staged):
+        lod['attribute_columns']['lods'] = []
+        big = staged.column('big').to_pylist()
+        big[3] = 2**63
+        index = staged.schema.get_field_index('big')
+        return staged.set_column(index, 'big', pa.array(big, pa.uint64())).drop_columns(
+            ['lod_attributes']
+        )
+
+    bad = _relabel(out, tmp_path / 'bad.parquet', change)
+    for full in (False, True):
+        with pytest.raises(ValidationError, match='big holds a uint64 past'):
+            validate(bad, full=full)
 
 
 def _slot_bytes(raw, root, tree=0, leaf=0, attribute=0):
@@ -1016,16 +1230,16 @@ def _slot_padding(raw, root):
     'mutate,message',
     [
         (_slot_overrun, "slot's length overruns its slot"),
-        (_slot_attribute, 'holds another column attribute'),
+        (_slot_attribute, 'holds another attribute'),
         (_slot_leaf, 'is beside another leaf'),
         (_slot_short, 'lists a page per leaf page'),
-        (_slot_swapped, 'beside another leaf|another column attribute'),
-        (_slot_exchanged, 'attribute leaf of height disagrees with its pages'),
+        (_slot_swapped, 'beside another leaf|another attribute'),
+        (_slot_exchanged, 'attribute leaf of flag disagrees with its pages'),
         (_slot_padding, 'padding is not zero'),
     ],
 )
 def test_validator_refuses_a_wrong_attribute_slot(built, tmp_path, mutate, message):
-    _, _, columns = built
+    _, columns = built
     raw, root = _root(columns)
     bad = tmp_path / 'bad.parquet'
     bad.write_bytes(mutate(raw, root))
@@ -1042,7 +1256,7 @@ def test_validator_refuses_a_wrong_attribute_slot(built, tmp_path, mutate, messa
         (lambda root: root['attribute_slots'].__setitem__(0, 7), 'no attribute slot size'),
         (
             lambda root: root['attribute_slots'].__setitem__(0, 2 * root['attribute_slots'][0]),
-            'beside another leaf|another column attribute|padding is not zero|overruns'
+            'beside another leaf|another attribute|padding is not zero|overruns'
             '|byte range|slot block',
         ),
         (lambda root: root['attribute_slots'].__setitem__(-1, 2.5), 'no attribute slot size'),
@@ -1051,7 +1265,7 @@ def test_validator_refuses_a_wrong_attribute_slot(built, tmp_path, mutate, messa
     ],
 )
 def test_validator_refuses_wrong_attribute_slot_sizes(built, tmp_path, mutate, message):
-    _, _, columns = built
+    _, columns = built
     raw, root = _root(columns)
     mutate(root)
     bad = tmp_path / 'bad.parquet'
@@ -1093,14 +1307,14 @@ def test_validator_places_leaves_and_slot_blocks(tree, reached, message):
         _check_attribute_slots(None, reached, {'attribute_slots': [16]}, [tree], ['a'], None)
 
 
-def test_validator_refuses_attribute_slots_without_column_attributes(built, tmp_path):
-    _, packed, _ = built
-    raw, root = _root(packed)
+def test_validator_refuses_attribute_slots_without_attributes(auto, tmp_path):
+    _, plain = auto
+    raw, root = _root(plain)
     assert 'attribute_slots' not in root
     root['attribute_slots'] = [64] * (len(root['lod']['lods']) + 1)
     bad = tmp_path / 'bad.parquet'
     _patch_root(bad, raw, root)
-    with pytest.raises(ValidationError, match='without column attributes'):
+    with pytest.raises(ValidationError, match='without attributes'):
         validate(bad, full=True)
 
 
@@ -1111,7 +1325,7 @@ def test_a_half_float_source_column_validates(tmp_path):
     half = pa.array(table.column('rps').to_numpy().astype(np.float16))
     table = table.set_column(table.schema.get_field_index('rps'), 'rps', half)
     pq.write_table(table, src)
-    out = _build(src, tmp_path / 'out.parquet', thinning=_thinning, carry_columns=['rps'])
+    out = _build(src, tmp_path / 'out.parquet', thinning=_thinning, attributes=['rps'])
     validate(out, full=True)
     shown = read_overview(out, 13)
     assert shown.schema.field('rps').type == pa.float16()
@@ -1132,15 +1346,15 @@ def test_auto_leaves_out_a_covering_of_flat_columns(tmp_path):
     }
     pq.write_table(table.replace_schema_metadata({b'geo': json.dumps(geo).encode()}), src)
     out = tmp_path / 'auto.parquet'
-    _write_unindexed(src, out, zooms=range(10, 13), carry_columns='auto', workers=1, log=_quiet)
+    _write_unindexed(src, out, zooms=range(10, 13), attributes='auto', workers=1, log=_quiet)
     lod = json.loads(pq.read_schema(out).metadata[b'geo'])['lod_columns']
     assert [a['name'] for a in lod['attributes']] == ['kind', 'height', 'rps', 'flag']
 
 
 def test_a_tile_reaching_more_leaves_than_the_reader_keeps_reads_its_attributes(tmp_path):
-    """A tile reaching more leaves than the reader keeps reads a column
-    attribute, and a style after a read reaching them, with geometry only
-    or styled by another column attribute, loads the attribute's leaves
+    """A tile reaching more leaves than the reader keeps reads an attribute,
+    and a style after a read reaching them, with geometry only or styled by
+    another attribute, loads the attribute's leaves
     beside every leaf the reader holds: a tile under any of them then takes
     at most one request round, none when its overview pages hold no value.
     Every styled tile holds the attribute's values."""
@@ -1152,7 +1366,7 @@ def test_a_tile_reaching_more_leaves_than_the_reader_keeps_reads_its_attributes(
         staged,
         zooms=range(14, 16),
         complete_from=14,
-        carry_columns=['height', 'kind'],
+        attributes=['height', 'kind'],
         workers=1,
         log=_quiet,
     )
@@ -1203,23 +1417,21 @@ def _point_source(path, attributes, n, seed=3):
     pq.write_table(table.replace_schema_metadata({b'geo': json.dumps(geo).encode()}), path)
 
 
-def test_a_geometry_read_coalesces_as_without_column_attributes(tmp_path):
-    """Twenty column attributes over LOD trees of many leaves under one
-    level-one node: those leaves lie back to back as in the same source
-    written without column attributes, so concurrent tiles styled by no
-    column attribute, reaching consecutive leaves, take as many requests
+def test_a_geometry_read_coalesces_as_without_attributes(tmp_path):
+    """Twenty attributes over LOD trees of many leaves under one level-one
+    node: those leaves lie back to back as in the same source written
+    without attributes, so concurrent tiles styled by no attribute,
+    reaching consecutive leaves, take as many requests
     and bytes through the default coalescing from both files, read leaves
     and pages, and hold the same features."""
     names = [f'c{i}' for i in range(20)]
     src = tmp_path / 'source.parquet'
     _point_source(src, len(names), 30000)
     built = []
-    for carried in (names, ()):
-        staged = tmp_path / f'staged-{len(carried)}.parquet'
-        _write_unindexed(
-            src, staged, zooms=range(10, 17), carry_columns=carried, workers=1, log=_quiet
-        )
-        out = tmp_path / f'out-{len(carried)}.parquet'
+    for kept in (names, ()):
+        staged = tmp_path / f'staged-{len(kept)}.parquet'
+        _write_unindexed(src, staged, zooms=range(10, 17), attributes=kept, workers=1, log=_quiet)
+        out = tmp_path / f'out-{len(kept)}.parquet'
         built.append(finalize_layout(staged, out, leaf_pages=64, page_bytes=1, log=_quiet))
     validate(built[0], full=True)
     (raw, root), (plain_raw, plain_root) = (_root(path) for path in built)
@@ -1305,7 +1517,7 @@ def _separate_directory(raw, root, trees):
     leaves a separate directory would take: per tree its leaves, then per
     attribute and tree the attribute leaves, each as gaps and lengths, the
     leaves of a tree and the attribute leaves of an attribute back to back."""
-    attributes = len([a for a in root['lod']['attributes'] if a.get('storage') == 'column'])
+    attributes = len(root['lod']['attributes'])
 
     def ranges(first, lengths):
         return [[first] + [0] * (len(lengths) - 1), lengths]
@@ -1340,7 +1552,6 @@ def _exclusive_tiles(leaves, lod):
 def _node_ranges(raw, root):
     """The byte ranges of the nodes of every LOD and the primary directory,
     sorted."""
-    attributes = root['primary_index']['attributes']
 
     def walk(level, entries, decode):
         if not level:
@@ -1356,30 +1567,27 @@ def _node_ranges(raw, root):
     found = []
     for top in root['directories'].values():
         found += walk(*read_node(top), read_node)
-    found += walk(
-        *read_primary_node(root['primary_index']['directory'], attributes),
-        lambda node: read_primary_node(node, attributes),
-    )
+    found += walk(*read_primary_node(root['primary_index']['directory']), read_primary_node)
     return sorted(found)
 
 
 def test_a_styled_tile_takes_the_rounds_of_a_geometry_tile(tmp_path):
-    """Twenty-four column attributes over many leaves, too many for a
+    """Twenty-four attributes over many leaves, too many for a
     separate attribute directory to fit the bootstrap beside the root: a
     cold tile styled by one of them, and the next tile on the same reader,
     take as many request rounds as with geometry only, and a geometry-only
     reader requests no byte of any slot. The styled tiles hold the
     attribute's values. Through the default coalescing, a geometry-only
     view under one level-one node takes the requests and bytes of the same
-    source written without column attributes; a view over the leaves of two
-    level-one nodes takes one more request, or, with one column attribute,
+    source written without attributes; a view over the leaves of two
+    level-one nodes takes one more request, or, with one attribute,
     fetches the slot block between them as filler."""
     names = [f'c{i}' for i in range(24)]
     src = tmp_path / 'source.parquet'
     _wide_source(src, len(names), n=12000)
     built = {}
     layout = importlib.import_module('tiled_geoparquet._layout')
-    for label, carried in (('wide', names), ('single', ['c5']), ('plain', ())):
+    for label, kept in (('wide', names), ('single', ['c5']), ('plain', ())):
         staged = tmp_path / f'staged-{label}.parquet'
         _write_unindexed(
             src,
@@ -1391,7 +1599,7 @@ def test_a_styled_tile_takes_the_rounds_of_a_geometry_tile(tmp_path):
             page_rows=32,
             batch_rows=32,
             thinning=_thinning,
-            carry_columns=carried,
+            attributes=kept,
             workers=1,
             log=_quiet,
         )

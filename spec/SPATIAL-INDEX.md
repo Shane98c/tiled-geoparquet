@@ -1,4 +1,4 @@
-# Tiled GeoParquet spatial page index, version 8
+# Tiled GeoParquet spatial page index, version 9
 
 An optional physical profile of a packed LOD file. The logical
 `geo.lod_columns` metadata and every table value are unchanged, but that an
@@ -6,13 +6,13 @@ attribute column's values lead the pages of their LOD
 ([Attribute pages](#attribute-pages)); the profile
 decides where column chunks and pages sit and adds directories over the
 overview pages, over the primary geometry's own pages, over each flat
-column's pages by row, and over the pages of column attributes, so a reader
+column's pages by row, and over the pages of the attributes, so a reader
 finds a tile's pages, and the pages of any flat column for the tile's rows,
 from the first 16 KiB of the file without reading the footer, at every zoom
-and past the finest overview. Where a style uses a column attribute, the
-leaves listing its pages are read in the same request round as the
-directory leaves they belong to; a reader that styles by no column
-attribute need request none of them. It is not a standardized
+and past the finest overview. Where a style uses an attribute, the leaves
+listing its pages are read in the same request round as the directory leaves
+they belong to; a reader that styles by no attribute need request none of
+them. It is not a standardized
 GeoParquet extension. Compatibility has been exercised with PyArrow, DuckDB,
 and the hyparquet-based reader in this repository.
 
@@ -30,7 +30,7 @@ standard Parquet footer | footer_length:u32le | PAR1
 The footer retains the original row groups, columns, schema, statistics, and
 GeoParquet metadata, with relocated offsets and updated physical sizes.
 `lod_spatial_index` in its key/value metadata advertises the profile version
-and bootstrap location, `{"version":8,"offset":4,"length":16380}`. Primary
+and bootstrap location, `{"version":9,"offset":4,"length":16380}`. Primary
 geometry and source attribute chunks are copied byte for byte. LOD chunks are
 re-encoded in the original row order, with the same nullable binary schema and
 zstd, with page breaks at the LOD's finest tile grid. Every LOD page is a v1
@@ -46,7 +46,7 @@ indexes still describe every page.
 
 ## Attribute pages
 
-A file with column attributes holds them in attribute columns at every LOD
+A file with attributes holds them in attribute columns at every LOD
 ([Layout](SPEC.md#layout) 5): the profile refuses a file whose
 `attribute_columns.lods` leaves an LOD out. An LOD's attribute column chunks
 are re-encoded page by page beside the same row group's LOD chunk, and its
@@ -72,7 +72,7 @@ smaller. All attribute column chunks share one codec, the root's
 `attribute_codec`. The column remains an ordinary nullable Parquet column,
 whose values a reader matches to rows through the LOD's pages. A reader
 MUST refuse an attribute page it reads that holds a value past as many rows
-as its LOD page shows. The pages a tile styled by a column attribute reads therefore hold
+as its LOD page shows. The pages a tile styled by an attribute reads therefore hold
 the rows of the overview pages it reads that hold a value, in the same
 request round, and for the overview pages that hold none it reads nothing.
 
@@ -85,7 +85,7 @@ directory boundaries can add reads.
 
 The compressed root is bounded by the first 16 KiB and contains:
 
-- `version: 8`, `file_bytes`: format and full file length checks. A reader
+- `version: 9`, `file_bytes`: format and full file length checks. A reader
   refuses any other version.
 - `footer_bytes`: the length of the standard footer's metadata, so a reader
   fetches the footer and its trailer in one request.
@@ -95,11 +95,11 @@ The compressed root is bounded by the first 16 KiB and contains:
   initialize without another reader open.
 - `codecs`: LOD name to its Parquet compression codec.
 - `attribute_codec`: the Parquet compression codec of every attribute
-  column chunk, present exactly when the file has column attributes.
+  column chunk, present exactly when the file has attributes.
 - `attribute_slots`: per tree, each LOD's in `lod.lods` order and then the
   primary directory's, the size in bytes of the
   [attribute slots](#attribute-slots) of its leaves, present exactly when
-  the file has column attributes.
+  the file has attributes.
 - `directories`: LOD name to the top node of its directory, at level one or
   above.
 - `column_index`: the indexed columns, what decodes their pages, and their
@@ -152,19 +152,19 @@ the bootstrap, adds a level of branches of 64 entries to a tree: to the row
 directory whose top node is largest, since no overview tile reads the row
 directories, and to the LOD or primary tree whose top node is largest only
 once every row directory has branched. It first fits the root as it would be
-without the column attributes' metadata, the attribute codec and the
-attribute slot sizes, so the trees branch as in the same file without column
-attributes, and then with them. A synthetic directory of 15 LODs, 20 column
-attributes, 25 indexed columns and 50 or 500 million rows has the same LOD
-and primary trees with and without the column attributes.
+without the attributes' metadata, the attribute codec and the attribute slot
+sizes, so the trees branch as in the same file without attributes, and then
+with them. A synthetic directory of 15 LODs, 21 attributes, 25 indexed
+columns and 50 or 500 million rows has the same LOD and primary trees with
+and without the attributes.
 
 ## Attribute slots
 
 The leaves under one level-one node of an LOD directory or of the primary
 directory, in entry order, are contiguous in the file: each starts where the
-previous one ends. In a file with column attributes they are followed
-immediately by the node's _slot block_: for each column attribute in
-metadata order, one slot per leaf of the node, in leaf order, each holding
+previous one ends. In a file with attributes they are followed immediately
+by the node's _slot block_: for each attribute in metadata order, one slot
+per leaf of the node, in leaf order, each holding
 that attribute's attribute leaf for the leaf:
 
 ```text
@@ -175,7 +175,7 @@ Every slot of one tree has the same size, the tree's entry in
 `attribute_slots`: 16 plus the length of the tree's largest gzip attribute
 leaf. `length` is the gzip attribute leaf's and MUST be positive and at most
 the slot size minus 16, `attribute` MUST be the position of the slot's
-column attribute among the column attributes, `leaf` MUST be the byte
+attribute among the attributes, `leaf` MUST be the byte
 offset in the file of the directory leaf the slot belongs to, and the
 padding MUST be zeros; a reader refuses a slot that breaks any of these, so
 a slot read for the wrong leaf, tree or attribute fails rather than lending
@@ -184,29 +184,28 @@ have no slots, and no byte of a directory node lies in a slot block.
 
 For the leaf at byte `leaf` and position `j` among the `n` entries of its
 level-one node in tree `t`, whose last leaf ends at byte `end`, the slot of
-the column attribute at position `a` among the column attributes is the
+the attribute at position `a` among the attributes is the
 `attribute_slots[t]` bytes from `end + (a * n + j) * attribute_slots[t]`,
 framed with `a` and `leaf`. All of these follow from the level-one node,
 which a reader holds when it reaches the leaf, so it fetches a leaf and the
 slots of the attributes a style uses in the same round, and a styled tile
 reads in as many rounds as the same tile without the style, for any number
-of column attributes. The slots of one attribute for consecutive leaves of
+of attributes. The slots of one attribute for consecutive leaves of
 a node are adjacent, so a reader reaching several of those leaves reads
 their slots as one range.
 
-A reader that styles by no column attribute need name no slot byte in its
+A reader that styles by no attribute need name no slot byte in its
 requests, and the reference reader names none. The leaves under one
-level-one node are laid out as in the same source written without column
+level-one node are laid out as in the same source written without
 attributes, so a view under one level-one node takes the requests it takes
 from that source. A slot block lies between the
 leaf runs of consecutive level-one nodes, so where one view reaches the
 leaves of two of them, a source that coalesces nearby ranges may fetch a
-small slot block as filler, or make one more request than without column
+small slot block as filler, or make one more request than without
 attributes. Measured on 12,000 shapes with one page per leaf and both
 level-one nodes held, a view over the last leaf of one and the first of the
-next makes 4 requests against 3 with 24 column attributes, and with one
-column attribute makes 3 requests and fetches the 3,392-byte slot block
-between them.
+next makes 4 requests against 3 with 24 attributes, and with one attribute
+makes 3 requests and fetches the 3,392-byte slot block between them.
 
 The reference writer settles which trees the root fitting branches before
 it writes the leaves, laying out each tree's leaves either under its top
@@ -249,7 +248,7 @@ exist. Read consecutive pages together. Decode each page with the root's codec
 and the required-struct/nullable-binary schema, scanning its definition-level
 runs to skip null rows. Use the fences to retain own rows inside the tile
 interval, and the host row for its copies tagged with the requested tile.
-Global row indices are the feature ids. For each column attribute a style
+Global row indices are the feature ids. For each attribute a style
 uses, load its slots for the leaves reached along with them,
 and read with the overview pages the attribute pages beside those holding
 the tile's own rows, none beside an empty entry. An own feature's value is
@@ -304,8 +303,8 @@ nulls at most as many. Other columns are read through the footer.
 
 A tile's own rows are known once its overview pages are: they are the rows
 of the fences, among the selected pages, whose cell lies in the tile, up to
-each page's `counts - nulls`. A reader styling a tile by a column the
-overviews do not carry can therefore fetch that column's pages for those rows
+each page's `counts - nulls`. A reader styling a tile by a source column
+that is no attribute can therefore fetch that column's pages for those rows
 alongside the overview pages, and after decoding read only the rows of the
 tile's boundary copies, which belong to features keyed elsewhere.
 
@@ -316,17 +315,11 @@ overview copies. Its pages, copied byte for byte and never re-paged, are
 located by a directory routed by key, as the LOD directories are, whose leaves
 list runs of geometry rows with the box of each. A feature reaching into a
 tile from outside it is found by its box, so the primary geometry needs no
-boundary copies. The root's `primary_index` holds:
-
-- `attributes`: packed attributes that are indexed columns, whose pages
-  each leaf also locates, so a tile reads them in the same request round as
-  its geometry. The reference writer lists every such attribute. No column
-  attribute is listed: the attribute leaves in the slots of the primary
-  leaves locate their pages.
-- `directory`: the top node, at level one or above.
-
-The primary geometry and these attributes decode with their codecs and
-schema elements in `column_index`.
+boundary copies. The root's `primary_index` holds `directory`, the top node,
+at level one or above. The primary geometry decodes with its codec and
+schema element in `column_index`, and the attribute leaves in the slots of
+the primary leaves locate the pages of the attributes' source columns, so a
+tile reads them in the same request round as its geometry.
 
 Its cells are Hilbert cells at `z = min(key.depth, finest zoom)`, the finest
 LOD's. The nodes above its leaves are directory nodes as above,
@@ -354,7 +347,7 @@ A leaf is a JSON array of level 0 and parallel columns with one value per
 entry, the first entry's values against zero:
 
 ```text
-[0, wests, souths, widths, heights, gaps, lengths, rows, counts, sources]
+[0, wests, souths, widths, heights, gaps, lengths, rows, counts]
 ```
 
 Each entry is a run of one geometry page's rows, in row order; a page's runs
@@ -368,9 +361,6 @@ are consecutive entries holding all its rows.
   the previous entry's.
 - `rows`, `counts`: its first row minus the previous entry's end row, and its
   rows.
-- `sources`: per column in `attributes`, its pages overlapping the rows of the
-  leaf's runs, as `[gaps, lengths, rows, counts]` coded as the LOD
-  directory's pages.
 
 A run's box is the union of its rows' boxes, and it holds a row with an
 extent. A leaf lists every page holding a row whose box reaches its region,
@@ -399,11 +389,10 @@ directory's page, of exactly its runs' rows. Keep the rows of the taken
 runs whose geometry is present and whose bbox intersects the query: the
 reference reader takes it from the WKB, rounded outward to float32, which
 [Layout](SPEC.md#layout) 2 makes the covering, so it keeps the rows the
-covering would. Alongside the geometry, read the pages of each needed packed
-attribute that the same leaves locate over the taken runs' rows, those of
-each needed column attribute that the attribute leaves in the slots of
-them locate, loaded with the leaves, and the pages of any other indexed column over them
-from its row directory. A source column's value is cast to the declared
+covering would. Alongside the geometry, read the pages of each needed
+attribute that the attribute leaves in the slots of the same leaves locate
+over the taken runs' rows, loaded with the leaves, and the pages of any other
+indexed column over them from its row directory. A source column's value is cast to the declared
 type, a float rounded to it.
 
 ## Analytical access and publishing

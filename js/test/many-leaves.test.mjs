@@ -1,7 +1,7 @@
 // node test/many-leaves.test.mjs <file> <cases.json>
-// A tile reaching more directory leaves than the reader keeps still reads a
-// column attribute: the leaves it reaches first are evicted and loaded again.
-// The cases give two column attributes, each one's value at every row, and
+// A tile reaching more directory leaves than the reader keeps still reads an
+// attribute: the leaves it reaches first are evicted and loaded again.
+// The cases give two attributes, each one's value at every row, and
 // the byte offset of each leaf of the LOD serving zoom 0 with a tile under
 // it reaching no other leaf. Whether the reader first reads that zoom 0
 // tile with geometry only or styled by the first attribute, a style by the
@@ -82,7 +82,7 @@ for (const lead of [[], [first]]) {
   const top = await render(reader, [0, 0, 0], lead)
   assert.ok(top.length > 0, 'the zoom 0 tile holds features')
   assert.ok(net.offsets.size - opened > 300, `the tile reaches many leaves (${net.offsets.size})`)
-  if (lead.length) assert.ok(checked(top, first, [0, 0, 0]) > 0, `features carry ${first}`)
+  if (lead.length) assert.ok(checked(top, first, [0, 0, 0]) > 0, `features hold ${first}`)
   // the leaves the reader holds, which its directory cache bounds
   const held = leaves.filter(([offset]) => reader.directories.has(offset))
   assert.ok(held.length > 100 && held.length < leaves.length, `${held.length} leaves held`)
@@ -106,7 +106,7 @@ for (const lead of [[], [first]]) {
     fetching += net.rounds
     valued += checked(layer, second, tile)
   }
-  assert.ok(valued > 0, `tiles under held leaves carry ${second}`)
+  assert.ok(valued > 0, `tiles under held leaves hold ${second}`)
   assert.ok(fetching > 0, `tiles under held leaves fetch ${second} pages`)
   const styled = await render(reader, [0, 0, 0], [second])
   assert.equal(styled.length, top.length)

@@ -1,18 +1,14 @@
-"""Build the attribute-storage variants of one source with one thinning recipe.
+"""Build the attribute variants of one source with one thinning recipe.
 
 python benchmarks/attribute-columns/build-variants.py SRC OUT_DIR --recipe japan \\
-    [--carry height,class] [--variants packed,columns,auto,hybrid,none]
+    [--attributes height,class] [--variants columns,auto,none]
 
 Variants, each written to OUT_DIR/<variant>.parquet:
-  packed   carry=CARRY, the attributes packed into every overview row, and
-           no column attributes
-  columns  carry_columns=CARRY, a typed column per LOD
-  auto     carry_columns='auto', the writer's default; with --explicit-auto,
+  columns  attributes=ATTRIBUTES, a typed column per LOD for each
+  auto     attributes='auto', the writer's default; with --explicit-auto,
            an explicit list of the source's numeric, boolean and
            low-cardinality string columns
-  hybrid   carry=CARRY and carry_columns='auto': CARRY packed, every other
-           cheap column kept as a column
-  none     nothing carried, the geometry-only reference
+  none     attributes=(), the geometry-only reference
 
 SRC is anything `write` opens (a path, glob or s3:// URI); an http(s) URL is
 first streamed to OUT_DIR/source.parquet by derive-source.py, which also drops
@@ -36,8 +32,8 @@ from tiled_geoparquet import chain, drop_smallest, tiny_polygons, write
 from tiled_geoparquet.thinning import describe
 
 HERE = Path(__file__).parent
-VARIANTS = ('packed', 'columns', 'auto', 'hybrid', 'none')
-# the writer packs a string with at most this many distinct values as a dictionary index
+VARIANTS = ('columns', 'auto', 'none')
+# the writer keeps a string with at most this many distinct values as an index into a value table
 LOW_CARDINALITY = 256
 
 
@@ -107,18 +103,13 @@ def cheap_columns(src: str) -> list[str]:
     return names
 
 
-def variant_options(name: str, carry: list[str], auto: list[str] | str) -> dict:
-    if name == 'packed':
-        return {'carry': carry, 'carry_columns': ()}
+def variant_options(name: str, attributes: list[str], auto: list[str] | str) -> dict:
     if name == 'none':
-        return {'carry_columns': ()}
-    if name == 'hybrid':
-        kept = auto if auto == 'auto' else [c for c in auto if c not in carry]
-        return {'carry': carry, 'carry_columns': kept}
-    return {'carry_columns': carry if name == 'columns' else auto}
+        return {'attributes': ()}
+    return {'attributes': attributes if name == 'columns' else auto}
 
 
-def storage(path: Path, log_lines: list[str]) -> dict:
+def sizes(path: Path, log_lines: list[str]) -> dict:
     """Compressed column chunk bytes grouped by what they hold, and the rest of the file."""
     parquet = pq.ParquetFile(path)
     metadata = parquet.metadata
@@ -196,7 +187,7 @@ if __name__ == '__main__':
     parser.add_argument('src')
     parser.add_argument('out_dir', type=Path)
     parser.add_argument('--recipe', choices=sorted(RECIPES), required=True)
-    parser.add_argument('--carry', default='height,class', help='attributes of packed and columns')
+    parser.add_argument('--attributes', default='height,class', help='attributes of columns')
     parser.add_argument('--variants', default=','.join(VARIANTS))
     parser.add_argument(
         '--repeat',
@@ -224,7 +215,7 @@ if __name__ == '__main__':
         recipe['workers'] = args.workers
     if args.memory_limit:
         recipe['memory_limit'] = args.memory_limit
-    carry = [c for c in args.carry.split(',') if c]
+    attributes = [c for c in args.attributes.split(',') if c]
     variants = [v for v in args.variants.split(',') if v]
     unknown = set(variants) - set(VARIANTS)
     if unknown:
@@ -239,13 +230,13 @@ if __name__ == '__main__':
         source=src,
         recipe=args.recipe,
         thinning=describe(recipe['thinning']),
-        carry=carry,
+        attributes=attributes,
         auto=auto,
     )
     times = defaultdict(list)
     for _ in range(args.repeat):
         for name in variants:
-            options = variant_options(name, carry, auto)
+            options = variant_options(name, attributes, auto)
             seconds, lines = build(src, args.out_dir, name, recipe, options)
             times[name].append(seconds)
             results['variants'][name] = {
@@ -253,9 +244,9 @@ if __name__ == '__main__':
                 'build_s': min(times[name]),
                 'build_runs_s': times[name],
                 'options': options,
-                'storage': storage(args.out_dir / f'{name}.parquet', lines),
+                'sizes': sizes(args.out_dir / f'{name}.parquet', lines),
             }
             results_path.write_text(json.dumps(results, indent=2) + '\n')
             print(
-                f'{name}: {seconds} s, {results["variants"][name]["storage"]["file_bytes"]:,} bytes'
+                f'{name}: {seconds} s, {results["variants"][name]["sizes"]["file_bytes"]:,} bytes'
             )

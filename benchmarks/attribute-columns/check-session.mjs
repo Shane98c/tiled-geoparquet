@@ -1,7 +1,7 @@
 // Checks one step of the session replay against independent measurements.
 //
 //   node benchmarks/attribute-columns/check-session.mjs --file label=path
-//     [--scenario denver] [--carried height] [--uncarried class] [--step 2] [--latency 100]
+//     [--scenario denver] [--named height] [--other class] [--step 2] [--latency 100]
 //
 // The step runs alone on a fresh reader, and each of its tiles runs alone on
 // a fresh reader of its own. The bytes the tiles fetch between them, less what

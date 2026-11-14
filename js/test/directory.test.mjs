@@ -29,7 +29,7 @@ const reader = (bytes, top, exact = EMPTY_TOP, reads = [], root = {}) =>
       },
     },
     {
-      version: 8,
+      version: 9,
       file_bytes: bytes.length,
       primary: 'geometry',
       codecs: { f2: 'UNCOMPRESSED' },
@@ -41,7 +41,7 @@ const reader = (bytes, top, exact = EMPTY_TOP, reads = [], root = {}) =>
         lods: { f2: { zooms: [2], geometry_type: 'Point', scale: [1, 1], offset: [0, 0] } },
       },
       directories: { f2: top },
-      primary_index: { attributes: [], directory: exact },
+      primary_index: { directory: exact },
       column_index: {
         columns: ['geometry'],
         codecs: ['UNCOMPRESSED'],
@@ -333,7 +333,6 @@ const primaryLeaf = (pages) => {
       runs.map((r) => r.count),
     ),
     runs.map((r) => r.count),
-    [],
   ]
 }
 /** A level-one node over leaves {low, high, offset, length} spanning cells low..high. */
@@ -427,13 +426,13 @@ const cellBranch = (level, children) => [
   )
 
   for (const [bad, why] of [
-    [leaf.slice(0, 9), 'a leaf without runs'],
+    [leaf.slice(0, 8), 'a leaf without counts'],
     [leaf.with(3, [-1, 0, 0]), 'a negative width'],
     [leaf.with(6, [0, ...leaf[6].slice(1)]), 'a first entry in the previous entry’s page'],
     [leaf.with(5, [0, 1, 0]).with(6, [leaf[6][0], 0, 0]), 'a later page of length 0'],
     [leaf.with(5, [...leaf[5].slice(0, 2), 1]), 'a later run with a byte gap'],
     [leaf.with(7, [...leaf[7].slice(0, 2), 1]), 'a later run with a row gap'],
-    [leaf.with(9, [[[], [], [], []]]), 'runs for an attribute the root lacks'],
+    [[...leaf, [[[], [], [], []]]], 'a column past the counts'],
     [leaf.with(1, [0.5, 0, 0]), 'a fractional cell'],
   ])
     await assert.rejects(
@@ -492,8 +491,8 @@ console.log('primary directory: routing, runs, cells, levels, self-references, s
 
 {
   // A byte range past the end of the file is refused before any request: an
-  // overview node or page, a primary node, geometry or attribute page, or a
-  // row directory node or the page it locates.
+  // overview node or page, a primary node or geometry page, or a row
+  // directory node or the page it locates.
   const file = store()
   const past = file.bytes.length + 1024
   const inside = file.raw(binaryPage([point(5, 5)]))
@@ -503,14 +502,10 @@ console.log('primary directory: routing, runs, cells, levels, self-references, s
     first: 0,
     runs: [{ box: at(5, 5), count: 1 }],
   })
-  /** A top node over one leaf of `pages`, with `sources` per attribute. */
-  const exact = (pages, sources = []) => {
-    const [offset, length] = file.add(primaryLeaf(pages).with(9, sources))
+  /** A top node over one leaf of `pages`. */
+  const exact = (pages) => {
+    const [offset, length] = file.add(primaryLeaf(pages))
     return cellBranch(1, [{ low: 0, high: 15, offset, length }])
-  }
-  const attributed = {
-    attributes: ['a'],
-    directory: exact([page(...inside)], [[[past], [10], [0], [1]]]),
   }
   const lodLeaf = file.add(leaf([[1, past, 10, 0, 3]]))
   const reads = []
@@ -532,14 +527,6 @@ console.log('primary directory: routing, runs, cells, levels, self-references, s
       rows,
     ],
     ['a geometry page', reader(file.bytes, EMPTY_TOP, exact([page(past, 10)]), reads), rows],
-    [
-      'an attribute page',
-      reader(file.bytes, EMPTY_TOP, EMPTY_TOP, reads, {
-        primary_index: attributed,
-        column_index: columnsA(),
-      }),
-      (r) => rows(r, ['a']),
-    ],
     [
       'a row directory node',
       reader(file.bytes, EMPTY_TOP, EMPTY_TOP, reads, {
@@ -574,20 +561,37 @@ console.log('byte ranges: nodes and pages past the file are refused unread')
   const file = store()
   const plain = file.raw(binaryPage([point(5, 5), point(5, 5)]))
   const named = file.raw(binaryPage([new Uint8Array([97]), new Uint8Array([98])]))
+  // the attribute leaf of `a` in the slot beside the primary leaf
+  const size = 128
   const read = (count, attributeRows, geometry = plain) => {
     const page = { offset: geometry[0], length: geometry[1], first: 0 }
-    const leaf = primaryLeaf([{ ...page, runs: [{ box: at(5, 5), count }] }])
-    const [offset, length] = file.add(
-      leaf.with(9, [[[named[0]], [named[1]], [0], [attributeRows]]]),
-    )
-    const primary_index = {
-      attributes: ['a'],
-      directory: cellBranch(1, [{ low: 0, high: 15, offset, length }]),
-    }
-    return reader(file.bytes, EMPTY_TOP, EMPTY_TOP, [], {
-      primary_index,
-      column_index: columnsA(),
-    }).readPrimary([4, 4, 6, 6], ['a'])
+    const [offset, length] = file.add(primaryLeaf([{ ...page, runs: [{ box: at(5, 5), count }] }]))
+    const held = gzipSync(JSON.stringify([0, [named[0]], [named[1]], [0], [attributeRows]]))
+    const slot = new Uint8Array(size)
+    const view = new DataView(slot.buffer)
+    view.setUint32(0, held.length, true)
+    view.setBigUint64(8, BigInt(offset), true)
+    slot.set(held, 16)
+    file.raw(slot)
+    return reader(
+      file.bytes,
+      EMPTY_TOP,
+      cellBranch(1, [{ low: 0, high: 15, offset, length }]),
+      [],
+      {
+        lod: {
+          column: 'lod',
+          key: { column: 'key', depth: 2 },
+          zooms: [2],
+          attributes: [{ name: 'a', type: 'string' }],
+          attribute_columns: { column: 'lod_attributes', lods: ['f2'] },
+          lods: { f2: { zooms: [2], geometry_type: 'Point', scale: [1, 1], offset: [0, 0] } },
+        },
+        attribute_codec: 'UNCOMPRESSED',
+        attribute_slots: [size, size],
+        column_index: columnsA(),
+      },
+    ).readPrimary([4, 4, 6, 6], ['a'])
   }
   const exact = await read(2, 2)
   assert.deepEqual(exact.rows, [0, 1])
@@ -731,8 +735,8 @@ console.log('row directories: rows, levels and page headers agree before values 
 }
 console.log('exact bboxes: NaN ordinates left out one axis at a time, no finite bounds no row')
 
-// Column attributes: the leaves under a level-one node lie back to back,
-// followed by its slot block: per column attribute in metadata order, a slot
+// Attributes: the leaves under a level-one node lie back to back,
+// followed by its slot block: per attribute in metadata order, a slot
 // per leaf in leaf order, of the tree's size, framed with the attribute's
 // position and the leaf's offset and holding an attribute leaf listing an
 // attribute page beside each page of the leaf. A file with such attributes
@@ -744,8 +748,8 @@ console.log('exact bboxes: NaN ordinates left out one axis at a time, no finite 
     key: { column: 'key', depth: 2 },
     zooms: [1, 2],
     attributes: [
-      { name: 'a', type: 'double', storage: 'column' },
-      { name: 'b', type: 'double', storage: 'column' },
+      { name: 'a', type: 'double' },
+      { name: 'b', type: 'double' },
     ],
     attribute_columns: { column: 'lod_attributes', lods: ['f1', 'f2'] },
     lods: {
@@ -767,7 +771,7 @@ console.log('exact bboxes: NaN ordinates left out one axis at a time, no finite 
     },
     attribute_slots: SLOTS,
   }
-  /** A slot of `size` bytes framing `node` for the column attribute at
+  /** A slot of `size` bytes framing `node` for the attribute at
    * `attribute` beside the leaf at byte `leaf`, its length prefix `length`
    * when given. */
   const slot = (node, attribute, leaf, size, length) => {
@@ -867,14 +871,14 @@ console.log('exact bboxes: NaN ordinates left out one axis at a time, no finite 
       { offset: 100, length: 5, first: 0, count: 3 },
       { offset: 105, length: 6, first: 3, count: 2 },
     ],
-    'the second column attribute reads the slots after those of the first',
+    'the second attribute reads the slots after those of the first',
   )
   assert.deepEqual(
     (await prepare(styled().r, ['b'], 'f1')).attributes[0].pages,
     [{ offset: 400, length: 8, first: 5, count: 1 }],
     "each tree's slots are of its own size",
   )
-  // a tile styled by no column attribute reads no slot byte
+  // a tile styled by no attribute reads no slot byte
   const reads = []
   await prepare(styled({ reads }).r, [])
   assert.ok(reads.length)
@@ -902,9 +906,10 @@ console.log('exact bboxes: NaN ordinates left out one axis at a time, no finite 
     [{ change: first((_, f2) => own(nodes[0][0], f2, 0)) }, /overruns its slot/],
     [{ change: first((_, f2) => own([0, [10], [-8]], f2)) }, /malformed byte ranges/],
     [{ change: first((_, f2) => own([0, [0]], f2)) }, /malformed attribute leaf/],
+    [{ change: first((_, f2) => own([0, [10 ** 7], [7]], f2)) }, /outside the file/],
     [
       { change: first((_, f2) => slot(nodes[0][0], 1, f2[0][0], SLOTS[1])) },
-      /holds another column attribute/,
+      /holds another attribute/,
     ],
     [{ change: first((_, f2) => slot(nodes[0][0], 0, f2[1][0], SLOTS[1])) }, /beside another leaf/],
     // a slot size doubled in the root
@@ -926,7 +931,7 @@ console.log('exact bboxes: NaN ordinates left out one axis at a time, no finite 
   // tree 0's slot size at f2 misplaces its slots
   await assert.rejects(
     prepare(styled({ sizes: [SLOTS[0], SLOTS[0], SLOTS[2]] }).r, ['b']),
-    /beside another leaf|another column attribute|padding is not zero|overruns/,
+    /beside another leaf|another attribute|padding is not zero|overruns/,
   )
   // the slots of `a` beside f1's leaf and f2's first leaf, of one size,
   // swapped between the trees
@@ -960,8 +965,8 @@ console.log('exact bboxes: NaN ordinates left out one axis at a time, no finite 
   const top = [1, [0], [0], [100], [10]]
   const tops = { directories: { f1: top, f2: top } }
   assert.ok(reader(bytes, top, EMPTY_TOP, [], { ...columns, ...tops }))
-  const packed = { ...lod, attributes: [{ name: 'a', type: 'double' }] }
-  delete packed.attribute_columns
+  const bare = { ...lod, attributes: [] }
+  delete bare.attribute_columns
   for (const [root, message] of [
     [{ attribute_codec: undefined }, /names no attribute codec/],
     [{ column_index: undefined }, /malformed row directories/],
@@ -984,11 +989,8 @@ console.log('exact bboxes: NaN ordinates left out one axis at a time, no finite 
     [{ attribute_slots: SLOTS.slice(1) }, /malformed attribute slot sizes/],
     [{ attribute_slots: [SLOTS[0], 15, SLOTS[2]] }, /malformed attribute slot sizes/],
     [{ attribute_slots: [SLOTS[0], 8.5, SLOTS[2]] }, /malformed attribute slot sizes/],
-    [
-      { primary_index: { attributes: ['a'], directory: EMPTY_TOP } },
-      /primary directory locates a column attribute/,
-    ],
-    [{ lod: packed }, /attribute slots without column attributes/],
+    [{ primary_index: undefined }, /malformed primary directory/],
+    [{ lod: bare }, /attribute slots without attributes/],
   ])
     assert.throws(
       () => reader(bytes, top, EMPTY_TOP, [], { ...columns, ...tops, ...root }),
@@ -1003,4 +1005,4 @@ console.log('exact bboxes: NaN ordinates left out one axis at a time, no finite 
     /malformed spatial directory node/,
   )
 }
-console.log('column attributes: attribute slots, leaves, codec and source columns checked')
+console.log('attributes: attribute slots, leaves, codec and source columns checked')

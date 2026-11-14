@@ -3,7 +3,7 @@
 One row per shown feature per level, plus one row per boundary copy tagged
 with the tile it serves, in Hilbert order with tile-aligned row groups:
 
-    level, row, tile, geometry (nested int32 x/y on the level's grid), carried
+    level, row, tile, geometry (nested int32 x/y on the level's grid),
     attributes, key
 
     uv run python benchmarks/standard-overviews/build.py packed.parquet standard.parquet
@@ -19,19 +19,33 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
-from tiled_geoparquet.unpack import unpack_batches
+from tiled_geoparquet.unpack import (
+    PageBounds,
+    column_values,
+    leads,
+    lod_values,
+    shown_rows,
+    unpack_batches,
+)
 
 GEOMETRY = pa.list_(pa.list_(pa.list_(pa.struct([('x', pa.int32()), ('y', pa.int32())]))))
 
 
 def decode_chunk(args):
-    path, group, name, family, fields, dictionaries, first_row = args
+    path, group, name, family, lod, dictionaries, first_row = args
     f = pq.ParquetFile(path)
-    table = f.read_row_group(group, columns=['hilbert', f'lod.{name}'])
-    keys = table.column('hilbert').combine_chunks()
-    arrow_fields = [pa.field(a['name'], pa.type_for_alias(a['type'])) for a in fields]
+    keys = f.read_row_group(group, columns=['hilbert']).column(0).combine_chunks()
+    values = lod_values(f, group, 'lod', name)
+    arrow_fields = [pa.field(a['name'], pa.type_for_alias(a['type'])) for a in lod['attributes']]
+    # a row's own attributes are in its LOD's attribute column, a copy's in its packed value
+    led = None
+    if arrow_fields and leads(f):
+        pages = PageBounds(path)
+        led = (shown_rows(values, family), pages(group, f'lod.{name}'))
+        pages.close()
+    own = {a.name: column_values(f, group, lod, name, a, led) for a in arrow_fields}
     tables = []
-    for u in unpack_batches(table.column('lod').flatten()[0], family, arrow_fields, dictionaries):
+    for u in unpack_batches(values, family, arrow_fields, dictionaries):
         geom, poly, ring, x, y = u.geometry
         # a row shown only to host copies has no geometry of its own
         keep = np.flatnonzero(u.copy | (np.diff(geom) > 0))
@@ -48,7 +62,14 @@ def decode_chunk(args):
             'row': pa.array(np.where(u.copy, u.id, first_row + u.row)[keep]),
             'tile': pa.array(u.tile[keep].astype(np.int64), mask=~u.copy[keep]),
             'geometry': geometry.take(keep),
-            **{a.name: u.attrs[a.name].take(keep) for a in arrow_fields},
+            **{
+                a.name: pc.if_else(
+                    pa.array(u.copy[keep]),
+                    u.attrs[a.name].take(keep),
+                    own[a.name].take(u.row[keep]),
+                )
+                for a in arrow_fields
+            },
             'key': keys.take(u.row[keep]),
         }
         tables.append(pa.table(columns))
@@ -71,7 +92,7 @@ def main():
         [0] + [f.metadata.row_group(g).num_rows for g in range(f.metadata.num_row_groups)]
     )
     jobs = [
-        (args.packed, g, name, info['geometry_type'], fields, dictionaries, int(starts[g]))
+        (args.packed, g, name, info['geometry_type'], lod, dictionaries, int(starts[g]))
         for name, info in lod['lods'].items()
         for g in range(f.metadata.num_row_groups)
     ]

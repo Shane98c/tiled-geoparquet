@@ -1,18 +1,18 @@
 // node test/attribute-rounds.test.mjs <file> <cases.json>
-// A tile styled by a column attribute takes as many request rounds as the
+// A tile styled by an attribute takes as many request rounds as the
 // same tile with geometry only, cold and next on the same reader, and holds
-// the attribute's values; a reader styling by no column attribute requests
+// the attribute's values; a reader styling by no attribute requests
 // no byte of an attribute slot. Through the default `coalescing`, a
 // geometry-only view under one level-one node fetches no slot byte and takes
-// the requests and bytes of the same source written without column
+// the requests and bytes of the same source written without
 // attributes, and a view over the leaves of two level-one nodes, both held,
 // takes one more request or fetches the slot block between them as filler. The cases
 // give the attribute, pairs of tiles read one after the other, the byte
 // ranges of every slot block, the attribute's value at every row, a file
-// without column attributes whose trees branch, the view under one
+// without attributes whose trees branch, the view under one
 // level-one node, and the view over two with, per file of the same source
 // and branching, its slot blocks, the block between the two nodes' leaves
-// and which cost it takes. The first of those files holds every column
+// and which cost it takes. The first of those files holds every
 // attribute, and the view under one level-one node reads from it.
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
@@ -100,7 +100,7 @@ for (const tiles of pairs) {
     }
   }
 }
-assert.ok(valued > 0, `features carry ${attribute}`)
+assert.ok(valued > 0, `features hold ${attribute}`)
 
 /** The bytes of `ranges` inside the disjoint `blocks`. */
 const slotBytes = (ranges, blocks) =>
@@ -110,7 +110,7 @@ const slotBytes = (ranges, blocks) =>
     0,
   )
 
-// a reader styling by no column attribute requests no slot byte
+// a reader styling by no attribute requests no slot byte
 const counter = counting(0)
 const reader = await openReader(counter.source)
 for (const tile of pairs.flat()) await render(reader, tile, [])

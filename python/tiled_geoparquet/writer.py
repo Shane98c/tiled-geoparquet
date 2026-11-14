@@ -1,7 +1,8 @@
 """Build GeoParquet with per-zoom display columns and a spatial page index.
 
-Overview generation retains the source columns and writes whole quantized
-geometry, carried attributes, and boundary copies into packed binary columns.
+Overview generation retains the source columns, writes whole quantized
+geometry and boundary copies into packed binary columns, and keeps each
+attribute's values per zoom in attribute columns.
 Layout finalization aligns overview pages to tiles and adds the spatial directory
 without changing table values. Ordinary readers use the standard Parquet footer.
 """
@@ -37,7 +38,7 @@ from .encoding import (
     PACK_VERSION,
     column_type,
     infer_attributes,
-    is_carried_type,
+    is_attribute_type,
     lod_type,
     point_parts,
     source_compatible,
@@ -53,13 +54,15 @@ from .key import (
     sql_mercator_x,
     sql_mercator_y,
 )
-from .pack import cast_carried, pack
+from .pack import cast_attribute, pack
 from .quantize import DOT_CELLS, SUBPIXELS, grid, render_lines, render_polygons
 from .spill import MARGIN_PIXELS, MAX_MARGIN_PIXELS, hosts, ranges, straddlers, take_ragged
 from .thinning import Context, Thin, default_thinning, describe
 
 LOD_KEY = 'lod_columns'
 ATTRIBUTE_COLUMN = 'lod_attributes'
+# the struct columns the writer adds, whose fields are named by dotted paths
+ADDED_STRUCTS = ('lod', ATTRIBUTE_COLUMN, 'bbox')
 KEY_COLUMN = 'hilbert'
 DICTIONARY_MAX = 256
 # a thinning's values of a string attribute are counted this many rows at a time
@@ -67,7 +70,7 @@ DICTIONARY_SCAN_ROWS = 65_536
 KEY_FIELD = pa.field(KEY_COLUMN, pa.int64(), nullable=True)
 
 
-# columns the writer computes carry a prefix no source column uses; thinnings see them unprefixed
+# columns the writer computes have a prefix no source column uses; thinnings see them unprefixed
 THINNING_COLUMNS = ('id', 'cx', 'cy', 'diag', 'area', 'nv', 'u')
 TILE_SIZE = 512
 # 1.1 defines the bbox covering; 2.0 requires Parquet's GEOMETRY type on the WKB, which the output lacks
@@ -267,7 +270,7 @@ def lods(
     single_shape_lod: bool = False,
 ) -> list[dict]:
     """LODs: one stored representation per contiguous zoom range. Zooms may share
-    an LOD only when row selection and carried attributes agree, and an LOD uses
+    an LOD only when row selection and attribute values agree, and an LOD uses
     its finest zoom's grid. Below `complete_from` the thinning may change the
     row set every zoom, so each zoom is its own LOD; from `complete_from` up every
     row is present, so zooms are paired on one quantized copy, or all share one
@@ -444,11 +447,21 @@ def _attach_source(con, src: str) -> None:
 
 
 def _leaf_paths(schema: pa.Schema) -> list[str]:
-    """Dotted paths of the Parquet leaf columns pyarrow writes for `schema`."""
+    """Dotted paths of the Parquet leaf columns pyarrow writes for `schema`.
+    Raises where two of them are the same: readers name a leaf by its dotted
+    path, so a column whose name holds a dot must not read as the path of
+    another column's nested field."""
     sink = pa.BufferOutputStream()
     pq.write_table(schema.empty_table(), sink)
     leaves = pq.ParquetFile(pa.BufferReader(sink.getvalue())).schema
-    return [leaves.column(i).path for i in range(len(leaves))]
+    paths = [leaves.column(i).path for i in range(len(leaves))]
+    shared = sorted(path for path in set(paths) if paths.count(path) > 1)
+    if shared:
+        raise ValueError(
+            f'two columns share the path {shared[0]!r}: a name with a dot reads as a nested '
+            'field of that path'
+        )
+    return paths
 
 
 def _concat_parts(parts_list):
@@ -499,14 +512,13 @@ def _same_values(a: pa.ChunkedArray, b: pa.ChunkedArray) -> bool:
     return a.equals(b)
 
 
-def _auto_columns(con, src: str, schema: pa.Schema, geometry: str, carry, log) -> list[str]:
-    """The source columns `carry_columns='auto'` keeps, in schema order: every
+def _auto_attributes(con, src: str, schema: pa.Schema, geometry: str, log) -> list[str]:
+    """The source columns `attributes='auto'` keeps, in schema order: every
     flat number and boolean column, except an integer column with more
     distinct values than AUTO_ID_SHARE of its values, such as an id, and every
-    string column with at most DICTIONARY_MAX distinct values. Columns `carry`
-    packs, the covering, the geometry and names thinnings or `read_overview`
-    reserve are left out, and columns past the attribute limit with them."""
-    packed = {item[0] if isinstance(item, tuple) else getattr(item, 'name', item) for item in carry}
+    string column with at most DICTIONARY_MAX distinct values. The covering,
+    the geometry and names thinnings or `read_overview` reserve are left out,
+    and columns past the attribute limit with them."""
     geo = json.loads((schema.metadata or {}).get(b'geo', b'{}') or b'{}')
     covering = {
         path[0]
@@ -518,9 +530,8 @@ def _auto_columns(con, src: str, schema: pa.Schema, geometry: str, carry, log) -
     candidates = [
         f
         for f in schema
-        if f.name not in packed
-        and f.name not in (geometry, 'bbox', *covering, *THINNING_COLUMNS, *OVERVIEW_COLUMNS)
-        and is_carried_type(f.type)
+        if f.name not in (geometry, 'bbox', *covering, *THINNING_COLUMNS, *OVERVIEW_COLUMNS)
+        and is_attribute_type(f.type)
     ]
     source = f"read_parquet('{src}')"
     integers = [f.name for f in candidates if pa.types.is_integer(f.type)]
@@ -550,11 +561,13 @@ def _auto_columns(con, src: str, schema: pa.Schema, geometry: str, carry, log) -
             if distinct > DICTIONARY_MAX:
                 continue
         kept.append(f.name)
-    room = MAX_ATTRIBUTES - len(carry)
-    if len(kept) > room:
-        log(f'  carry_columns auto: {len(kept) - room} columns past the attribute limit left out')
-        kept = kept[:room]
-    log(f'  carry_columns auto: {", ".join(kept) or "none"}')
+    if len(kept) > MAX_ATTRIBUTES:
+        log(
+            f'  attributes auto: {len(kept) - MAX_ATTRIBUTES} columns past the attribute '
+            'limit left out'
+        )
+        kept = kept[:MAX_ATTRIBUTES]
+    log(f'  attributes auto: {", ".join(kept) or "none"}')
     return kept
 
 
@@ -587,7 +600,7 @@ def _spill_for_batch(
     b, ids, attributes, spill_entries, spill_store, attr_values, file_pos, grids, src_ids, overrides
 ):
     """The copies one batch hosts for LOD `b`, as `pack` takes them, or None.
-    A copy carries its row's attributes as the LOD shows them, so with the
+    A copy holds its row's attributes as the LOD shows them, so with the
     thinning's `overrides` for that LOD."""
     entries = spill_entries.get(b['name'])
     if entries is None:
@@ -607,7 +620,7 @@ def _spill_for_batch(
         parts = take_ragged(store, pos)
     attr_sorted, attr_perm = src_ids
     at = attr_perm[np.searchsorted(attr_sorted, src[pick])]
-    attrs = {a.name: cast_carried(attr_values[a.name].take(pa.array(at)), a) for a in attributes}
+    attrs = {a.name: cast_attribute(attr_values[a.name].take(pa.array(at)), a) for a in attributes}
     if b['name'] in overrides:
         hit, replaced = _overridden(src[pick] + 1, *overrides[b['name']])
         for field, column in replaced.items():
@@ -652,16 +665,14 @@ def _render(args):
 @dataclass(frozen=True)
 class _Packing:
     """What a pack job needs besides its rows: each LOD's name, geometry type,
-    zoom bit, grid scale and offset, and the carried attributes."""
+    zoom bit, grid scale and offset, and the attributes."""
 
     family: str
     dot_cells: float
     lods: tuple[tuple[str, str, int, float, tuple[float, float]], ...]
     fields: tuple[pa.Field, ...]
     dictionaries: Mapping[str, list]
-    # column attributes, which a row's own packed value leaves out
-    columns: tuple[str, ...] = ()
-    # the LODs with attribute columns, and each column's Arrow type
+    # the LODs with attribute columns, and each attribute column's Arrow type
     column_lods: tuple[str, ...] = ()
     column_types: Mapping[str, pa.DataType] | None = None
 
@@ -676,7 +687,7 @@ def _binary_rows(array: pa.Array, start: int, stop: int) -> tuple[np.ndarray, np
 
 
 def _column_values(array: pa.Array, name: str, packing: _Packing) -> pa.Array:
-    """A column attribute's values, in its declared type, as its LOD columns
+    """An attribute's values, in its declared type, as its attribute columns
     hold them: a string with a value table as its index there."""
     values = packing.dictionaries.get(name)
     if values is None:
@@ -697,11 +708,12 @@ def _column_values(array: pa.Array, name: str, packing: _Packing) -> pa.Array:
 def _pack_rows(job) -> tuple[list[pa.Array], dict[tuple[str, str], pa.Array]]:
     """Packed values per LOD of consecutive rows, null where a row is neither
     shown at the LOD nor hosting copies there, and the attribute columns'
-    values per (LOD, attribute), null where a row is not shown. A row's own
-    packed value leaves its column attributes out, which its copies keep. A
-    shape LOD renders only the rows it shows, so a row that only hosts copies
-    has no geometry of its own."""
+    values per (LOD, attribute), null where a row is not shown. A row's
+    packed value holds its geometry and the copies it hosts with their
+    attributes. A shape LOD renders only the rows it shows, so a row that
+    only hosts copies has no geometry of its own."""
     packing, wkb, cx, cy, levels, attrs, overrides, spills = job
+    attrs = {f.name: cast_attribute(attrs[f.name], f) for f in packing.fields}
     if wkb is not None:
         offsets, data = wkb
         wkb = pa.Array.from_buffers(
@@ -719,7 +731,7 @@ def _pack_rows(job) -> tuple[list[pa.Array], dict[tuple[str, str], pa.Array]]:
         rows = np.flatnonzero(kept)
         if name in packing.column_lods:
             hidden = pa.array(~shown)
-            for field in packing.columns:
+            for field in attrs:
                 column = attrs[field]
                 if name in overrides and field in overrides[name][1]:
                     changed, replaced = overrides[name]
@@ -741,20 +753,9 @@ def _pack_rows(job) -> tuple[list[pa.Array], dict[tuple[str, str], pa.Array]]:
             counts = np.zeros(len(rows) + 1, np.int64)
             counts[1 + np.searchsorted(rows, drawn)] = np.diff(geom_offsets)
             parts = (np.cumsum(counts), *rest)
-        values = dict(attrs)
-        if name in overrides:
-            changed, replaced = overrides[name]
-            changed = pa.array(changed)
-            for field, column in replaced.items():
-                values[field] = pc.replace_with_mask(values[field], changed, column)
-        values = {field: column.take(rows) for field, column in values.items()}
-        for field in packing.columns:
-            values[field] = pa.nulls(len(rows), values[field].type)
         if spill is not None:
             spill = (spill[0][rows], *spill[1:])
-        packed = pack(
-            geometry_type, parts, list(packing.fields), values, spill, packing.dictionaries
-        )
+        packed = pack(geometry_type, parts, list(packing.fields), spill, packing.dictionaries)
         out.append(packed.take(pa.array(np.cumsum(kept) - 1, mask=~kept)))
     return out, columns
 
@@ -767,8 +768,7 @@ def write(
     columns=(),
     zooms='auto',
     complete_from: int | None | str = 'auto',
-    carry=(),
-    carry_columns='auto',
+    attributes='auto',
     geometry: str = 'geometry',
     single_lod_bytes: int = 16 * 1024 * 1024,
     row_group_rows: int = 1_048_576,
@@ -793,18 +793,15 @@ def write(
     the zoom from which every feature is shown, whatever the thinning says,
     and the base zoom a rate-based thinning counts from; 'auto' derives it
     from the data and records which zooms the thinning leaves complete.
-    ``carry_columns`` keeps attributes as columns a tile reads only when a
-    style asks for them: every LOD has a nullable column per attribute holding
-    its shown rows' values, with a page beside each overview page that has a
-    value. Its default, ``'auto'``, takes every flat number and boolean
-    column, except integers whose values are mostly distinct such as ids, and
-    every string column with at most 256 distinct values; ``()`` keeps none.
-    ``carry``
-    packs selected attributes into every overview row, so every tile reads
-    them with its geometry in one request: for an attribute a map always
-    styles by. Boundary copies pack both kinds. A tile that styles by neither
-    reads what it would from a file without them. Both take names or
-    (name, Arrow type) pairs.
+    ``attributes`` are the source columns a map can style by, which a tile
+    reads only when a style asks for them: every LOD has a nullable column per
+    attribute holding its shown rows' values, with a page beside each overview
+    page that has a value, and boundary copies pack them. A tile that styles
+    by none reads what it would from a file without them. It takes names or
+    (name, Arrow type) pairs. Its default, ``'auto'``, takes every flat number
+    and boolean column, except integers whose values are mostly distinct such
+    as ids, and every string column with at most 256 distinct values; ``()``
+    keeps none.
     ``compression_level`` applies to source and overview Zstd pages; decoding
     speed does not depend on it.
     ``placeholder_pixels`` is the width of the square a shape under a pixel
@@ -897,22 +894,27 @@ def _build(src: str, out: Path, o: SimpleNamespace, held: contextlib.ExitStack) 
     con = held.enter_context(connect(o.memory_limit, o.temp_dir))
     _attach_source(con, src)
     source_schema, logical_types = _read_schema(src)
-    column_items = o.carry_columns
-    if isinstance(column_items, str):
-        if column_items != 'auto':
-            raise ValueError(f"carry_columns must be a list or 'auto', not {column_items!r}")
-        column_items = _auto_columns(con, src, source_schema, geometry, o.carry, log)
-    attributes = infer_attributes(source_schema, [*o.carry, *column_items])
-    column_names = [a.name for a in attributes[len(o.carry) :]]
-    names = [a.name for a in attributes]
-    if len(set(names)) != len(names):
-        twice = sorted({n for n in names if names.count(n) > 1})
-        raise ValueError(f'attributes {twice} are named more than once in carry and carry_columns')
-    for a in attributes[len(o.carry) :]:
+    _leaf_paths(source_schema)
+    for name in source_schema.names:
+        if name.split('.')[0] in ADDED_STRUCTS and '.' in name:
+            raise ValueError(
+                f'column {name!r} reads as a field of {name.split(".")[0]!r}, which the writer adds'
+            )
+    items = o.attributes
+    if isinstance(items, str):
+        if items != 'auto':
+            raise ValueError(f"attributes must be a list or 'auto', not {items!r}")
+        items = _auto_attributes(con, src, source_schema, geometry, log)
+    attributes = infer_attributes(source_schema, items)
+    column_names = [a.name for a in attributes]
+    if len(set(column_names)) != len(column_names):
+        twice = sorted({n for n in column_names if column_names.count(n) > 1})
+        raise ValueError(f'attributes {twice} are named more than once')
+    for a in attributes:
         source = source_schema.field(a.name).type
         if not source_compatible(source, a.type):
             raise ValueError(
-                f'cannot keep {a.name} as a column attribute of type {a.type}: its source '
+                f'cannot keep {a.name} as an attribute of type {a.type}: its source '
                 f'column is {source}, and LODs without a column of their own read the source'
             )
     geo = json.loads(dict(source_schema.metadata or {}).get(b'geo', b'{}') or b'{}')
@@ -1148,8 +1150,8 @@ def _build(src: str, out: Path, o: SimpleNamespace, held: contextlib.ExitStack) 
         lod_overrides[b['name']] = (
             ids[order],
             {
-                a.name: cast_carried(
-                    cast_carried(
+                a.name: cast_attribute(
+                    cast_attribute(
                         changed.column(a.name).combine_chunks().take(order),
                         pa.field(a.name, sorted_schema.field(a.name).type),
                     ),
@@ -1178,15 +1180,12 @@ def _build(src: str, out: Path, o: SimpleNamespace, held: contextlib.ExitStack) 
         {
             'name': a.name,
             'type': str(a.type),
-            **({'storage': 'column'} if a.name in column_names else {}),
             **({'values': dictionaries[a.name]} if a.name in dictionaries else {}),
         }
         for a in attributes
     ]
     column_lods = [b['name'] for b in lod_plan] if column_names else []
-    column_types = {
-        a['name']: column_type(a) for a in attribute_metadata if a.get('storage') == 'column'
-    }
+    column_types = {a['name']: column_type(a) for a in attribute_metadata}
 
     # 3. schema and metadata, known before writing
     origin = (mxmin, mymin)
@@ -1481,7 +1480,6 @@ def _build(src: str, out: Path, o: SimpleNamespace, held: contextlib.ExitStack) 
         ),
         tuple(attributes),
         dictionaries,
-        tuple(column_names),
         tuple(column_lods),
         column_types,
     )
@@ -1496,7 +1494,7 @@ def _build(src: str, out: Path, o: SimpleNamespace, held: contextlib.ExitStack) 
         wkb = None
         if shape_lods:
             wkb = table.column(geometry).combine_chunks().cast(pa.large_binary())
-        attrs = {a.name: cast_carried(table.column(a.name).combine_chunks(), a) for a in attributes}
+        attrs = {a.name: table.column(a.name).combine_chunks() for a in attributes}
         per_worker = -(-table.num_rows // (JOB_ROWS * workers))
         step = -(-table.num_rows // (per_worker * workers))
         for start in range(0, table.num_rows, step):
@@ -1529,7 +1527,7 @@ def _build(src: str, out: Path, o: SimpleNamespace, held: contextlib.ExitStack) 
                 cx[start:stop],
                 cy[start:stop],
                 row_levels[start:stop],
-                # a slice would carry its whole parent buffers to the worker
+                # a slice would send its whole parent buffers to the worker
                 {k: pa.concat_arrays([v.slice(start, stop - start)]) for k, v in attrs.items()},
                 overridden,
                 spills,

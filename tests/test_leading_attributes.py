@@ -14,6 +14,8 @@ import pytest
 from test_attribute_columns import (
     COLUMNS,
     _build,
+    _check_overviews,
+    _expected,
     _point_source,
     _quiet,
     _same,
@@ -33,16 +35,12 @@ NAMES = [c if isinstance(c, str) else c[0] for c in COLUMNS]
 
 @pytest.fixture(scope='module')
 def shapes(tmp_path_factory):
-    """A file keeping `COLUMNS` as columns, and the same source packing them."""
+    """The source and a file keeping `COLUMNS` as attributes."""
     work = tmp_path_factory.mktemp('leading')
     src = work / 'source.parquet'
     _source(src)
-    options = dict(thinning=_thinning)
-    packed = _build(src, work / 'packed.parquet', carry=['flag', *COLUMNS], **options)
-    columns = _build(
-        src, work / 'columns.parquet', carry=['flag'], carry_columns=COLUMNS, **options
-    )
-    return src, packed, columns
+    columns = _build(src, work / 'columns.parquet', thinning=_thinning, attributes=COLUMNS)
+    return src, columns
 
 
 def _lods(path):
@@ -100,7 +98,7 @@ def test_values_lead_their_overview_pages(shapes):
     """Each attribute chunk is the unindexed file's, whose values are on
     their own rows, with every shown row's value moved to its page's leading
     rows; rows that only host copies hold none and take no place."""
-    _, _, columns = shapes
+    _, columns = shapes
     staged = columns.with_suffix('.staged.parquet')
     assert leads(pq.ParquetFile(columns)) and not leads(pq.ParquetFile(staged))
     led, own = pq.ParquetFile(columns), pq.ParquetFile(staged)
@@ -130,19 +128,17 @@ def test_values_lead_their_overview_pages(shapes):
 
 
 def test_read_overview_reads_the_leading_rows(shapes):
-    _, packed, columns = shapes
+    _, columns = shapes
     staged = columns.with_suffix('.staged.parquet')
     for zoom in range(10, 16):
-        read = read_overview(columns, zoom)
-        assert _same(read, read_overview(staged, zoom)), zoom
-        expected = read_overview(packed, zoom)
-        assert _same(read.select(expected.column_names), expected), zoom
+        assert _same(read_overview(columns, zoom), read_overview(staged, zoom)), zoom
+    _check_overviews(columns, _expected(columns))
 
 
 def test_a_laid_out_file_lays_out_again(shapes, tmp_path):
     """The layout pass reads the values of a file that leads its pages from
     their leading rows, into pages cut elsewhere."""
-    _, _, columns = shapes
+    _, columns = shapes
     same = finalize_layout(columns, tmp_path / 'same.parquet', leaf_pages=4, log=_quiet)
     assert _same(_attributes(same), _attributes(columns))
     other = finalize_layout(
@@ -163,7 +159,7 @@ def test_a_laid_out_file_lays_out_again(shapes, tmp_path):
 def misplaced(shapes, tmp_path_factory):
     """`shapes` laid out with each value left on its own row, as no file with
     the spatial index holds them."""
-    src, _, columns = shapes
+    src, columns = shapes
     layout = importlib.import_module('tiled_geoparquet._layout')
     work = tmp_path_factory.mktemp('misplaced')
     with pytest.MonkeyPatch.context() as patch:
@@ -178,7 +174,7 @@ def misplaced(shapes, tmp_path_factory):
 
 
 def test_leading_values_take_fewer_bytes_where_few_rows_show(shapes, misplaced):
-    _, _, columns = shapes
+    _, columns = shapes
 
     def sizes(path):
         metadata, out = pq.ParquetFile(path).metadata, {}
@@ -250,7 +246,7 @@ def test_a_count_of_no_parts_shows_no_row_in_any_bytes():
 def test_a_host_written_with_two_bytes_of_zero_takes_no_place(shapes, tmp_path):
     """A host-only row whose count of no parts takes two bytes is still no
     row its page shows: the values after it keep their rows' places."""
-    _, packed, columns = shapes
+    _, columns = shapes
     table = pq.read_table(columns.with_suffix('.staged.parquet'))
     struct = table.column('lod').combine_chunks()
     rewritten, children = 0, []
@@ -280,17 +276,18 @@ def test_a_host_written_with_two_bytes_of_zero_takes_no_place(shapes, tmp_path):
     cases.write_text(
         json.dumps(
             {
-                'tiles': _tiles(packed, range(10, 15)),
+                'tiles': _tiles(columns, range(10, 15)),
                 'styles': [['height'], ['kind', 'rps']],
                 'query': {
                     'bbox': [-104.95, 39.65, -104.9, 39.7],
                     'resolution': 360 / 512 / 2**12,
                     'columns': ['height'],
                 },
+                'expected': _expected(columns),
             }
         )
     )
-    result = _render('columns.test.mjs', packed, out, cases)
+    result = _render('columns.test.mjs', out, cases)
     assert result.returncode == 0, result.stdout + result.stderr
 
 
@@ -304,9 +301,9 @@ def _render(script, *arguments):
 
 
 def test_the_reader_refuses_a_page_with_values_past_the_rows_it_shows(shapes, misplaced, tmp_path):
-    _, packed, _ = shapes
+    _, columns = shapes
     cases = tmp_path / 'cases.json'
-    cases.write_text(json.dumps({'tiles': _tiles(packed, range(10, 14)), 'attributes': NAMES}))
+    cases.write_text(json.dumps({'tiles': _tiles(columns, range(10, 14)), 'attributes': NAMES}))
     result = _render('leading-attributes.test.mjs', misplaced, cases)
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -316,8 +313,7 @@ def test_points_lead_their_pages(tmp_path):
     src = tmp_path / 'points.parquet'
     _point_source(src, 3, 6000)
     options = dict(thinning=drop_rate(2.5), zooms=range(9, 14), complete_from=13)
-    packed = _build(src, tmp_path / 'packed.parquet', carry=['c0', 'c1', 'c2'], **options)
-    columns = _build(src, tmp_path / 'columns.parquet', carry_columns=['c0', 'c1', 'c2'], **options)
+    columns = _build(src, tmp_path / 'columns.parquet', attributes=['c0', 'c1', 'c2'], **options)
     validate(columns, full=True)
     staged, led = pq.ParquetFile(columns.with_suffix('.staged.parquet')), pq.ParquetFile(columns)
     moved_somewhere = 0
@@ -328,22 +324,22 @@ def test_points_lead_their_pages(tmp_path):
         own = _attribute(staged, group, name, 'c1')
         assert _equal(_attribute(led, group, name, 'c1'), moved(own, rows, leading))
     assert moved_somewhere, 'pages showing some of their rows'
-    for zoom in range(9, 14):
-        a, b = read_overview(packed, zoom), read_overview(columns, zoom)
-        assert _same(b.select(a.column_names), a), zoom
+    expected = _expected(columns)
+    _check_overviews(columns, expected)
     cases = tmp_path / 'cases.json'
     cases.write_text(
         json.dumps(
             {
-                'tiles': _tiles(packed, range(9, 15)),
+                'tiles': _tiles(columns, range(9, 15)),
                 'styles': [['c1'], ['c0', 'c2']],
                 'query': {
                     'bbox': [-104.9, 39.6, -104.8, 39.7],
                     'resolution': 360 / 512 / 2**11,
                     'columns': ['c1'],
                 },
+                'expected': expected,
             }
         )
     )
-    result = _render('columns.test.mjs', packed, columns, cases)
+    result = _render('columns.test.mjs', columns, cases)
     assert result.returncode == 0, result.stdout + result.stderr

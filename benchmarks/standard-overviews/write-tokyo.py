@@ -1,4 +1,4 @@
-"""Build the Tokyo files the coarse-prefix and standard-overview measurements read.
+"""Build the Tokyo file the standard-overview measurements read.
 
 Cuts the Tokyo subset (4,881,955 buildings whose bbox meets 139.39–140.10 E,
 35.45–35.90 N) from the hosted Japan Tiled GeoParquet file, then writes it with
@@ -6,14 +6,9 @@ the Japan recipe's calibrated budgets in one Hilbert order:
 
     uv run python benchmarks/standard-overviews/write-tokyo.py tokyo.source.parquet tokyo.packed.parquet
 
-`--prefix-zoom 10` stores the rows shown through z10 in a leading row group,
-the coarse-first layout QGIS draws first. That option exists only in the writer
-at commit 0a06e75^, so run it from a checkout of that commit, passing the
-source this script cut:
-
-    git worktree add ../lod-prefix 0a06e75^
-    uv run --project ../lod-prefix python benchmarks/standard-overviews/write-tokyo.py \\
-      tokyo.source.parquet tokyo.prefix.parquet --prefix-zoom 10
+The coarse-prefix file of the measurements stores the rows shown through z10
+in a leading row group. It was written from the same source by the writer at
+commit `0a06e75^`, whose `write` takes `prefix_zoom=10`.
 
 An existing source file is reused. A rebuild matches the recorded request
 counts and comes within about 1% of the recorded bytes and feature counts; the
@@ -65,7 +60,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('source')
     parser.add_argument('out')
-    parser.add_argument('--prefix-zoom', type=int)
     args = parser.parse_args()
     t0 = time.time()
 
@@ -76,21 +70,18 @@ if __name__ == '__main__':
     if not source.exists():
         log(f'cutting {source}')
         cut(source)
-    options = {} if args.prefix_zoom is None else {'prefix_zoom': args.prefix_zoom}
     staged = out.with_suffix('.unindexed.parquet')
     _write_unindexed(
         str(source),
         staged,
         thinning=chain(drop_smallest(budgets()), tiny_polygons()),
-        carry=['height', 'class'],
-        carry_columns=(),
+        attributes=['height', 'class'],
         zooms=list(range(8, 17)),
         complete_from=14,
         page_bytes=16384,
         page_rows=2048,
         workers=8,
         log=log,
-        **options,
     )
     finalize_layout(staged, out, page_bytes=65536, log=log)
     staged.unlink()

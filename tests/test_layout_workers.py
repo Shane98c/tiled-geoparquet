@@ -46,7 +46,7 @@ def staged(tmp_path_factory):
         zooms=range(9, 15),
         complete_from=13,
         thinning=drop_rate(2.5),
-        carry=['name'],
+        attributes=['name'],
         row_group_rows=512,
         workers=1,
         log=_quiet,

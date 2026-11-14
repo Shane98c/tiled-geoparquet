@@ -20,8 +20,8 @@ Options:
   --port <number>      port to listen on (default 8080; 0 picks a free one)
   --host <address>     address to listen on (default 127.0.0.1)
   --layer <name>       MVT layer name (default features)
-  --properties <a,b>   attributes in the tiles (default: the packed attributes;
-                       "" for none)
+  --properties <a,b>   attributes or columns in the tiles (default none:
+                       geometry only)
   --maxzoom <zoom>     maxzoom in tiles.json (default: the finest LOD zoom, 22
                        without LODs)
   --public-url <url>   URL clients reach this server at, for tiles.json, when a

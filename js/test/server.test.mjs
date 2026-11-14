@@ -152,7 +152,7 @@ assert.deepEqual(await tileJson(handler), {
   bounds: [-120.000001, -40.000001, 120.000001, 40.000001],
   vector_layers: [{ id: 'places', fields: { name: 'Source column' } }],
 })
-const carrying = {
+const styled = {
   ...dense,
   lod: {
     zooms: [2, 3, 4],
@@ -167,18 +167,22 @@ const carrying = {
     },
   },
 }
-const carried = await tileJson(tileHandler(carrying))
-assert.equal(carried.maxzoom, 4, 'the finest LOD zoom')
-assert.deepEqual(carried.vector_layers, [
+const unnamed = await tileJson(tileHandler(styled))
+assert.equal(unnamed.maxzoom, 4, 'the finest LOD zoom')
+assert.deepEqual(unnamed.vector_layers, [{ id: 'features', fields: {} }], 'geometry only')
+const named = await tileJson(
+  tileHandler(styled, { properties: ['height', 'floors', 'class', 'listed'] }),
+)
+assert.deepEqual(named.vector_layers, [
   {
     id: 'features',
     fields: { height: 'Number', floors: 'Number', class: 'String', listed: 'Boolean' },
   },
 ])
-const chosen = await tileJson(tileHandler(carrying, { properties: ['height', 'name'], maxzoom: 9 }))
+const chosen = await tileJson(tileHandler(styled, { properties: ['height', 'name'], maxzoom: 9 }))
 assert.equal(chosen.maxzoom, 9)
 assert.deepEqual(chosen.vector_layers[0].fields, { height: 'Number', name: 'Source column' })
-assert.deepEqual((await tileJson(tileHandler(carrying, { properties: [] }))).vector_layers, [
+assert.deepEqual((await tileJson(tileHandler(styled, { properties: [] }))).vector_layers, [
   { id: 'features', fields: {} },
 ])
 assert.throws(() => tileHandler(dense, { maxzoom: 31 }), /maxzoom must be an integer/)
@@ -324,12 +328,12 @@ const tileAt = (lon, lat, z) => {
 }
 const reader = await openReader(file)
 const finest = Math.max(...reader.lod.zooms)
-const carriedNames = reader.lod.attributes.map((a) => a.name)
+const attributeNames = reader.lod.attributes.map((a) => a.name)
 const [west, south, east, north] = reader.bounds
 const centre = [(west + east) / 2, (south + north) / 2]
 const coarsest = Math.min(...reader.lod.zooms)
 assert.ok(coarsest > 0, 'the file leaves zooms below its coarsest LOD')
-const options = { layer: 'buildings', properties: [...carriedNames, 'name'] }
+const options = { layer: 'buildings', properties: [...attributeNames, 'name'] }
 const built = tileHandler(reader, options)
 let features = 0
 // LOD tiles at every zoom from 0, then exact geometry two zooms past the finest

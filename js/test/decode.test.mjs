@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { GeometryBuilder } from '../dist/index.js'
-import { decodeAttributes, decodeSelectedRow, showsRow } from '../dist/decode.js'
+import { decodeSelectedRow, showsRow } from '../dist/decode.js'
 import { columnar, nested } from './columnar.mjs'
 
 // a MultiPolygon, a MultiLineString and a Point in grid units, copied feature by feature
@@ -45,7 +45,7 @@ assert.deepEqual(nested(g, 0, 'MultiPolygon'), mp)
 assert.deepEqual(nested(g, 1, 'MultiLineString'), line)
 assert.deepEqual(nested(g, 2, 'Point'), [7, 8])
 
-// a packed row: one square at (5, 5) of side 2, attributes h=3 (int), name='ab' (string),
+// a packed row: one square at (5, 5) of side 2, which holds no attributes of its own,
 // hosting one copy for tile zoom 12 / 7 of row 9: a unit square at (1, 1), h=4, name=null
 const zz = (v) => (v < 0 ? -2 * v - 1 : 2 * v)
 const varint = (v) => {
@@ -80,9 +80,6 @@ const bytes = Uint8Array.from([
   ...varint(1),
   ...varint(1),
   ...ringBytes(square(5, 5, 2)), // own geometry: one polygon, one ring
-  ...varint(0b11),
-  ...varint(zz(3)),
-  ...varint(2), // attrs: both present, h=3, name length 2
   ...varint(1), // one copy
   ...varint(12 * 2 ** 48 + 7),
   ...varint(9),
@@ -91,7 +88,6 @@ const bytes = Uint8Array.from([
   ...ringBytes(square(1, 1, 1)),
   ...varint(0b01),
   ...varint(zz(4)), // copy attrs: only h present
-  ...new TextEncoder().encode('ab'),
 ])
 const fields = [
   { name: 'h', kind: 'int' },
@@ -107,11 +103,11 @@ const decode = (own, tile, withAttributes = true) => {
 }
 const copyTile = 12 * 2 ** 48 + 7
 assert.deepEqual(decode(true, copyTile), [
-  { id: 4, attrs: [3, 'ab'], slot: 0, geometry: [[square(5, 5, 2)]] },
+  { id: 4, attrs: [null, null], slot: 0, geometry: [[square(5, 5, 2)]] },
   { id: 9, attrs: [4, null], slot: 1, geometry: [[square(1, 1, 1)]] },
 ])
 assert.deepEqual(decode(true, copyTile + 1), [
-  { id: 4, attrs: [3, 'ab'], slot: 0, geometry: [[square(5, 5, 2)]] },
+  { id: 4, attrs: [null, null], slot: 0, geometry: [[square(5, 5, 2)]] },
 ])
 assert.deepEqual(decode(false, copyTile), [
   { id: 9, attrs: [4, null], slot: 1, geometry: [[square(1, 1, 1)]] },
@@ -125,21 +121,30 @@ assert.deepEqual(
   ],
   'geometry without attributes',
 )
-assert.deepEqual(decodeAttributes(bytes, 'MultiPolygon', fields), [3, 'ab'])
-// a hosted copy's strings trail the row's own
+// a hosted copy's strings trail the row's varints
 const named = Uint8Array.from([
-  ...bytes.subarray(0, bytes.length - 2 - 2),
+  ...bytes.subarray(0, bytes.length - 2),
   ...varint(0b11),
   ...varint(zz(4)),
   ...varint(3),
-  ...new TextEncoder().encode('abxyz'),
+  ...new TextEncoder().encode('xyz'),
 ])
-assert.deepEqual(decodeAttributes(named, 'MultiPolygon', fields), [3, 'ab'])
 const copy = new GeometryBuilder()
 const copies = []
 decodeSelectedRow(named, 'MultiPolygon', fields, copy, false, 4, copyTile, (...f) => copies.push(f))
 assert.deepEqual(copies, [[9, [4, 'xyz'], 1]])
 console.log('decode tests passed')
+
+/** The attributes of a copy packing `attrs`, hosted by a point at the origin. */
+const copied = (attrs, fields) => {
+  const row = Uint8Array.from([0, 0, 1, 0, 1, 0, 0, ...attrs])
+  const found = []
+  decodeSelectedRow(row, 'Point', fields, new GeometryBuilder(), false, 0, 0, (_, values) =>
+    found.push(values),
+  )
+  assert.equal(found.length, 1)
+  return found[0]
+}
 
 // the stored key: a tile is one interval, its parent the union of its four children
 import { hilbertIndex, tileInterval, cellInterval } from '../dist/index.js'
@@ -186,10 +191,7 @@ for (const value of [
     bits >>= 7n
     encoded.push(byte | (bits ? 128 : 0))
   } while (bits)
-  const row = Uint8Array.from([0, 0, 1, ...encoded, 0]) // point(0,0), one attr, no copies
-  assert.ok(
-    Object.is(decodeAttributes(row, 'Point', [{ name: 'value', kind: 'float64' }])[0], value),
-  )
+  assert.ok(Object.is(copied([1, ...encoded], [{ name: 'value', kind: 'float64' }])[0], value))
 }
 
 // Float16 packing stores the half-precision bit pattern; values from numpy.
@@ -212,12 +214,11 @@ for (const [bits, value] of [
   [0x7e00, NaN],
   [0x7c01, NaN],
 ]) {
-  const row = Uint8Array.from([0, 0, 1, ...varint(bits), 0])
   const fields = [{ name: 'value', kind: 'float16' }]
-  assert.ok(Object.is(decodeAttributes(row, 'Point', fields)[0], value), `0x${bits.toString(16)}`)
+  assert.ok(Object.is(copied([1, ...varint(bits)], fields)[0], value), `0x${bits.toString(16)}`)
 }
 
-// a carried integer is the number nearest its 64-bit value, with its sign
+// an integer attribute is the number nearest its 64-bit value, with its sign
 const varint64 = (v) => {
   const out = []
   while (v >= 128n) {
@@ -242,9 +243,8 @@ for (const value of [
   2n ** 63n - 1n,
   -(2n ** 63n),
 ]) {
-  const row = Uint8Array.from([0, 0, 1, ...varint64(zz64(value)), 0])
   const fields = [{ name: 'value', kind: 'int' }]
-  assert.equal(decodeAttributes(row, 'Point', fields)[0], Number(value), `${value}`)
+  assert.equal(copied([1, ...varint64(zz64(value))], fields)[0], Number(value), `${value}`)
 }
 
 // the presence bitmap is exact for all 64 attributes it can hold
@@ -252,20 +252,15 @@ for (const value of [
   const fields = Array.from({ length: 64 }, (_, i) => ({ name: `a${i}`, kind: 'int' }))
   for (const present of [[0], [31], [32], [52], [53], [63], [0, 31, 32, 53, 63]]) {
     const bitmap = present.reduce((bits, i) => bits | (1n << BigInt(i)), 0n)
-    const row = Uint8Array.from([
-      0,
-      0,
-      ...varint64(bitmap),
-      ...present.flatMap((i) => varint(zz(i + 1))),
-      0,
-    ])
+    const attrs = [...varint64(bitmap), ...present.flatMap((i) => varint(zz(i + 1)))]
     const expected = fields.map((_, i) => (present.includes(i) ? i + 1 : null))
-    assert.deepEqual(decodeAttributes(row, 'Point', fields), expected, `attributes ${present}`)
+    assert.deepEqual(copied(attrs, fields), expected, `attributes ${present}`)
+    const row = Uint8Array.from([0, 0, 1, 0, 1, 0, 0, ...attrs])
     const seen = []
     decodeSelectedRow(row, 'Point', fields, new GeometryBuilder(), true, 0, 0, (_, attrs) =>
       seen.push(attrs),
     )
-    assert.deepEqual(seen, [expected], `selected attributes ${present}`)
+    assert.deepEqual(seen, [fields.map(() => null), expected], `selected attributes ${present}`)
   }
 }
 
@@ -283,7 +278,7 @@ for (const value of [
     [[0x81, 0x00], true],
     [[0x81, 0x80, 0x00], true],
   ]) {
-    const row = Uint8Array.from([...count, ...(shown ? triangle : []), 0, 0])
+    const row = Uint8Array.from([...count, ...(shown ? triangle : []), 0])
     assert.equal(showsRow(row, 'MultiPolygon'), shown, `count ${count}`)
     const drawn = []
     decodeSelectedRow(row, 'MultiPolygon', [], new GeometryBuilder(), true, 7, 0, (id) =>
@@ -296,4 +291,71 @@ for (const value of [
   assert.equal(showsRow(new Uint8Array(0), 'MultiPolygon'), false)
   assert.equal(showsRow(Uint8Array.of(0x80), 'MultiPolygon'), false)
   assert.equal(showsRow(Uint8Array.of(0, 0, 0, 0), 'Point'), true, 'every point row is shown')
+}
+
+// A row is its geometry, its copies and their strings. A row with bytes that
+// are none of those, such as an attribute section of its own, is refused, not
+// read as copies the row does not host.
+{
+  const add = () => {}
+  const decode = (bytes, fields, withAttributes) =>
+    decodeSelectedRow(
+      Uint8Array.from(bytes),
+      'Point',
+      fields,
+      new GeometryBuilder(),
+      true,
+      42,
+      0,
+      add,
+      withAttributes,
+    )
+  const fields = [{ name: 'value', kind: 'int' }]
+  for (const withAttributes of [true, false]) {
+    decode([0, 0, 0], fields, withAttributes)
+    assert.throws(
+      () => decode([0, 0, 1, 0, 0], fields, withAttributes),
+      /a packed row (ends inside a value|does not end where its copies do)/,
+      `an own attribute section, attributes ${withAttributes}`,
+    )
+  }
+  assert.throws(() => decode([0, 0, 0, 9], fields, true), /does not end where its copies do/)
+  // a copy, then bytes that are no part of it, whether or not attributes are read
+  for (const withAttributes of [true, false])
+    assert.throws(
+      () => decode([0, 0, 1, 0, 1, 0, 0, 2, 2, 0], fields, withAttributes),
+      /does not end where its copies do/,
+      `bytes past a copy, attributes ${withAttributes}`,
+    )
+  // a copy whose string is not there
+  const named = [{ name: 'name', kind: 'string' }]
+  for (const withAttributes of [true, false]) {
+    decode([0, 0, 1, 0, 1, 0, 0, 1, 2, 0x68, 0x69], named, withAttributes)
+    assert.throws(
+      () => decode([0, 0, 1, 0, 1, 0, 0, 1, 5], named, withAttributes),
+      /does not end where its copies do/,
+      `a missing string, attributes ${withAttributes}`,
+    )
+  }
+  // a varint takes ten bytes at most
+  const long = [...new Array(10).fill(0x80), 0]
+  for (const withAttributes of [true, false])
+    assert.throws(
+      () => decode([...long, 0, 0], fields, withAttributes),
+      /a varint of more than ten bytes/,
+    )
+  assert.throws(
+    () =>
+      decodeSelectedRow(
+        Uint8Array.from([1, 1, 3, 0, 0, ...long, 0, 2, 2, 0]),
+        'MultiPolygon',
+        [],
+        new GeometryBuilder(),
+        true,
+        1,
+        0,
+        add,
+      ),
+    /a varint of more than ten bytes/,
+  )
 }

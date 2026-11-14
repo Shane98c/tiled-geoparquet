@@ -25,7 +25,7 @@ import shapely
 
 from ._compact import get, loads
 from .encoding import OVERVIEW_COLUMNS, check_format
-from .pack import FAMILY_DEPTH, cast_carried
+from .pack import FAMILY_DEPTH, cast_attribute
 
 # larger than any real count; counts are clipped to it so positions stay in int64
 COUNT_LIMIT = 1 << 40
@@ -42,8 +42,8 @@ class UnpackError(ValueError):
 
 @dataclass
 class Unpacked:
-    """A column's records in packed order: each value's own geometry and
-    attributes, then the copies it hosts.
+    """A column's records in packed order: each value's own geometry, then
+    the copies it hosts with their attributes.
 
     `geometry` is (x, y) for points and, for shapes, the ragged arrays
     quantize.render_* returns, (geometry, polygon and ring offsets, x, y),
@@ -55,11 +55,11 @@ class Unpacked:
     tile: np.ndarray  # a copy's tile tag, 0 for a value's own record
     id: np.ndarray  # a copy's file row index, -1 for a value's own record
     geometry: tuple
-    attrs: dict[str, pa.Array]
+    attrs: dict[str, pa.Array]  # a copy's attributes, null for a value's own record
 
 
-def carried(lod: dict) -> tuple[list[pa.Field], dict[str, list]]:
-    """Carried attribute fields and string value tables of `lod_columns` metadata."""
+def attribute_fields(lod: dict) -> tuple[list[pa.Field], dict[str, list]]:
+    """Attribute fields and string value tables of `lod_columns` metadata."""
     attributes = lod.get('attributes', [])
     fields = [pa.field(a['name'], pa.type_for_alias(a['type'])) for a in attributes]
     return fields, {a['name']: a['values'] for a in attributes if 'values' in a}
@@ -159,8 +159,8 @@ def column_values(
     field: pa.Field,
     led: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> pa.Array:
-    """Every row's own value of column attribute `field` at LOD `name` in one
-    row group, as the declared type: from the LOD's attribute column, a value
+    """Every row's own value of attribute `field` at LOD `name` in one row
+    group, as the declared type: from the LOD's attribute column, a value
     table index mapped to its string, or from the source column where the LOD
     has none. Meaningful on the rows the LOD shows. `led` is, for a file whose
     attribute columns lead their pages, the rows the LOD shows in the row
@@ -169,7 +169,7 @@ def column_values(
     if name in spec['lods']:
         path = f'{spec["column"]}.{name}.{field.name}'
         values = parquet.read_row_group(group, columns=[path]).column(0).combine_chunks()
-        for part in path.split('.')[1:]:
+        for part in path.split('.', 2)[1:]:
             values = values.field(part)
         if led is not None:
             shown, bounds = led
@@ -185,17 +185,16 @@ def column_values(
             values = pa.array(table, field.type).take(values)
         return values.cast(field.type)
     source = parquet.read_row_group(group, columns=[field.name]).column(0).combine_chunks()
-    return cast_carried(source, field)
+    return cast_attribute(source, field)
 
 
 def read_overview(path: str | Path, zoom: int) -> pa.Table:
     """The rows shown at `zoom`, one of the file's zooms, with their overview
     geometry: `row`, the file row index; `geometry`, WKB in EPSG:3857 metres,
-    the CRS stated in the field's GeoArrow metadata; and the carried
-    attributes as that zoom's LOD stores them, a column attribute from its
-    LOD's attribute column or the source column. Boundary copies are left
-    out, as each repeats a shown row. A carried attribute named `row` or
-    `geometry` is refused."""
+    the CRS stated in the field's GeoArrow metadata; and the attributes as
+    that zoom's LOD holds them, from its attribute column or the source
+    column. Boundary copies are left out, as each repeats a shown row. An
+    attribute named `row` or `geometry` is refused."""
     f = pq.ParquetFile(path)
     lod = json.loads((f.schema_arrow.metadata or {}).get(b'geo', b'{}')).get('lod_columns')
     if not lod:
@@ -205,21 +204,19 @@ def read_overview(path: str | Path, zoom: int) -> pa.Table:
     if name is None:
         raise ValueError(f'zoom {zoom} is not one of the file zooms {lod["zooms"]}')
     child = lod['lods'][name]
-    fields, dictionaries = carried(lod)
+    fields, dictionaries = attribute_fields(lod)
     for a in fields:
         if a.name in OVERVIEW_COLUMNS:
             raise ValueError(
-                f'carried attribute {a.name!r} collides with the {a.name!r} column '
-                'read_overview returns'
+                f'attribute {a.name!r} collides with the {a.name!r} column read_overview returns'
             )
     crs = {'crs': 'EPSG:3857', 'crs_type': 'authority_code'}
     wkb = {'ARROW:extension:name': 'geoarrow.wkb', 'ARROW:extension:metadata': json.dumps(crs)}
     schema = pa.schema(
         [pa.field('row', pa.int64()), pa.field('geometry', pa.binary(), metadata=wkb), *fields]
     )
-    columns = [a['name'] for a in lod['attributes'] if a.get('storage') == 'column']
     listed = name in (lod.get('attribute_columns') or {}).get('lods', [])
-    pages = PageBounds(path) if columns and listed and leads(f) else None
+    pages = PageBounds(path) if fields and listed and leads(f) else None
     tables, first = [], 0
     for group in range(f.metadata.num_row_groups):
         values = lod_values(f, group, lod['column'], name)
@@ -229,18 +226,11 @@ def read_overview(path: str | Path, zoom: int) -> pa.Table:
                 shown_rows(values, child['geometry_type']),
                 pages(group, f'{lod["column"]}.{name}'),
             )
-        own_values = {
-            a.name: column_values(f, group, lod, name, a, led) for a in fields if a.name in columns
-        }
+        own_values = [column_values(f, group, lod, name, a, led) for a in fields]
         for u in unpack_batches(values, child['geometry_type'], fields, dictionaries):
             shapes = _geometries(u, child)
             own = np.flatnonzero(~u.copy & ~shapely.is_empty(shapes))
-            attrs = [
-                own_values[a.name].take(u.row[own])
-                if a.name in own_values
-                else u.attrs[a.name].take(own)
-                for a in fields
-            ]
+            attrs = [column.take(u.row[own]) for column in own_values]
             rows = first + u.row[own]
             tables.append(pa.table([rows, shapely.to_wkb(shapes[own]), *attrs], schema))
         first += f.metadata.row_group(group).num_rows
@@ -286,7 +276,7 @@ def unpack(
     t0[1:] = t1[:-1]
     walk = _Walk(tok, t1, depth, len(fields))
     rows = np.arange(len(lo))
-    pos = walk.attrs(walk.geometry(t0, rows), rows)
+    pos = walk.geometry(t0, rows)
     pos = walk.each(walk.count(pos, rows, 4), pos + 1, rows, walk.copy)
     # every varint before a value's strings must be whole and fit 64 bits
     broken = np.flatnonzero(bad)
@@ -312,9 +302,14 @@ def unpack(
     ids = np.full(len(order), -1, np.int64)
     ids[copy] = walk.counts[copies + 1]
 
-    attrs, lengths = _attributes(tok, _sorted(walk.bitmaps), index[value], fields, dictionaries)
-    attrs.update(_strings(data, walk.counts, lengths, value, string_start, hi, index))
-    attrs = {f.name: attrs[f.name] for f in fields}
+    # a copy's attributes follow its geometry; a value's own record has none
+    held = value[copy]
+    attrs, lengths = _attributes(tok, _sorted(walk.bitmaps), index[held], fields, dictionaries)
+    attrs.update(_strings(data, walk.counts, lengths, held, string_start, hi, index))
+    at = np.full(len(order), -1, np.int64)
+    at[copy] = np.arange(len(held))
+    at = pa.array(at, mask=at < 0)
+    attrs = {f.name: attrs[f.name].take(at) for f in fields}
     if depth == 0:
         geometry = (_unzigzag(tok[record_start]), _unzigzag(tok[record_start + 1]))
     else:

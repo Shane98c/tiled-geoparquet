@@ -120,7 +120,7 @@ for (const cancelBoth of [false, true]) {
 {
   const source = await makeSource(newPath)
   const reader = await openReader(coalescing(source))
-  // carried attributes come with the geometry pages, the key through row metadata
+  // attributes come with the geometry pages, the key through its row directory
   const attrs = [...reader.lod.attributes.map((a) => a.name), reader.lod.key.column]
   const [w, s, e, n] = footer.bounds
   for (const box of [
@@ -188,7 +188,10 @@ for (const cancelBoth of [false, true]) {
 }
 
 for (const [i, [z, x, y]] of cases.entries()) {
-  const [a, b, c] = await Promise.all([old, fast, footer].map((r) => renderTile(r, z, x, y)))
+  const properties = fast.lod.attributes.map((a) => a.name)
+  const [a, b, c] = await Promise.all(
+    [old, fast, footer].map((r) => renderTile(r, z, x, y, { properties })),
+  )
   assert.deepEqual(canonical(c), canonical(a), `standard reader of relocated pages ${z}/${x}/${y}`)
   if (expected[i]) {
     assert.deepEqual(
@@ -208,7 +211,7 @@ for (const [i, [z, x, y]] of cases.entries()) {
     assert.deepEqual(
       keyed.columns,
       await footer.readColumns(keyed.rows, [key, 'geometry']),
-      `row directories read un-carried columns of ${z}/${x}/${y} as the footer does`,
+      `row directories read other columns of ${z}/${x}/${y} as the footer does`,
     )
     for (const [reader, data, name] of [
       [fast, rows, 'directory'],
@@ -273,15 +276,15 @@ for (const workers of [1, 2, 4]) {
     const rejection = assert.rejects(cancelled, { name: 'AbortError' })
     client.cancel(cancelled.id)
     await rejection
-    // an un-carried column comes from its row directory, fetched with the
-    // tile's pages and decoded in the pool
+    // a column that is no attribute comes from its row directory, fetched
+    // with the tile's pages and decoded in the pool
     const styled = ['height', fast.lod.key.column]
     for (const [z, x, y] of cases.slice(0, 8)) {
       const reply = await call({ type: 'tile', config: { url, properties: styled }, z, x, y })
       assert.deepEqual(
         new Uint8Array(reply.data),
         new Uint8Array(await renderTile(footer, z, x, y, { properties: styled })),
-        `worker ${workers} reads an un-carried column as the footer does`,
+        `worker ${workers} reads a source column as the footer does`,
       )
     }
     const concurrent = cases

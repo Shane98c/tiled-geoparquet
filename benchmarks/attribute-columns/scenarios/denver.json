@@ -16,15 +16,15 @@
     { "label": "zoom in", "center": [-104.99, 39.74], "zoom": 12 },
     { "label": "zoom in", "center": [-104.99, 39.74], "zoom": 13 },
     { "label": "pan east", "center": [-104.96, 39.74], "zoom": 13 },
-    { "label": "style by carried", "center": [-104.96, 39.74], "zoom": 13, "style": "carried" },
+    { "label": "style by named", "center": [-104.96, 39.74], "zoom": 13, "style": "named" },
     { "label": "zoom in", "center": [-104.98, 39.745], "zoom": 14 },
     { "label": "pan north", "center": [-104.98, 39.755], "zoom": 14 },
     { "label": "zoom in", "center": [-104.985, 39.75], "zoom": 15 },
     {
-      "label": "style by un-carried",
+      "label": "style by other",
       "center": [-104.985, 39.75],
       "zoom": 15,
-      "style": "uncarried"
+      "style": "other"
     },
     { "label": "zoom out", "center": [-104.98, 39.75], "zoom": 13 },
     { "label": "pan west", "center": [-105.02, 39.75], "zoom": 13 },

@@ -70,7 +70,7 @@ def test_copies_past_every_key_reach_their_tile(tmp_path, nulls):
         out,
         zooms=range(12, 15),
         complete_from=12,
-        carry=['height'],
+        attributes=['height'],
         row_group_rows=256,
         page_rows=32,
         batch_rows=32,

@@ -36,7 +36,7 @@ def tile_sizes(path: str | Path) -> list[dict] | None:
     `max_bytes` over those tiles; and `largest`, the `[z, x, y]` of the
     heaviest, None at a zoom without tiles. A zoom past the key's depth reads
     by the depth cell holding the tile, so its tiles are those cells. In a
-    file with column attributes, `attributes` gives, per attribute, the
+    file with attributes, `attributes` gives, per attribute, the
     `median_bytes` and `max_bytes` of the attribute's pages over each tile's
     own rows, which a tile styled by it fetches beside the overview pages.
     """
@@ -83,7 +83,7 @@ def _zoom_tiles(source, root):
             raise ValueError('truncated directory node')
         return raw
 
-    columns = [a['name'] for a in lod['attributes'] if a.get('storage') == 'column']
+    columns = [a['name'] for a in lod['attributes']]
     slots = root.get('attribute_slots') or [0] * (len(lod['lods']) + 1)
     slots = dict(zip(lod['lods'], slots[:-1], strict=True))
     for name in dict.fromkeys(serving.values()):
@@ -101,7 +101,7 @@ def _pages(read, top, attributes=0, slot=0):
     """An LOD's pages in key order, from its directory's top node: each one's
     minimum cell, maximum cell and compressed length, `cells`, the cells its
     pages hold keyed rows in, and its fences' cells and global rows with the
-    end of the keyed rows of each one's page; then, per column attribute of
+    end of the keyed rows of each one's page; then, per attribute of
     `attributes`, the pages the attribute leaves in the slots of `slot` bytes
     of each LOD leaf list beside the LOD's. Holds one leaf's other fields
     at a time."""

@@ -50,12 +50,13 @@ the first group. The layout keeps one order for now; the prefix is the lever
 if sequential readers matter more than a request per tile. The spatial index
 lists each LOD's pages in one key order, so a prefix would also need a
 directory tree per section. `benchmarks/standard-overviews/write-tokyo.py`
-builds both Tokyo files, the prefix from the writer at `0a06e75^`, which has
-the option, and `qgis-progressive.py` beside it reproduces the measurement.
+builds the Tokyo file; the prefix file came from the writer at `0a06e75^`,
+whose `write` takes `prefix_zoom`, and `qgis-progressive.py` beside the
+script reproduces the measurement.
 
-Without the index, removing the prefix initially doubled the coarse Tokyo
-tile's bytes, because a coarse overview is sparse and a fixed row cap left
-pages holding few values. The page writer therefore scales each LOD chunk's
+Without the index and without a prefix, a fixed row cap leaves the pages of
+a coarse overview, which is sparse, holding few values, and the coarse Tokyo
+tile reads twice the bytes. The page writer therefore scales each LOD chunk's
 row cap by its density, targeting 2,048 present values per page, up to
 262,144 analytical rows.
 
@@ -67,15 +68,55 @@ with four, and a cached repeat from 125 to 69 ms. Two workers are the default
 because a third and fourth each cost a decoder and projection cache in memory;
 devices reporting at most two cores render serially.
 
-## Separate attribute columns
+## Where an attribute sits
 
 An attribute a renderer styles with can sit in three places beside the
-overview geometry. All three were measured.
+overview geometry. All three were measured, and the writer keeps it in
+attribute columns.
 
-**Packed.** Each overview row's payload holds the attribute, as `carry=`
-writes it. A tile reads it in the pages it reads anyway, every tile pays for
-it whether styled or not, and the LODs from the complete zoom up repeat the
-source column.
+**Attribute columns** ([Attributes](usage.md#attributes)). Every LOD holds
+its shown rows' values in a nullable typed column with pages cut where its
+overview pages are, each page's values on its leading rows, but one page of
+nulls for each run of overview pages without a value; boundary copies pack
+the value; and after the leaves of each level-one directory node, a block of
+fixed-size slots, one per attribute and leaf, holds the attribute leaves
+listing the length of the attribute page beside each overview page, 0
+beside one without a value, which a reader locates from the level-one node
+and fetches with the leaf. A tile that names no attribute requests no part
+of this.
+
+**Packed into every overview row.** Each overview row's payload holds the
+attribute, so a tile reads it in the pages it reads anyway. Every tile pays
+for it whether styled or not, and the LODs from the complete zoom up repeat
+the source column. Against attribute columns:
+
+- On 1,753,860 Denver buildings, a cold tile that styles by nothing is 7 to
+  39% lighter without `height` packed. A tile styled by `height` from its
+  attribute column takes the same rounds with one more request cold at zooms
+  8 to 13, two more at zooms 14 and 15 and one more next, and reads 3 to 9%
+  fewer bytes than packed at zooms 8 to 13 and 1 to 2% more at zooms 14 and
+  15, except a small zoom 15 tile, where the first styled tile under an
+  overview leaf reads an attribute slot of about 2 KB, 14.7 KB against
+  12.6 KB; from zoom 11 the next tile reads 3 to 5% less.
+- Switching the styled attribute fetches only that attribute's pages, never
+  the geometry: restyling six drawn zoom 13 Denver tiles by `height` took 4
+  requests, 154 KB and 0.26 s at 100 ms per request, where the packed
+  attribute restyled from the tiles already held in 25 ms.
+- On 155,597,622 US buildings read from S3 in Chrome, a first 1280 by 800
+  view styled by two half-float attributes took 3 to 15 requests against 2
+  to 5 with both packed, in the same two rounds, read from 8% fewer bytes to
+  4% more, and took 0.73 to 1.12 s against 0.73 to 1.05 s, within 11% either
+  way at each view. Styled by one attribute it took within 10% of the time of
+  the file packing two, on a fast link and with 300 ms added to every request
+  alike; styled by two, as long on a fast link and from 6% less to 24% more
+  with 300 ms added; styled by four, up to 42% more than by two packed. The
+  file with eight half-float attribute columns is 24.4 GB against 21.4 GB
+  with the two packed and no columns.
+
+Packing stayed ahead where tiles already held are restyled, which it does
+with no request, and for a map styled by several attributes from its first
+view whose readers are on slow links. It made every tile pay for every packed
+attribute, so the writer keeps attributes in columns alone.
 
 **A LIST column per attribute.** Beside a geometry-only payload, each overview
 row holds a list with a slot for its own value and one per boundary copy it
@@ -83,29 +124,6 @@ hosts. On the 4.9-million-row Tokyo subset this saved modest bytes for
 geometry-only views but made styled views slower: the companion pages added
 requests and decode work that outweighed the saving, and every copy's value
 sits in its host's list as well.
-
-**Column attributes**, what the writer keeps by default and what
-`carry_columns=` names ([Attributes](usage.md#attributes)). Every LOD holds
-its shown rows' values in a nullable typed column with pages cut where its
-overview pages are, each page's values on its leading rows, but one page of
-nulls for each run of overview pages without a value; boundary copies keep
-the packed value; and after the
-leaves of each level-one directory node, a block of fixed-size slots, one per
-attribute and leaf, holds the attribute leaves listing the length of the
-attribute page beside each overview page, 0 beside one without a value,
-which a reader locates from the level-one node and fetches with the leaf. A
-tile that names no column attribute requests no part of this. On 1,753,860 Denver buildings, against
-packing `height`, a cold geometry-only tile is 6 to 39% lighter, and a tile
-styled by `height` takes the same rounds with one or two more requests cold
-and one more next, and reads 2 to 9% fewer bytes than packed at zooms 8 to
-13 and under 2% more at zoom 14, except at a small zoom 15
-tile, where the first styled tile under an overview leaf reads an attribute
-leaf of about 2 KB, 17% more than packed; from zoom 11 the next tile reads 3
-to 5% less.
-Packing `height` and keeping `class` as a column reads geometry-only and
-`height` tiles within 0.4% of the file packing only `height`. Decoding and
-encoding a styled tile takes within 0.5 ms of the packed time from zoom 11,
-and 19.3 ms against 18.5 ms for the 60,105 features of a zoom 8 tile.
 
 Choices within the column layout were measured on the same buildings:
 
@@ -116,19 +134,19 @@ Choices within the column layout were measured on the same buildings:
   pages, those of zooms 8 to 11 about one and a half times, and those of
   zooms showing every row the same.
 - A separate gzip directory listing the byte range of every attribute leaf,
-  read the first time a style uses a column attribute, would keep the slots'
+  read the first time a style uses an attribute, would keep the slots'
   padding out of the file but grows with attributes times leaves. On 53.7
-  million Japan buildings with 15 column attributes it would take 12.1 KB
+  million Japan buildings with 15 attributes it would take 12.1 KB
   beside a 7.3 KB root, too much for the first 16 KiB, so the first tile
-  styled by a column attribute would take three request rounds where a
+  styled by an attribute would take three request rounds where a
   geometry-only tile takes two.
 - Slots placed right after each leaf would be found from the leaf's own
   entry, but would sit between consecutive leaves, so a geometry-only view
   reaching several leaves would either split what is otherwise one request
-  or fetch the slots between them as filler. On 30,000 points with 20 column
+  or fetch the slots between them as filler. On 30,000 points with 20
   attributes and 64 pages per leaf, 48 concurrent zoom 16 tiles read through
   the reader's coalescing would take 44 requests and 47.3 KB, against 28
-  requests and 23.6 KB for the same source without column attributes. With a
+  requests and 23.6 KB for the same source without attributes. With a
   slot block after each level-one node's leaves, both take the same
   requests and bytes.
 
@@ -146,21 +164,21 @@ Choices within the column layout were measured on the same buildings:
   zoom 15 and 133 KB against 117 KB at zoom 13.
 - At the LODs showing every row, reading the source column, its pages cut
   where the finest LOD's tiles meet and holding 8 KiB of values each, instead
-  of a column of the LOD's own makes a smaller file, 248.5 MB against 254.2 MB,
-  but each attribute leaf there lists the source pages with their rows, 3 to
-  7 KB, and a cold zoom 15 tile styled by `height` reads 18.3 KB against 12.6 KB
-  packed.
+  of a column of the LOD's own makes a smaller file, 248.5 MB against 254.2 MB
+  on the Denver buildings, but each attribute leaf there lists the source
+  pages with their rows, 3 to 7 KB, and a cold zoom 15 tile styled by
+  `height` reads 18.3 KB against 14.7 KB with a column of the LOD's own.
 - An attribute page beside every overview page, a page of nulls included,
   would keep every attribute leaf entry a byte range, but on 53.7 million
-  Japan buildings with 17 column attributes it would make their columns
+  Japan buildings with 17 attributes it would make their columns
   269 MB against 157 MB: the ten valued on fewer than 0.2% of rows would
   take about 9 MB each, 92 MB together against about 4 MB, mostly page
   headers over almost no values, and a tile styled by one would request
   pages holding nothing.
-- Boundary copies packing column attributes keeps a styled tile at two
+- Boundary copies packing the attributes keeps a styled tile at two
   rounds, since a copy's value is in the tile's own pages, but a geometry-only
-  tile reads those values too: with eight attributes kept as columns, 5 to
-  12% more than with none at zooms 13 to 15. Moving them to a column of the
+  tile reads those values too: with eight attributes, 5 to 12% more than with
+  none at zooms 13 to 15. Moving them to a column of the
   copies' values beside each LOD would make that cost a styled tile's
   instead, at one more request.
 
@@ -174,7 +192,7 @@ hosted demo does.
 That grid has four cells per z15 pixel, so two per pixel at z16 and one at
 z17. A z16 LOD would add 1.11 GB, every feature again, for those views. Serving all complete zooms from one payload suits small files, and
 the writer does so below `single_lod_bytes`; larger files pair zooms because a
-cold read at the coarser zoom would carry the finest grid's geometry.
+cold read at the coarser zoom would read the finest grid's geometry.
 
 ## Standard geometry encodings
 
@@ -219,15 +237,15 @@ simulator, and the results.
 Request counts are identical. The standard table costs 40 to 55% more bytes
 at city zooms; at street zooms it costs slightly fewer on a cold read and 29%
 more on the next tile; and it stores 344 MB against 219 MB for the packed
-overview columns. Styled reads cost the same as geometry-only in the packed
-rows and at most 3% more in the standard table, apart from its z8 next tile
+overview columns. Styled reads, measured with the attribute packed in the
+rows, cost the same as geometry-only there and at most 3% more in the standard table, apart from its z8 next tile
 at 14% more: with 4,096-row groups the attribute chunks mostly sit inside the
 gaps the coalescer bridges anyway. The table is ordinary Parquet; DuckDB
 queries it and reads the nested coordinates directly, though no tool treats
 them as geometry without the level's scale and offset. Not measured: decode CPU,
 which the standard-geometry ablation above puts at about twice the packed
 rows, and larger datasets, where the 15,345 row groups here become hundreds
-of thousands and the directory must carry them.
+of thousands and the directory must hold them.
 
 ## Modified COGP reader
 

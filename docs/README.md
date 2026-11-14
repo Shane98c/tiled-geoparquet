@@ -8,7 +8,7 @@ Start with the [project overview](../README.md), [usage guide](usage.md),
   and Esri SOP measured on the same hosted Japan archives, with what each
   format stores and how it reads a tile.
 - [Japan evaluation](japan-evaluation.md): display density calibrated against
-  PMTiles, transfer sizes, storage costs, and source-data integrity for
+  PMTiles, transfer sizes, file sizes, and source-data integrity for
   53.7 million buildings.
 - [Hosted comparison](hosted-comparison.md): the public demo, dataset
   provenance, counter definitions, and how to rebuild the page.

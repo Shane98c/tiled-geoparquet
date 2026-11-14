@@ -1,4 +1,4 @@
-"""An overview page whose rows hold no value of a column attribute has no
+"""An overview page whose rows hold no value of an attribute has no
 attribute page: its attribute leaf entry is empty, and its rows share one
 page of nulls with the overview pages around it that hold none either."""
 
@@ -73,7 +73,7 @@ def sparse(tmp_path_factory):
         page_bytes=1024,
         page_rows=32,
         batch_rows=32,
-        carry_columns=NAMES,
+        attributes=NAMES,
         workers=1,
         log=_quiet,
     )

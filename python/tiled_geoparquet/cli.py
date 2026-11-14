@@ -81,16 +81,11 @@ def cli():
     help="zoom from which every feature is present: a zoom, 'auto' (median feature spans a pixel) or 'never'",
 )
 @click.option(
-    '--carry',
-    multiple=True,
-    help='column[:arrow type] packed into every overview row, e.g. risk:float32',
-)
-@click.option(
-    '--carry-columns',
+    '--attributes',
     multiple=True,
     help=(
-        'column[:arrow type] kept as columns a tile reads only when a style asks. '
-        "'auto', the default, keeps every cheap column; 'none' keeps none"
+        'column[:arrow type] a map can style by, read only when a style asks, e.g. '
+        "risk:float32. 'auto', the default, keeps every cheap column; 'none' keeps none"
     ),
 )
 @click.option('--geometry', default='geometry', show_default=True)
@@ -141,8 +136,7 @@ def write_cmd(
     columns,
     zooms,
     complete_from,
-    carry,
-    carry_columns,
+    attributes,
     geometry,
     row_group_rows,
     page_bytes,
@@ -161,13 +155,12 @@ def write_cmd(
         zooms = range(int(lo), int(hi or lo) + 1)
     if complete_from != 'auto':
         complete_from = None if complete_from == 'never' else int(complete_from)
-    carried = [tuple(c.split(':', 1)) if ':' in c else c for c in carry]
-    if carry_columns in ((), ('auto',)):
+    if attributes in ((), ('auto',)):
         kept = 'auto'
-    elif carry_columns == ('none',):
+    elif attributes == ('none',):
         kept = ()
     else:
-        kept = [tuple(c.split(':', 1)) if ':' in c else c for c in carry_columns]
+        kept = [tuple(c.split(':', 1)) if ':' in c else c for c in attributes]
     write(
         src,
         out,
@@ -175,8 +168,7 @@ def write_cmd(
         columns=columns,
         zooms=zooms,
         complete_from=complete_from,
-        carry=carried,
-        carry_columns=kept,
+        attributes=kept,
         geometry=geometry,
         row_group_rows=row_group_rows,
         page_bytes=page_bytes,

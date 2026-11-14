@@ -134,7 +134,7 @@ def test_a_build_failing_midway_leaves_no_workers_or_files(tmp_path, monkeypatch
             output,
             zooms=[12, 13],
             complete_from=12,
-            carry=['big'],
+            attributes=['big'],
             workers=2,
             log=lambda *_: None,
         )
@@ -145,8 +145,8 @@ def test_a_build_failing_midway_leaves_no_workers_or_files(tmp_path, monkeypatch
 
 
 def test_source_column_names_reach_the_overviews_as_written(tmp_path):
-    """Carried, thinning and geometry columns named like SQL keywords or with
-    dots and quotes build, validate and carry their values."""
+    """Attribute, thinning and geometry columns named like SQL keywords or with
+    dots and quotes build, validate and keep their values."""
     from tiled_geoparquet import read_overview, validate
 
     geometry = 'shape "x"'
@@ -176,7 +176,7 @@ def test_source_column_names_reach_the_overviews_as_written(tmp_path):
         output,
         thinning=thin,
         columns=['order'],
-        carry=['group', 'odd.name'],
+        attributes=['group', 'odd.name'],
         geometry=geometry,
         zooms=[10, 11],
         complete_from=11,

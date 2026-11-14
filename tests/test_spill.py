@@ -10,7 +10,7 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 import pytest
 import shapely
-from tiled_geoparquet import validate, write
+from tiled_geoparquet import read_overview, validate, write
 from tiled_geoparquet.key import KEY_DEPTH, hilbert_key, tile_x, tile_y
 from tiled_geoparquet.quantize import render_polygons
 from tiled_geoparquet.spill import MARGIN_PIXELS, straddlers, take_ragged
@@ -190,7 +190,7 @@ def test_every_tile_a_feature_reaches_holds_it_once(edge_features, tmp_path, mar
         tmp_path / 'edges.lod.parquet',
         zooms=[12, 13, 14],
         complete_from=12,
-        carry_columns=(),
+        attributes=(),
         workers=1,
         log=lambda *_: None,
         **options,
@@ -225,10 +225,10 @@ def test_every_tile_a_feature_reaches_holds_it_once(edge_features, tmp_path, mar
 
 
 @pytest.mark.parametrize('override', [99, None])
-def test_a_copy_carries_the_value_its_row_has_at_the_lod(tmp_path, override):
+def test_a_copy_holds_the_value_its_row_has_at_the_lod(tmp_path, override):
     """A thinning's value for an attribute, null included, reaches the copy in
-    the next tile as well as the row, so the feature reads the same on both
-    sides of the edge, here on a host the LOD does not show."""
+    the next tile as well as the row's attribute column, so the feature reads
+    the same on both sides of the edge, here on a host the LOD does not show."""
     zoom = 14
     edge = -180 + 3413 * 360 / 2**zoom
     row = int(tile_y(39.7, zoom)) + 0.5
@@ -257,7 +257,7 @@ def test_a_copy_carries_the_value_its_row_has_at_the_lod(tmp_path, override):
         thinning=first,
         zooms=[zoom, zoom + 1],
         complete_from=zoom + 1,
-        carry=['value'],
+        attributes=['value'],
         single_lod_bytes=0,
         workers=1,
         log=lambda *_: None,
@@ -271,7 +271,11 @@ def test_a_copy_carries_the_value_its_row_has_at_the_lod(tmp_path, override):
         for blob in table.column('lod').combine_chunks().field(name).to_pylist()
     ]
     straddler, host = (table.column('value').to_pylist().index(v) for v in (1, 2))
-    assert decoded[straddler]['attrs'] == {'value': override}
+    assert read_overview(out, zoom).to_pydict() == {
+        'row': [straddler],
+        'geometry': read_overview(out, zoom).column('geometry').to_pylist(),
+        'value': [override],
+    }
     assert decoded[host]['geometry'] == [], 'the host is not shown at the LOD'
     (copy,) = decoded[host]['spill']
     assert copy['id'] == straddler

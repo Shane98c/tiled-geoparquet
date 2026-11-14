@@ -193,7 +193,7 @@ try {
     assert.equal(calls.filter((call) => call.method === 'HEAD').length, 1)
     allSent(sent, `the HEAD is sent with cache ${cache}`)
   }
-  setRoot({ version: 8, file_bytes: file.length })
+  setRoot({ version: 9, file_bytes: file.length })
   calls.length = 0
   file.set(new TextEncoder().encode('PAR1'), file.length - 4)
   const sized = await httpSource(['https://example.test/data.parquet'], { connections: 1 })
@@ -213,7 +213,7 @@ try {
     assert.equal(calls.length, 3)
     allSent(sent, `the footer magic check is sent with cache ${cache}`)
   }
-  for (const version of [3, 7]) {
+  for (const version of [3, 8]) {
     setRoot({ version, file_bytes: file.length })
     await assert.rejects(
       openReader(await httpSource(['https://example.test/data.parquet'])),
@@ -223,10 +223,10 @@ try {
   }
   // the root's copy of the LOD metadata is checked as the footer's is
   const lod = {
-    version: '0.4.0',
+    version: '0.5.0',
     margin: 2,
     encoding: 'packed',
-    pack_version: 2,
+    pack_version: 3,
     key: { column: 'hilbert', depth: 24 },
     zooms: [2],
     attributes: [],
@@ -238,21 +238,21 @@ try {
     [{ margin: '2' }, /margin 2 is not a number/],
     [{ margin: 129 }, /margin 129 is not a number/],
     [{ version: '0.1.0' }, /version 0.1.0 is not compatible/],
-    [{ pack_version: 1 }, /encoding packed\/1 is not packed\/2/],
+    [{ pack_version: 2 }, /encoding packed\/2 is not packed\/3/],
   ]) {
-    setRoot({ version: 8, file_bytes: file.length, lod: { ...lod, ...changed } })
+    setRoot({ version: 9, file_bytes: file.length, lod: { ...lod, ...changed } })
     await assert.rejects(
       openReader(await httpSource(['https://example.test/data.parquet'])),
       error,
       `a root whose LOD metadata has ${JSON.stringify(changed)}`,
     )
   }
-  setRoot({ version: 8, file_bytes: file.length, lod: undefined })
+  setRoot({ version: 9, file_bytes: file.length, lod: undefined })
   await assert.rejects(
     openReader(await httpSource(['https://example.test/data.parquet'])),
     /root holds no LOD metadata/,
   )
-  setRoot({ version: 8, file_bytes: file.length })
+  setRoot({ version: 9, file_bytes: file.length })
   // a server error on the check is retried by the next read
   failTail = 1
   const retried = await httpSource(['https://example.test/data.parquet'])

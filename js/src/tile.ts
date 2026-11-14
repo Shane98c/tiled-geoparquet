@@ -1,8 +1,8 @@
-import { asCarried, attributeKind } from './decode.js'
+import { asDeclared, attributeKind } from './decode.js'
 import { MVT_BUFFER, MVT_EXTENT, toMvt } from './mvt.js'
 import { geometryColumnFromWkb } from '@cogp/reader'
 import type { LodGeometry } from './geometry.js'
-import type { Bbox, Lod, LodMetadata, LodRows } from './reader.js'
+import type { Bbox, Lod, LodRows } from './reader.js'
 import { decodeTile, type AttributeTask, type PreparedTile, type TileReader } from './spatial.js'
 import { HALF_WORLD } from './web-mercator.js'
 
@@ -13,18 +13,14 @@ export interface TileOptions {
   layer?: string
   /** MVT layer name for point LODs (default: same as `layer`). */
   pointLayer?: string
-  /** Attribute names to copy into MVT properties (default: the packed attributes, none without LODs).
-   * A column attribute or source column is read only when named. */
+  /** Attribute or source column names to copy into MVT properties, each
+   * read only when named (default none: geometry only). */
   properties?: string[]
   signal?: AbortSignal
 }
 
 const tileYToLatitude = (y: number, tiles: number) =>
   (Math.atan(Math.sinh(Math.PI * (1 - (2 * y) / tiles))) * 180) / Math.PI
-
-/** The attributes whose values arrive with a tile's geometry. */
-export const packedAttributes = (lod?: LodMetadata): string[] =>
-  (lod?.attributes ?? []).filter((a) => a.storage !== 'column').map((a) => a.name)
 
 /** The clip buffer, in `MVT_EXTENT` units, for a file whose straddler copies
  * reach `margin` pixels past a tile: geometry clipped nearer than that would cut
@@ -70,20 +66,20 @@ export const renderTile = async (
   const { signal } = options
   const buffer = reader.lod ? clipBuffer(reader.lod.margin) : MVT_BUFFER
   const bbox = tileBounds(z, x, y, buffer)
-  const carried = reader.lod?.attributes ?? []
-  const names = options.properties ?? packedAttributes(reader.lod)
+  const declared = reader.lod?.attributes ?? []
+  const names = options.properties ?? []
   const lod = reader.lod ? reader.lodForZoom(z) : undefined
   const pointFamily = lod?.geometry_type === 'Point'
   const layer = (pointFamily ? options.pointLayer : undefined) ?? options.layer ?? 'features'
   if (!lod || z > reader.finestZoom) {
     // finer than any LOD: the exact primary geometry of the rows in the tile,
-    // with carried attributes as the LODs pack them, so a feature's properties
-    // are the same on both sides of the finest zoom
+    // with attributes in their declared types, as the LODs hold them, so a
+    // feature's properties are the same on both sides of the finest zoom
     const { rows, wkb, columns } = await reader.readPrimary(bbox, names, signal)
     signal?.throwIfAborted()
-    for (const { name, type } of carried) {
+    for (const { name, type } of declared) {
       const kind = attributeKind(type)
-      if (columns[name]) columns[name] = columns[name].map((value) => asCarried(value, kind))
+      if (columns[name]) columns[name] = columns[name].map((value) => asDeclared(value, kind))
     }
     return toMvt(
       { geometry: geometryColumnFromWkb(wkb), rowIndex: rows, columns },
@@ -110,24 +106,24 @@ export interface DecodedTile {
   geometry: LodGeometry
   /** Clip buffer in `MVT_EXTENT` units, from the file's margin. */
   buffer: number
-  /** Column attributes with no entry in `columns` yet: their own features'
-   * values are in pages the tile has not read. */
+  /** Attributes with no entry in `columns` yet: their own features' values
+   * are in pages the tile has not read. */
   pending?: string[]
-  /** While any column attribute is pending: 0 for a boundary copy and, for a
+  /** While any attribute is pending: 0 for a boundary copy and, for a
    * feature of the tile's own, one more than its position among the rows its
    * LOD page shows, where an attribute page holds its value. */
   own?: Uint32Array
-  /** Per pending column attribute, the values its boundary copies pack, one
+  /** Per pending attribute, the values its boundary copies pack, one
    * per copy in feature order. */
   copies?: Record<string, unknown[]>
-  /** While any column attribute is pending: the first row of each LOD page
+  /** While any attribute is pending: the first row of each LOD page
    * the tile read and how many rows it shows, which bound the values an
    * attribute page beside it may hold. */
   shown?: number[]
 }
 
-/** A tile decoded with every carried attribute: those column attributes
- * whose pages the task lacks are pending. */
+/** A tile decoded with every attribute: those whose pages the task lacks
+ * are pending. */
 export function decodePreparedTile(task: PreparedTile): DecodedTile {
   const { own, pending, copies, shown, ...data } = decodeTile(
     task,
@@ -148,7 +144,7 @@ export function decodePreparedTile(task: PreparedTile): DecodedTile {
   return complete
 }
 
-/** The work of filling a decoded tile's pending column attributes from their
+/** The work of filling a decoded tile's pending attributes from their
  * pages over its own rows, which `own` marks, checked against the rows its
  * LOD pages show, `shown`. */
 export function attributeTask(

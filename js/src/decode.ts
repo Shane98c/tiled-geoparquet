@@ -1,8 +1,8 @@
 /**
  * Decoder of one packed LOD row, the format python/tiled_geoparquet/pack.py
- * writes: a row's geometry on the LOD grid, its carried attributes and the
- * straddler copies it hosts, all as LEB128 varints with string payloads
- * trailing in order.
+ * writes: a row's geometry on the LOD grid and the straddler copies it hosts
+ * with their attributes, all as LEB128 varints with string payloads trailing
+ * in order.
  */
 
 import { GeometryBuilder, type GeometryType } from './geometry.js'
@@ -16,21 +16,17 @@ export interface AttributeField {
   values?: string[]
   /** The declared Arrow type. */
   type?: string
-  /** Whether a row's own value is in an attribute or source column rather
-   * than its packed row; its boundary copies pack it either way. */
-  column?: boolean
 }
 
-/** The fields of carried attributes as `lod_columns` metadata declares them. */
+/** The fields of attributes as `lod_columns` metadata declares them. */
 export const attributeFields = (
-  attributes: { name: string; type: string; values?: string[]; storage?: string }[],
+  attributes: { name: string; type: string; values?: string[] }[],
 ): AttributeField[] =>
   attributes.map((a) => ({
     name: a.name,
     kind: a.values ? 'enum' : attributeKind(a.type),
     ...(a.values ? { values: a.values } : {}),
     type: a.type,
-    column: a.storage === 'column',
   }))
 
 /** The attribute kinds the packer writes, from the Arrow type names in the metadata. */
@@ -42,7 +38,7 @@ export const attributeKind = (type: string): AttributeKind => {
   if (t === 'bool' || t === 'boolean') return 'bool'
   if (t === 'string' || t === 'utf8' || t === 'large_string' || t === 'large_utf8') return 'string'
   if (/int/.test(t)) return 'int'
-  throw new Error(`unsupported carried attribute type ${type}`)
+  throw new Error(`unsupported attribute type ${type}`)
 }
 
 const textDecoder = new TextDecoder()
@@ -68,6 +64,7 @@ class Cursor {
         if (shift > 25) high |= bits >>> (32 - shift)
       } else high |= bits << (shift - 32)
       if (!(byte & 0x80)) break
+      if (shift === 63) throw new Error(LONG_VARINT)
       shift += 7
     }
     this.high = high >>> 0
@@ -101,14 +98,19 @@ class Cursor {
       const b = this.bytes[this.pos++]
       out += (b & 0x7f) * scale
       if (!(b & 0x80)) return out
+      if (scale === TENTH_BYTE) throw new Error(LONG_VARINT)
       scale *= 128
     }
   }
 }
 
+/** The weight of a varint's tenth byte, the last a 64-bit value takes. */
+const TENTH_BYTE = 2 ** 63
+const LONG_VARINT = 'a packed row holds a varint of more than ten bytes'
+
 const unzigzag = (v: number): number => (v % 2 ? -(v + 1) / 2 : v / 2)
 
-/** The presence bitmap holds one bit per carried attribute. */
+/** The presence bitmap holds one bit per attribute. */
 export const MAX_ATTRIBUTES = 64
 
 /** Bit `i` of a presence bitmap given as the halves `Cursor.wide` reads. */
@@ -140,9 +142,9 @@ export const toHalf = (v: number): number => {
   return Math.sign(v) * rounded * step
 }
 
-/** A source value of a carried attribute of `kind` as the attribute packs
- * it: a float in its declared precision, anything else as it is. */
-export const asCarried = (value: unknown, kind: AttributeKind): unknown => {
+/** A source value of an attribute of `kind` as the attribute holds it: a
+ * float in its declared precision, anything else as it is. */
+export const asDeclared = (value: unknown, kind: AttributeKind): unknown => {
   if (value == null) return value
   if (kind === 'float16') return toHalf(Number(value))
   if (kind === 'float32') return Math.fround(Number(value))
@@ -150,8 +152,8 @@ export const asCarried = (value: unknown, kind: AttributeKind): unknown => {
   return value
 }
 
-/** A column attribute's own value, read from an attribute column or a source
- * column, as its packed value would decode: a value table index as its
+/** An attribute's own value, read from an attribute column or a source
+ * column, as a copy's packed value decodes: a value table index as its
  * string, a float rounded to its declared precision and a 64-bit integer as
  * the nearest number. */
 export const asColumnValue = (value: unknown, field: AttributeField): unknown => {
@@ -162,25 +164,27 @@ export const asColumnValue = (value: unknown, field: AttributeField): unknown =>
     return found
   }
   if (typeof value === 'bigint') return Number(value)
-  return asCarried(value, field.kind)
+  return asDeclared(value, field.kind)
 }
 
 let absent: unknown[] = []
 
-/** Attribute values with string slots left as byte lengths, filled from the trailing payload later.
- * With `shared`, a row packing no attribute returns one read-only array of nulls. */
+/** One read-only array of `count` nulls, shared. */
+const nulls = (count: number): unknown[] => {
+  if (absent.length !== count) absent = new Array(count).fill(null)
+  return absent
+}
+
+/** A copy's attribute values with string slots left as byte lengths, filled
+ * from the trailing payload later. A copy packing none returns `nulls`. */
 const attributes = (
   c: Cursor,
   fields: AttributeField[],
   strings: [unknown[], number, number][],
-  shared = false,
 ) => {
   const low = c.wide(),
     high = c.high
-  if (shared && !low && !high) {
-    if (absent.length !== fields.length) absent = new Array(fields.length).fill(null)
-    return absent
-  }
+  if (!low && !high) return nulls(fields.length)
   const out: unknown[] = new Array(fields.length)
   for (let i = 0; i < fields.length; i++) {
     if (!isPresent(low, high, i)) {
@@ -218,35 +222,10 @@ const attributes = (
   return out
 }
 
-/** A row's own attributes, skipping its geometry and the copies it hosts. */
-export const decodeAttributes = (
-  bytes: Uint8Array,
-  type: GeometryType,
-  fields: AttributeField[],
-): unknown[] => {
-  const c = new Cursor(bytes)
-  const strings: [unknown[], number, number][] = []
-  geometryInto(c, type)
-  const attrs = attributes(c, fields, strings)
-  if (!strings.length) return attrs
-  // The row's own strings lead the trailing payload, after every copy.
-  const count = c.varint()
-  for (let k = 0; k < count; k++) {
-    c.varint()
-    c.varint()
-    geometryInto(c, type)
-    skipAttributes(c, fields)
-  }
-  for (const [slot, i, length] of strings) {
-    slot[i] = textDecoder.decode(bytes.subarray(c.pos, c.pos + length))
-    c.pos += length
-  }
-  return attrs
-}
-
 /** Decode selected geometry directly into columnar buffers. Unwanted copies
- * are scanned without allocating geometry arrays; trailing strings still
- * follow the original row-wide payload order. */
+ * are scanned without allocating geometry arrays. A row's own feature holds
+ * no attributes, all null; a copy's come from its packed values, their
+ * strings trailing the row in order. */
 export const decodeSelectedRow = (
   bytes: Uint8Array,
   type: GeometryType,
@@ -261,9 +240,9 @@ export const decodeSelectedRow = (
   const c = new Cursor(bytes)
   if (!withAttributes) {
     const ownGeometry = geometryInto(c, type, own ? builder : undefined)
-    skipAttributes(c, fields)
     if (own && ownGeometry) add(id, NO_ATTRIBUTES, 0)
     const count = c.varint()
+    let strings = 0
     for (let k = 0; k < count; k++) {
       const copyTile = c.varint(),
         copyId = c.varint()
@@ -272,18 +251,19 @@ export const decodeSelectedRow = (
         builder.begin(type)
         if (type === 'MultiLineString') builder.startPolygon()
       }
-      skipAttributes(c, fields)
+      strings += skipAttributes(c, fields)
       if (copyTile === tile) add(copyId, NO_ATTRIBUTES, k + 1)
     }
     // All string bytes trail the row's varints; no requested attributes means
-    // they can be left untouched after geometry and copy selection.
+    // they are left unread, and the row ends where they do.
+    if (c.pos + strings !== bytes.length)
+      throw new Error('a packed row does not end where its copies do')
     return
   }
   const strings: [unknown[], number, number][] = []
   const selected: [number, unknown[], number][] = []
   const keep = geometryInto(c, type, own ? builder : undefined)
-  const attrs = attributes(c, fields, strings, true)
-  if (own && keep) selected.push([id, attrs, 0])
+  if (own && keep) selected.push([id, nulls(fields.length), 0])
   const count = c.varint()
   for (let k = 0; k < count; k++) {
     const copyTile = c.varint()
@@ -293,13 +273,15 @@ export const decodeSelectedRow = (
       builder.begin(type)
       if (type === 'MultiLineString') builder.startPolygon()
     }
-    const copyAttrs = attributes(c, fields, strings, true)
+    const copyAttrs = attributes(c, fields, strings)
     if (copyTile === tile) selected.push([copyId, copyAttrs, k + 1])
   }
   for (const [slot, i, length] of strings) {
     slot[i] = textDecoder.decode(bytes.subarray(c.pos, c.pos + length))
     c.pos += length
   }
+  // a row is its geometry, its copies and their strings, and nothing more
+  if (c.pos !== bytes.length) throw new Error('a packed row does not end where its copies do')
   for (const [row, values, slot] of selected) add(row, values, slot)
 }
 
@@ -373,6 +355,7 @@ function ringInto(c: Cursor, builder?: GeometryBuilder, closed = false) {
         b = bytes[pos++]
         v += (b & 0x7f) * scale
         if (!(b & 0x80)) break
+        if (scale === TENTH_BYTE) throw new Error(LONG_VARINT)
         scale *= 128
       }
       x += unzigzag(v)
@@ -386,6 +369,7 @@ function ringInto(c: Cursor, builder?: GeometryBuilder, closed = false) {
         b = bytes[pos++]
         v += (b & 0x7f) * scale
         if (!(b & 0x80)) break
+        if (scale === TENTH_BYTE) throw new Error(LONG_VARINT)
         scale *= 128
       }
       y += unzigzag(v)
@@ -401,8 +385,18 @@ function ringInto(c: Cursor, builder?: GeometryBuilder, closed = false) {
 }
 
 const NO_ATTRIBUTES: unknown[] = []
-function skipAttributes(c: Cursor, fields: AttributeField[]) {
+/** Pass over a copy's attributes, and return the bytes its strings take
+ * after the row's varints. */
+function skipAttributes(c: Cursor, fields: AttributeField[]): number {
   const low = c.wide(),
     high = c.high
-  for (let i = 0; i < fields.length; i++) if (isPresent(low, high, i)) c.varint()
+  let strings = 0
+  for (let i = 0; i < fields.length; i++) {
+    if (!isPresent(low, high, i)) continue
+    const kind = fields[i].kind
+    if (kind === 'float64' || kind === 'int') c.wide()
+    else if (kind === 'string') strings += c.varint()
+    else c.varint()
+  }
+  return strings
 }
