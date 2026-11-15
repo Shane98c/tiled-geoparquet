@@ -233,7 +233,7 @@ def _tiles(path, zooms=range(10, 17)):
 def test_metadata_declares_the_attribute_columns(built):
     _, columns = built
     lod = json.loads(pq.read_schema(columns).metadata[b'geo'])['lod_columns']
-    assert lod['version'] == '0.5.0' and lod['pack_version'] == 3
+    assert lod['version'] == '0.2.0' and lod['pack_version'] == 3
     assert [a['name'] for a in lod['attributes']] == ['flag', 'height', 'kind', 'rps', 'name']
     assert all(set(a) <= {'name', 'type', 'values'} for a in lod['attributes'])
     # every LOD holds them, those showing every row too
@@ -553,7 +553,7 @@ def _large_root(attributes):
         for z in range(15)
     }
     lod = {
-        'version': '0.5.0',
+        'version': '0.2.0',
         'column': 'lod',
         'order': 'hilbert_webmercator',
         'key': {'column': 'hilbert', 'depth': 24},
@@ -569,7 +569,7 @@ def _large_root(attributes):
     names = [f'attribute_{i}' for i in range(17)] + [f'class_{i}' for i in range(3)]
     indexed = ['hilbert', 'id', 'height', *names, 'region', 'geometry']
     root = {
-        'version': 9,
+        'version': 4,
         'lod': lod,
         'primary': 'geometry',
         'codecs': {name: 'ZSTD' for name in lods},

@@ -12,7 +12,7 @@ from __future__ import annotations
 import numpy as np
 import pyarrow as pa
 
-LOD_VERSION = '0.5.0'
+LOD_VERSION = '0.2.0'
 ENCODING = 'packed'
 PACK_VERSION = 3
 # a copy's presence bitmap is one 64-bit varint, a bit per attribute

@@ -940,7 +940,7 @@ def test_the_margin_is_a_number_of_pixels(indexed, tmp_path, margin, message):
         validate(bad, sample_rows=0)
 
 
-@pytest.mark.parametrize('version', ['0.4.0', '0.6.0', '1.5.0'])
+@pytest.mark.parametrize('version', ['0.1.0', '0.3.0', '1.2.0'])
 def test_another_format_version_is_refused(indexed, tmp_path, version):
     def change(table, geo):
         geo['lod_columns']['version'] = version

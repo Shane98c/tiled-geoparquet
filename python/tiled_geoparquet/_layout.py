@@ -36,7 +36,7 @@ from .spill import ranges
 from .unpack import PageBounds, leading_rows, leads, moved, shown_rows
 from .writer import DEFAULT_WORKERS
 
-VERSION = 9
+VERSION = 4
 BOOTSTRAP_BYTES = 16384
 # reserve room for file_bytes, footer_bytes and the header
 _ROOT_TARGET_BYTES = BOOTSTRAP_BYTES - 128

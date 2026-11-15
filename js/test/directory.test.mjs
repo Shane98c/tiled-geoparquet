@@ -29,7 +29,7 @@ const reader = (bytes, top, exact = EMPTY_TOP, reads = [], root = {}) =>
       },
     },
     {
-      version: 9,
+      version: 4,
       file_bytes: bytes.length,
       primary: 'geometry',
       codecs: { f2: 'UNCOMPRESSED' },

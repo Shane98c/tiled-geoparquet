@@ -1,7 +1,7 @@
 # Tiled GeoParquet
 
 _The `lod_columns` extension: a layout and metadata contract for GeoParquet
-files that serve a zoomable map directly. Implemented by the writer and reader in this repository. Draft 0.5.0._
+files that serve a zoomable map directly. Implemented by the writer and reader in this repository. Draft 0.2.0._
 
 The key words MUST, SHOULD and MAY are to be interpreted as in RFC 2119.
 'Layout', 'Metadata' and 'Geometry' are the contract; 'Reading without the
@@ -184,7 +184,7 @@ Under the `geo` key, a `lod_columns` object:
 
 | field               | type     | meaning                                                                                                                                                                                                                     |
 | ------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `version`           | string   | `0.5.0`; readers reject a different major version, and while the major is 0 a different minor as well, since minors may change the layout                                                                                   |
+| `version`           | string   | `0.2.0`; readers reject a different major version, and while the major is 0 a different minor as well, since minors may change the layout                                                                                   |
 | `column`            | string   | name of the LOD struct column                                                                                                                                                                                               |
 | `order`             | string   | `hilbert_webmercator`, see Layout 1                                                                                                                                                                                         |
 | `key`               | object   | `{column, depth}`: the nullable int64 column holding each row's Hilbert index at `depth` of its Web Mercator cell, with statistics and a page index, see Layout 1                                                           |
@@ -220,7 +220,7 @@ attributes in an attribute column, `class` as an index into its values:
 
 ```json
 "lod_columns": {
-  "version": "0.5.0",
+  "version": "0.2.0",
   "column": "lod",
   "order": "hilbert_webmercator",
   "key": { "column": "hilbert", "depth": 24 },

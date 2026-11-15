@@ -193,7 +193,7 @@ try {
     assert.equal(calls.filter((call) => call.method === 'HEAD').length, 1)
     allSent(sent, `the HEAD is sent with cache ${cache}`)
   }
-  setRoot({ version: 9, file_bytes: file.length })
+  setRoot({ version: 4, file_bytes: file.length })
   calls.length = 0
   file.set(new TextEncoder().encode('PAR1'), file.length - 4)
   const sized = await httpSource(['https://example.test/data.parquet'], { connections: 1 })
@@ -213,7 +213,7 @@ try {
     assert.equal(calls.length, 3)
     allSent(sent, `the footer magic check is sent with cache ${cache}`)
   }
-  for (const version of [3, 8]) {
+  for (const version of [3, 5]) {
     setRoot({ version, file_bytes: file.length })
     await assert.rejects(
       openReader(await httpSource(['https://example.test/data.parquet'])),
@@ -223,7 +223,7 @@ try {
   }
   // the root's copy of the LOD metadata is checked as the footer's is
   const lod = {
-    version: '0.5.0',
+    version: '0.2.0',
     margin: 2,
     encoding: 'packed',
     pack_version: 3,
@@ -240,19 +240,19 @@ try {
     [{ version: '0.1.0' }, /version 0.1.0 is not compatible/],
     [{ pack_version: 2 }, /encoding packed\/2 is not packed\/3/],
   ]) {
-    setRoot({ version: 9, file_bytes: file.length, lod: { ...lod, ...changed } })
+    setRoot({ version: 4, file_bytes: file.length, lod: { ...lod, ...changed } })
     await assert.rejects(
       openReader(await httpSource(['https://example.test/data.parquet'])),
       error,
       `a root whose LOD metadata has ${JSON.stringify(changed)}`,
     )
   }
-  setRoot({ version: 9, file_bytes: file.length, lod: undefined })
+  setRoot({ version: 4, file_bytes: file.length, lod: undefined })
   await assert.rejects(
     openReader(await httpSource(['https://example.test/data.parquet'])),
     /root holds no LOD metadata/,
   )
-  setRoot({ version: 9, file_bytes: file.length })
+  setRoot({ version: 4, file_bytes: file.length })
   // a server error on the check is retried by the next read
   failTail = 1
   const retried = await httpSource(['https://example.test/data.parquet'])

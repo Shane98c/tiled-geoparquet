@@ -1,4 +1,4 @@
-# Tiled GeoParquet spatial page index, version 9
+# Tiled GeoParquet spatial page index, version 4
 
 An optional physical profile of a packed LOD file. The logical
 `geo.lod_columns` metadata and every table value are unchanged, but that an
@@ -30,7 +30,7 @@ standard Parquet footer | footer_length:u32le | PAR1
 The footer retains the original row groups, columns, schema, statistics, and
 GeoParquet metadata, with relocated offsets and updated physical sizes.
 `lod_spatial_index` in its key/value metadata advertises the profile version
-and bootstrap location, `{"version":9,"offset":4,"length":16380}`. Primary
+and bootstrap location, `{"version":4,"offset":4,"length":16380}`. Primary
 geometry and source attribute chunks are copied byte for byte. LOD chunks are
 re-encoded in the original row order, with the same nullable binary schema and
 zstd, with page breaks at the LOD's finest tile grid. Every LOD page is a v1
@@ -85,7 +85,7 @@ directory boundaries can add reads.
 
 The compressed root is bounded by the first 16 KiB and contains:
 
-- `version: 9`, `file_bytes`: format and full file length checks. A reader
+- `version: 4`, `file_bytes`: format and full file length checks. A reader
   refuses any other version.
 - `footer_bytes`: the length of the standard footer's metadata, so a reader
   fetches the footer and its trailer in one request.

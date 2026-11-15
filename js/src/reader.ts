@@ -32,7 +32,7 @@ import { MAX_LATITUDE } from './web-mercator.js'
 export type Bbox = [number, number, number, number]
 
 export const LOD_KEY = 'lod_columns'
-export const LOD_VERSION = '0.5.0'
+export const LOD_VERSION = '0.2.0'
 export const ENCODING = 'packed'
 export const PACK_VERSION = 3
 const MAX_MARGIN = 128

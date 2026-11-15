@@ -30,7 +30,7 @@ import { MAX_LATITUDE } from './web-mercator.js'
 
 export const BOOTSTRAP_BYTES = 16384
 const MAGIC = 'LODIDX01'
-const VERSION = 9
+const VERSION = 4
 const MAX_LEVEL = 32
 /** An attribute slot's length and attribute, each a u32
  * little-endian, and its leaf's offset, a u64 little-endian */
