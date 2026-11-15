@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Tiled GeoParquet demo</title>
-    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css" />
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@6.18.0/dist/maplibre-gl.css" />
     <style>
       html,
       body,
@@ -44,8 +44,8 @@
           'Module scripts do not load from <code>file://</code>. Run <code>npm run demo</code> in <code>js/</code>, which serves this page at <code>http://localhost:8091/demo/</code>.'
       }
     </script>
-    <script src="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js"></script>
     <script type="module">
+      import * as maplibregl from 'https://unpkg.com/maplibre-gl@6.18.0/dist/maplibre-gl.mjs'
       import { readMetadata, registerProtocol, tileUrl, readRow } from './dist/tiles.js'
 
       const hud = document.getElementById('hud')

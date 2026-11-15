@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Tiled GeoParquet comparison</title>
-    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css" />
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@6.18.0/dist/maplibre-gl.css" />
     <style>
       html,
       body {
@@ -135,13 +135,18 @@
       >
       <button id="reload">Fresh load</button>
       <button id="reset">Reset counters (keep caches)</button>
+      <button id="diagnose">Copy diagnostics</button>
+      <span id="stall"></span>
       <span id="zoom"></span>
       <small id="notes"
         >Synchronized views; counts include tile boundary copies, not unique buildings. Different
         thinning and overzoom rules still apply.</small
       >
     </div>
-    <script src="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js"></script>
+    <dialog id="report">
+      <textarea readonly rows="24" cols="100"></textarea>
+      <form method="dialog"><button>Close</button></form>
+    </dialog>
     <script src="https://unpkg.com/pmtiles@4.5.0/dist/pmtiles.js"></script>
     <script type="module">
       // One pane per file given in the query string, all on the same view, each with a
@@ -152,12 +157,15 @@
       //   ?esri=       a Spatially Optimized Parquet file, read with Esri's MapLibre reference reader
       //   ?center=lon,lat ?zoom=  the starting view
       //   ?panes=lod,pmtiles,cogp,esri  selected readers; only these request data
+      //   ?stops=name:0,10,40  the colour stops of a numeric attribute, once per attribute
+      import * as maplibregl from 'https://unpkg.com/maplibre-gl@6.18.0/dist/maplibre-gl.mjs'
       import {
         readMetadata,
         registerProtocol,
         tileUrl,
         parseTileUrl,
         readStats,
+        readWaiting,
       } from './dist/tiles.js'
 
       const params = new URLSearchParams(location.search)
@@ -252,8 +260,8 @@
       const properties = () => (selectedStyle === 'geometry' ? [] : [selectedStyle])
 
       // What each style colours by: stops for numbers, values for categories.
-      // Short value tables and booleans are known from the metadata; anything
-      // else is sampled from the first tiles drawn with the style.
+      // Stops come from ?stops=, short value tables and booleans from the
+      // metadata; anything else is sampled from the first tiles drawn with the style.
       const RAMP = ['#d8c9b7', '#f0a24d', '#d0421b', '#55215a']
       const PALETTE = [
         '#d0421b',
@@ -270,6 +278,17 @@
         height: { stops: [0, 10, 40, 150] },
         subtype: { values: ['residential', 'commercial', 'industrial', 'civic'] },
       }
+      for (const entry of params.getAll('stops')) {
+        const colon = entry.lastIndexOf(':')
+        const stops = entry
+          .slice(colon + 1)
+          .split(',')
+          .map((stop) => (stop.trim() ? Number(stop) : NaN))
+        const ascending = (s, i) => Number.isFinite(s) && s > (stops[i - 1] ?? -Infinity)
+        if (colon > 0 && stops.length > 1 && stops.every(ascending))
+          domains[entry.slice(0, colon)] = { stops }
+        else console.warn(`ignored ?stops=${entry}: expected name:ascending,numbers`)
+      }
       for (const a of metadata?.lod?.attributes ?? []) {
         if (domains[a.name]) continue
         if (a.values && a.values.length <= PALETTE.length) domains[a.name] = { values: a.values }
@@ -277,9 +296,13 @@
       }
       const rampColor = (i, count) =>
         RAMP[count > 1 ? Math.round((i * (RAMP.length - 1)) / (count - 1)) : 0]
+      // names with no values among the features of a fully loaded view
+      const valueless = new Set()
       const color = () => {
         const domain = domains[selectedStyle]
-        if (selectedStyle === 'geometry' || !domain) return '#d0421b'
+        if (selectedStyle === 'geometry') return '#d0421b'
+        // until a domain is sampled, fills draw as outlines alone and dots not at all
+        if (!domain) return valueless.has(selectedStyle) ? MISSING : 'transparent'
         const value = ['get', selectedStyle]
         if (domain.stops)
           return [
@@ -353,20 +376,40 @@
         return n
       }
       const tileCounts = {}
-      const addProtocol = maplibregl.addProtocol.bind(maplibregl)
-      maplibregl.addProtocol = (scheme, handler) =>
-        addProtocol(scheme, async (request, abort) => {
-          const result = await handler(request, abort)
-          if (result?.data instanceof ArrayBuffer || ArrayBuffer.isView(result?.data)) {
-            tileCounts[request.url] = (tileCounts[request.url] ?? 0) + mvtFeatures(result.data)
+      // every tile request with how it ended, and every map error, for the diagnostics
+      const tileRequests = []
+      const mapErrors = []
+      const logged = {}
+      logged.addProtocol = (scheme, handler) =>
+        maplibregl.addProtocol(scheme, async (request, abort) => {
+          const entry = { url: request.url, began: performance.now() }
+          tileRequests.push(entry)
+          if (tileRequests.length > 600) {
+            const kept = tileRequests.filter((r, i) => r.ended === undefined || i >= 300)
+            tileRequests.splice(0, tileRequests.length, ...kept)
           }
-          return result
+          abort.signal.addEventListener('abort', () => {
+            entry.aborted = Math.round(performance.now() - entry.began)
+          })
+          try {
+            const result = await handler(request, abort)
+            if (result?.data instanceof ArrayBuffer || ArrayBuffer.isView(result?.data)) {
+              tileCounts[request.url] = (tileCounts[request.url] ?? 0) + mvtFeatures(result.data)
+            }
+            entry.outcome = 'ok'
+            return result
+          } catch (error) {
+            entry.outcome = `${error?.name}: ${error?.message}`
+            throw error
+          } finally {
+            entry.ended = performance.now()
+          }
         })
 
-      if (enabled('lod')) registerProtocol(maplibregl)
+      if (enabled('lod')) registerProtocol(logged)
       if (enabled('pmtiles')) {
         const protocol = new pmtiles.Protocol()
-        maplibregl.addProtocol('pmtiles', protocol.tile)
+        logged.addProtocol('pmtiles', protocol.tile)
       }
 
       const fill = (source, layer) => ({
@@ -419,7 +462,7 @@
           registerCogpProtocol,
           getCogpStats,
         } = await import('./dist/cogp/index.js')
-        registerCogpProtocol(maplibregl)
+        registerCogpProtocol(logged)
         const cogpSource = () => ({
           type: 'vector',
           tiles: [
@@ -552,10 +595,16 @@
           sampleDomain()
         })
         map.on('error', (e) => {
-          // MapLibre 5 also emits a plain Error('AbortError') when setTiles
-          // interrupts a preceding style update. Cancellation is expected;
-          // retain real transport/decoder failures in the HUD.
-          if (e.error?.name === 'AbortError' || e.error?.message === 'AbortError') return
+          const id = e.tile?.tileID.canonical
+          mapErrors.push({
+            pane: pane.title,
+            error: `${e.error?.name}: ${e.error?.message ?? e.error}`,
+            tile: id && `${id.z}/${id.x}/${id.y}`,
+            at: Math.round(performance.now()),
+          })
+          if (mapErrors.length > 100) mapErrors.shift()
+          // Cancellation is expected; the HUD keeps transport and decoder failures.
+          if (e.error?.name === 'AbortError') return
           hud.dataset.status = String(e.error?.message ?? e.error ?? e)
           console.error(pane.title, e.error ?? e)
         })
@@ -592,7 +641,13 @@
               if (value !== undefined && value !== null) found.push(value)
             }
           }
-        if (!found.length) return
+        if (!found.length) {
+          if (!valueless.has(name) && maps.every(({ map }) => map.loaded())) {
+            valueless.add(name)
+            paintStyle()
+          }
+          return
+        }
         if (found.every((value) => typeof value === 'number')) {
           const sorted = Float64Array.from(found).sort()
           const stops = [
@@ -774,6 +829,84 @@
         show()
       }
       setInterval(show, 500)
+
+      // What the page, the map and the reader's worker are waiting on, as text to
+      // report a view that never finishes loading with.
+      const diagnostics = async () => {
+        const now = performance.now()
+        const tile = (u) => {
+          if (!u.startsWith('lod://')) return u.slice(-48)
+          const { config, z, x, y } = parseTileUrl(u)
+          return `${z}/${x}/${y} ${(config.properties ?? []).join('+')}`
+        }
+        const answer = (promise) =>
+          Promise.race([
+            promise.catch((error) => `failed: ${error?.message ?? error}`),
+            new Promise((resolve) => setTimeout(() => resolve('no answer in 2 s'), 2000)),
+          ])
+        return JSON.stringify(
+          {
+            agent: navigator.userAgent,
+            page: location.href,
+            now: Math.round(now),
+            style: selectedStyle,
+            panes: maps.map(({ map, pane }) => ({
+              title: pane.title,
+              zoom: map.getZoom(),
+              center: map.getCenter().toArray(),
+              loaded: map.loaded(),
+              status: pane.hud.dataset.status,
+              tiles: Object.keys(pane.sources).flatMap((id) =>
+                (map.style.tileManagers[id]?._inViewTiles.getAllTiles() ?? []).map(
+                  ({ state, tileID }) =>
+                    `${state} ${tileID.canonical.z}/${tileID.canonical.x}/${tileID.canonical.y} at ${tileID.overscaledZ}`,
+                ),
+              ),
+            })),
+            open: tileRequests
+              .filter((r) => r.ended === undefined)
+              .map((r) => ({
+                tile: tile(r.url),
+                ms: Math.round(now - r.began),
+                aborted: r.aborted,
+              })),
+            recent: tileRequests
+              .filter((r) => r.ended !== undefined)
+              .slice(-40)
+              .map((r) => ({
+                tile: tile(r.url),
+                ms: Math.round(r.ended - r.began),
+                outcome: r.outcome,
+                aborted: r.aborted,
+                ago: Math.round(now - r.ended),
+              })),
+            errors: mapErrors.slice(-20),
+            waiting: enabled('lod') ? await answer(readWaiting()) : undefined,
+            stats: enabled('lod') ? await answer(readStats()) : undefined,
+          },
+          null,
+          1,
+        )
+      }
+      window.diagnostics = diagnostics
+      document.getElementById('diagnose').onclick = async () => {
+        const report = document.getElementById('report')
+        const text = report.querySelector('textarea')
+        text.value = await diagnostics()
+        report.showModal()
+        text.select()
+        navigator.clipboard?.writeText(text.value).catch(() => {})
+      }
+      setInterval(() => {
+        const waits = tileRequests
+          .filter((r) => r.ended === undefined && r.aborted === undefined)
+          .map((r) => performance.now() - r.began)
+        const longest = Math.max(0, ...waits)
+        document.getElementById('stall').textContent =
+          longest > 8000
+            ? ` ${waits.length} tiles waiting, the longest ${Math.round(longest / 1000)} s: copy diagnostics`
+            : ''
+      }, 1000)
     </script>
   </body>
 </html>

@@ -15,6 +15,7 @@ import {
 import { attributeFields } from './decode.js'
 import { TilePool, geometryTransfers } from './tile-pool.js'
 import type { CpuRequest, TileReply } from './tile-protocol.js'
+import type { RangeSource } from './reader.js'
 
 const scope = self as unknown as DedicatedWorkerGlobalScope
 const visible = new VisibleTileCache()
@@ -24,6 +25,7 @@ const readers = new Map<string, Promise<TileReader>>()
 let workerCount = 2
 let sourceOptions: { connections?: number; cache?: RequestCache } = {}
 let pool: Promise<TilePool | undefined> | undefined
+let helpers: TilePool | undefined
 let started = false
 // A bundler may emit this worker as a classic script, and only a module worker
 // refuses importScripts, so helpers start the way this worker was started.
@@ -43,6 +45,7 @@ const getPool = (): Promise<TilePool | undefined> => {
     try {
       const candidate = new TilePool(workerCount, scope.location.href, workerType)
       await candidate.ready
+      helpers = candidate
       return candidate
     } catch {
       return undefined
@@ -51,16 +54,32 @@ const getPool = (): Promise<TilePool | undefined> => {
 }
 const stats: Record<string, Transfer> = {}
 
+/** When each request the server has yet to answer was sent. */
+const unanswered = new Set<{ began: number }>()
 const fetched = scope.fetch.bind(scope)
 scope.fetch = async (input, init) => {
-  const response = await fetched(input, init)
+  const sent = { began: performance.now() }
+  unanswered.add(sent)
+  const response = await fetched(input, init).finally(() => unanswered.delete(sent))
   const key = String(input instanceof Request ? input.url : input)
   const entry = (stats[key] ??= { requests: 0, bytes: 0 })
   entry.requests++
   if (init?.method !== 'HEAD') entry.bytes += Number(response.headers.get('content-length') ?? 0)
   return response
 }
+const ages = (began: Iterable<{ began: number }>): number[] =>
+  Array.from(began, (entry) => Math.round(performance.now() - entry.began))
 const controllers = new Map<number, AbortController>()
+/** When each range read in flight began. */
+const reads = new Set<{ began: number }>()
+const timed = (file: RangeSource): RangeSource => ({
+  byteLength: file.byteLength,
+  slice(start, end, signal) {
+    const read = { began: performance.now() }
+    reads.add(read)
+    return file.slice(start, end, signal).finally(() => reads.delete(read))
+  },
+})
 
 const getReader = (url: string): Promise<TileReader> => {
   let reader = readers.get(url)
@@ -69,7 +88,7 @@ const getReader = (url: string): Promise<TileReader> => {
     // Cancelled slices are removed before this short window dispatches its ranges.
     const cached = (sourceOptions.cache ?? 'no-store') !== 'no-store'
     reader = httpSource(cached ? s3Mirrors(url) : [url], sourceOptions).then((file) =>
-      openReader(coalescing(file, { windowMs: 1 })),
+      openReader(coalescing(timed(file), { windowMs: 1 })),
     )
     readers.set(url, reader)
     reader.catch(() => readers.delete(url))
@@ -158,6 +177,11 @@ scope.addEventListener('message', (event: MessageEvent<WorkerRequest | CpuReques
         tiles: visible.size,
         decodes: geometryDecodes,
         projections: projectionJobs,
+      },
+      waiting: {
+        reads: ages(reads),
+        unanswered: ages(unanswered),
+        ...(helpers?.waiting ?? { jobs: [], queued: 0 }),
       },
     } satisfies WorkerResponse)
     return

@@ -14,6 +14,8 @@ interface Job {
 interface Slot {
   worker: Worker
   job?: Job
+  /** When the slot's job was sent to its worker. */
+  since?: number
   ready: boolean
 }
 
@@ -101,6 +103,14 @@ export class TilePool {
     const result = await this.submit({ type: 'attributes', task }, signal)
     return (result as { columns: Record<string, unknown[]> }).columns
   }
+  /** How long each job in a helper has run, in ms, and how many wait for one. */
+  get waiting(): { jobs: number[]; queued: number } {
+    const now = performance.now()
+    return {
+      jobs: this.slots.filter((slot) => slot.job).map((slot) => Math.round(now - slot.since!)),
+      queued: this.queue.length,
+    }
+  }
   private submit(work: TileWork, signal?: AbortSignal): Promise<TileResult> {
     signal?.throwIfAborted()
     if (this.failure) return Promise.reject(this.failure)
@@ -134,6 +144,7 @@ export class TilePool {
       const job = this.queue.shift()
       if (!job) return
       slot.job = job
+      slot.since = performance.now()
       try {
         const work = copyWork(job.work)
         slot.worker.postMessage({ ...work, id: job.id } satisfies TileJob, workTransfers(work))

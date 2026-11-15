@@ -386,7 +386,7 @@ default) caps DuckDB.
 ### In a MapLibre app
 
 ```js
-import maplibregl from 'maplibre-gl'
+import * as maplibregl from 'maplibre-gl'
 import { registerProtocol, vectorSource, prefetch, readRow } from 'tiled-geoparquet/tiles'
 
 const url = 'https://example.com/buildings.lod.parquet'
@@ -674,10 +674,12 @@ show response-body bytes, requests, cumulative tile feature deliveries, and map
 idle times. These are not unique visible-feature counts or wire-transfer
 measurements. The default blank background keeps basemap loading out of those
 timings; add `basemap=1` for a basemap. Map idle includes rendering and is not
-a precise first-paint measurement. The style controls target the Japan building
-fixtures: height is in both formats' tiles, an attribute of the GeoParquet
-file, while subtype is fetched from GeoParquet source rows and is stored in
-the PMTiles archive.
+a precise first-paint measurement. The style menu lists the GeoParquet file's
+attributes and its other source columns. A numeric attribute is coloured by
+quantiles of the values in view, or by the stops a `stops=name:0,10,40` query
+parameter gives, once per attribute. In the Japan building fixtures, height is
+in both formats' tiles, an attribute of the GeoParquet file, while subtype is
+fetched from GeoParquet source rows and is stored in the PMTiles archive.
 
 Use **Fresh load** to recreate readers at the current location and style;
 **Reset counters** keeps caches warm. Browser HTTP caches can survive Fresh
@@ -685,7 +687,9 @@ load. Pan away and return, then switch between geometry, height, and subtype to
 feel navigation and attribute reuse. The files have different thinning and
 overzoom rules, so compare visual coverage as well as speed. GeoParquet retains
 whole overview features and original source rows; this PMTiles archive stops at
-z14 and overzooms beyond it.
+z14 and overzooms beyond it. **Copy diagnostics** reports what the page, the
+map and the reader's worker are waiting on, for a view that does not finish
+loading.
 
 ### Validation
 

@@ -47,9 +47,22 @@ const decode = (token: string): SourceConfig => {
   return JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0))))
 }
 
+/** The requests a URL has answered and the body bytes those answers declared. */
 export interface Transfer {
   requests: number
   bytes: number
+}
+
+/** What the worker waits on, as ages in ms. */
+export interface Waiting {
+  /** Range reads in flight. */
+  reads: number[]
+  /** Requests the server has yet to answer. */
+  unanswered: number[]
+  /** Tile jobs in a helper worker. */
+  jobs: number[]
+  /** How many jobs wait for a helper. */
+  queued: number
 }
 
 export type WorkerRequest =
@@ -68,6 +81,7 @@ export type WorkerResponse =
       ok: true
       stats: Record<string, Transfer>
       cache?: { bytes: number; tiles: number; decodes: number; projections: number }
+      waiting: Waiting
     }
   | {
       id: number
@@ -188,10 +202,18 @@ export const readRow = async (url: string, rowIndex: number, columns: string[]) 
   return 'row' in response ? response.row : {}
 }
 
-/** Bytes and requests the worker has fetched, by URL. */
+/** Requests the worker has had answered and the bytes they declared, by URL. */
 export const readStats = async (): Promise<Record<string, Transfer>> => {
   const response = await call({ type: 'stats' })
   return 'stats' in response ? response.stats : {}
+}
+
+/** What the worker is waiting on: a tile that never arrives shows here as a
+ * read, a request or a job that never ends. */
+export const readWaiting = async (): Promise<Waiting> => {
+  const response = await call({ type: 'stats' })
+  if (!('waiting' in response)) throw new Error('the worker sent no stats')
+  return response.waiting
 }
 
 /**
