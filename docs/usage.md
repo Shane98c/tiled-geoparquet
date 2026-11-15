@@ -738,7 +738,8 @@ that attribute pages are cut where their LOD's pages are, but for one page
 per run of overview pages without a value, read from the attribute column,
 that an attribute leaf lists length 0 exactly beside those overview pages,
 and that attribute pages
-are v1 PLAIN or BYTE_STREAM_SPLIT pages in the root's attribute codec. Files
+are v1 PLAIN pages, or BYTE_STREAM_SPLIT ones in a FLOAT or DOUBLE column, in
+the root's attribute codec. Files
 without a
 spatial directory get the packed-value and offset-index
 checks. This is a layout and reader contract check; it does not

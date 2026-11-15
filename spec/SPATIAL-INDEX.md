@@ -66,9 +66,9 @@ page showing a row with a value of the attribute has an attribute page
 holding exactly its rows, and each maximal run of consecutive LOD pages of
 the row group showing no row with one is a single attribute page,
 of nulls, holding the run's rows. Each is a v1 data page with RLE/bit-packed hybrid definition levels and
-no dictionary, of PLAIN values, or BYTE_STREAM_SPLIT ones for a fixed-width
-numeric type; the reference writer encodes a chunk both ways and keeps the
-smaller. All attribute column chunks share one codec, the root's
+no dictionary, of PLAIN values, or BYTE_STREAM_SPLIT ones in a FLOAT or DOUBLE
+column, the two types every reader of that encoding decodes; the reference
+writer encodes such a chunk both ways and keeps the smaller. All attribute column chunks share one codec, the root's
 `attribute_codec`. The column remains an ordinary nullable Parquet column,
 whose values a reader matches to rows through the LOD's pages. A reader
 MUST refuse an attribute page it reads that holds a value past as many rows

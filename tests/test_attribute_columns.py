@@ -372,6 +372,41 @@ def test_attribute_pages_are_cut_where_overview_pages_are(built):
     assert merged, 'some overview pages without a value share an attribute page'
 
 
+def test_only_float_and_double_attributes_use_the_split_encoding(built, auto):
+    """DuckDB 1.5 decodes BYTE_STREAM_SPLIT for FLOAT and DOUBLE alone, so an
+    attribute of any other type, a half float among them, is PLAIN."""
+    encoded = {}
+    for path in (built[1], auto[0]):
+        metadata = pq.ParquetFile(path).metadata
+        for g in range(metadata.num_row_groups):
+            for c in range(metadata.row_group(g).num_columns):
+                chunk = metadata.row_group(g).column(c)
+                if chunk.path_in_schema.startswith('lod_attributes.'):
+                    encoded.setdefault(chunk.physical_type, set()).update(chunk.encodings)
+    assert {'INT32', 'FIXED_LEN_BYTE_ARRAY', 'DOUBLE'} <= set(encoded)
+    split = {kind for kind, encodings in encoded.items() if 'BYTE_STREAM_SPLIT' in encodings}
+    assert split <= {'FLOAT', 'DOUBLE'}, split
+
+
+def test_a_split_page_outside_float_and_double_is_refused(tmp_path, built, monkeypatch):
+    layout = importlib.import_module('tiled_geoparquet._layout')
+    monkeypatch.setattr(layout, '_splits', pa.types.is_integer)
+    staged = tmp_path / 'staged.parquet'
+    _write_unindexed(
+        built[0], staged, zooms=range(10, 16), complete_from=14, attributes=['height'], log=_quiet
+    )
+    out = finalize_layout(staged, tmp_path / 'split.parquet', workers=1, log=_quiet)
+    group = pq.ParquetFile(out).metadata.row_group(0)
+    chunks = [group.column(c) for c in range(group.num_columns)]
+    assert any(
+        chunk.physical_type == 'INT32' and 'BYTE_STREAM_SPLIT' in chunk.encodings
+        for chunk in chunks
+        if chunk.path_in_schema.startswith('lod_attributes.')
+    )
+    with pytest.raises(ValidationError, match='v1 data pages of PLAIN values'):
+        validate(out, full=True)
+
+
 def test_source_columns_keep_their_pages(auto):
     """An attribute's source column is copied as it was written."""
     out, plain = auto

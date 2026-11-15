@@ -834,6 +834,12 @@ def _source_bounds(path=None):
     return _bounds.get(path)
 
 
+def _splits(value_type):
+    """Whether an attribute column of `value_type` is tried BYTE_STREAM_SPLIT:
+    FLOAT and DOUBLE, the types DuckDB 1.5 reads in that encoding."""
+    return pa.types.is_float32(value_type) or pa.types.is_float64(value_type)
+
+
 def _attribute_pages(parquet, group, leaf, bounds, path, compression_level, held, leading):
     """Encode the attribute column `leaf` of row group `group` into the
     Parquet file `path` with a page per span of `bounds`, its LOD's page
@@ -844,13 +850,14 @@ def _attribute_pages(parquet, group, leaf, bounds, path, compression_level, held
     rows hold a value in a few bytes however few of its rows are shown.
     `held` is the row of `parquet` holding the value of each row the LOD
     shows, in their order, and `leading` the row holding it here. No
-    dictionary, so each page decodes alone. A fixed-width column is written
-    PLAIN and BYTE_STREAM_SPLIT and keeps the smaller: split bytes compress
-    better for continuous values, PLAIN for values that repeat whole. Returns
-    `path` and which spans hold a value."""
+    dictionary, so each page decodes alone. A FLOAT or DOUBLE column is
+    written PLAIN and BYTE_STREAM_SPLIT and keeps the smaller: split bytes
+    compress better for continuous values, PLAIN for values that repeat
+    whole. Every other column is PLAIN. Returns `path` and which spans hold
+    a value."""
     table = parquet.read_row_group(group, columns=[leaf])
     value_type = _leaf_type(parquet, leaf)
-    fixed = pa.types.is_floating(value_type) or pa.types.is_integer(value_type)
+    split = _splits(value_type)
     values = table.column(0).combine_chunks()
     for part in leaf.split('.', 2)[1:]:
         values = values.field(part)
@@ -863,7 +870,7 @@ def _attribute_pages(parquet, group, leaf, bounds, path, compression_level, held
     valued, bounds = attribute_cuts(present, bounds)
     longest = max(int(np.diff(bounds).max()) if len(bounds) > 1 else 1, 1)
     written = []
-    for encoding in ('PLAIN', 'BYTE_STREAM_SPLIT') if fixed else ('PLAIN',):
+    for encoding in ('PLAIN', 'BYTE_STREAM_SPLIT') if split else ('PLAIN',):
         out = path.with_suffix(f'.{encoding}.parquet')
         with pq.ParquetWriter(
             out,

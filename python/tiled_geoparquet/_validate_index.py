@@ -40,6 +40,9 @@ from ._layout import (
 )
 from .unpack import shown_rows
 
+# FLOAT and DOUBLE among the physical types of a column chunk's metadata
+SPLIT_TYPES = (4, 5)
+
 
 def check_index(path, parquet, lod):
     """Return normally for a file without the spatial index; raise ValueError on
@@ -578,8 +581,9 @@ def _attribute_pages(read, parquet, leaf, lod_chunks, chunks, shown, led):
     the directory lists, the indexes `shown` per row group, each of length 0
     beside an overview page without a value. Raises unless every chunk's
     pages hold the rows its LOD chunk's do, but a page for each run of
-    overview pages without a value, each a v1 data page of PLAIN or
-    BYTE_STREAM_SPLIT values with RLE definition levels, and unless its
+    overview pages without a value, each a v1 data page of PLAIN values,
+    or BYTE_STREAM_SPLIT ones in a FLOAT or DOUBLE column, with RLE
+    definition levels, and unless its
     values lead their overview pages: `led` counts, per row group, the rows
     each overview page shows, and a value lies on one of that many leading
     rows of its page."""
@@ -604,7 +608,8 @@ def _attribute_pages(read, parquet, leaf, lod_chunks, chunks, shown, led):
                 "an attribute column's pages are not cut where its LOD's are, "
                 'with a page for each run of overview pages without a value'
             )
-        _check_pages(read, cm, byte, length, np.diff(bounds), (0, 9))
+        split = get(cm, 1) in SPLIT_TYPES
+        _check_pages(read, cm, byte, length, np.diff(bounds), (0, 9) if split else (0,))
         part = _index_part(*chunk)
         beside = np.searchsorted(bounds, lod_bounds[listed], 'right') - 1
         parts.append(
