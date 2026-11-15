@@ -56,14 +56,14 @@ simulated latency; elapsed times are not a CDN performance benchmark.
 
 | Tokyo tile | GeoParquet bytes | PMTiles bytes | Requests, each |
 | ---------- | ---------------: | ------------: | -------------: |
-| z8         |          623,663 |       499,425 |              2 |
-| z11        |          274,054 |       306,211 |              2 |
-| z12        |          328,860 |       363,153 |              2 |
+| z8         |          556,454 |       499,425 |              2 |
+| z11        |          259,390 |       306,211 |              2 |
+| z12        |          309,967 |       363,153 |              2 |
 
-Request counts match. At z11 and z12 GeoParquet transfers 10% and 9% fewer
-bytes than PMTiles. Its tiles hold 4% and 3% fewer features, all of them
-boundary copies; inside the tile it has 2% more. At z8 it transfers 25% more
-bytes, with 1% more features inside the tile: there, page layout and geometry
+Request counts match. At z11 and z12 GeoParquet transfers 15% fewer bytes
+than PMTiles. Its tiles hold 4% and 3% fewer features, all of them boundary
+copies; inside the tile it has 2% more. At z8 it transfers 11% more bytes,
+with 1% more features inside the tile: there, page layout and geometry
 encoding cost more than PMTiles' pre-cut tiles. These tile measurements do not
 establish equal whole-session performance across datasets or devices.
 
@@ -76,8 +76,10 @@ Esri SOP over the public internet.
 Source versus writer output: all 53,742,978 rows pass count, XOR and sum checks
 of whole-row hashes across all 23 source analytical columns, including IDs and
 original geometry. This is a multiset checksum, not an exact equality proof.
-Writer output versus indexed output: every column of every row compares equal,
-including schema metadata and bbox values.
+Writer output versus indexed output: the schema metadata is equal and every
+column of every row compares equal, bbox values included, except the attribute
+columns. The indexed file holds a page's attribute values on the page's leading
+rows, and all 15,456,854 of them compare equal in order.
 
 The build recipe is [`benchmarks/write-japan-tippecanoe.py`](../benchmarks/write-japan-tippecanoe.py).
 It takes source, staging-output, and indexed-output paths. It uses private build
