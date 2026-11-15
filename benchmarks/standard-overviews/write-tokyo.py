@@ -26,7 +26,7 @@ from tiled_geoparquet import chain, drop_smallest, tiny_polygons
 from tiled_geoparquet._layout import finalize_layout
 from tiled_geoparquet.writer import _write_unindexed
 
-JAPAN = 'https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/0fcab25/japan_buildings.parquet'
+JAPAN = 'https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/9fc50d5/japan_buildings.parquet'
 BOX = (139.39, 35.45, 140.10, 35.90)
 
 
@@ -37,7 +37,7 @@ def cut(out: Path):
     con.execute(
         f"""
         COPY (
-            SELECT * EXCLUDE (bbox, hilbert, lod) FROM read_parquet('{JAPAN}')
+            SELECT * EXCLUDE (bbox, hilbert, lod, lod_attributes) FROM read_parquet('{JAPAN}')
             WHERE bbox.xmax >= {xmin} AND bbox.xmin <= {xmax}
               AND bbox.ymax >= {ymin} AND bbox.ymin <= {ymax}
               AND ST_XMax(geometry) >= {xmin} AND ST_XMin(geometry) <= {xmax}
