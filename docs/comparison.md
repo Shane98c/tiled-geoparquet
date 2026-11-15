@@ -89,7 +89,7 @@ hosted releases:
 cd js && npm ci && npm run build
 npx esbuild vendor/esri-sop/index.ts --bundle --platform=node --format=esm --outfile=test/esri-node.mjs
 R=https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/
-BASE=${R}6c3a4f9/ LOD=${R}6088775/japan_buildings.parquet \
+BASE=${R}6c3a4f9/ LOD=${R}9fc50d5/japan_buildings.parquet \
   COGP=${R}6c3a4f9/japan_buildings.cogp-2.2.2.parquet \
   PMTILES=japan_buildings.pmtiles node test/compare4.mjs
 ```
