@@ -131,6 +131,7 @@ export const setSourceOptions = (options: {
     !(Number.isInteger(connections) && connections >= 1 && connections <= 6)
   )
     throw new Error('Expected 1–6 connections')
+  if (options.rangeParam === '') throw new Error('rangeParam must name a parameter')
   if (worker) throw new Error('Set source options before opening a source')
   sourceOptions = { ...options }
 }

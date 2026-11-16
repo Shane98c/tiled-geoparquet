@@ -81,11 +81,16 @@ export const httpSource = async (
     throw new Error('connections must be a whole number, 1 or more')
   if (rangeParam !== undefined && !rangeParam) throw new Error('rangeParam must name a parameter')
   const mode: { cache?: RequestCache } = cache === 'default' ? {} : { cache }
-  // the URL a request for bytes `start` up to `end` is sent to
-  const at = (url: string, start: number, end: number) =>
-    rangeParam === undefined
-      ? url
-      : `${url}${url.includes('?') ? '&' : '?'}${encodeURIComponent(rangeParam)}=${start}-${end - 1}`
+  // the URL a request for bytes `start` up to `end` is sent to: the parameter
+  // goes ahead of a fragment, which is no part of a request
+  const at = (url: string, start: number, end: number) => {
+    if (rangeParam === undefined) return url
+    const hash = url.indexOf('#')
+    const path = hash < 0 ? url : url.slice(0, hash)
+    const joined = path.includes('?') ? '&' : '?'
+    const fragment = hash < 0 ? '' : url.slice(hash)
+    return `${path}${joined}${encodeURIComponent(rangeParam)}=${start}-${end - 1}${fragment}`
+  }
   // A fixed leading range opens indexed files in one request. Unindexed files
   // use Content-Range for their size, then continue through the normal footer.
   const opening = fetch(at(urls[0], 0, 16384), {

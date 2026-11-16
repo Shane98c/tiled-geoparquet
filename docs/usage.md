@@ -625,12 +625,13 @@ sets for the tiles entry point before a file opens:
   are open: nine sent together came back 80 ms apart. Past the cache they run
   side by side. A view opened again then reads from the network where the
   cache answers from disk, about 0.5 s against 0.14 s for a zoom 4 view of
-  the US buildings. `cache: 'default'` keeps the cache, and the worker then
-  spreads requests over the three hostnames S3 answers on, three at a time.
+  the US buildings. `cache: 'default'` keeps the cache, and without a
+  `rangeParam` the worker then spreads requests over the three hostnames S3
+  answers on, three at a time.
 - `connections`, six, is how many connections to the host are open once the
   file is: five one-byte requests sent beside the file's first read open the
   others, so the first tiles' requests wait on no handshake. One sends none,
-  and it is one through the cache.
+  and it is one through the cache without a `rangeParam`.
 - `rangeParam`, unset, names a query parameter that carries each request's
   range, as in `?range=20000-20009`. Every range then has a URL of its own,
   so the cache has them in flight side by side and holds each for a later

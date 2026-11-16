@@ -58,10 +58,13 @@ const stats: Record<string, Transfer> = {}
 const fileUrl = (url: string): string => {
   const name = sourceOptions.rangeParam
   if (name === undefined) return url
-  const at = url.lastIndexOf(`${encodeURIComponent(name)}=`)
-  const range = url.slice(at + encodeURIComponent(name).length + 1)
-  return at > 0 && (url[at - 1] === '?' || url[at - 1] === '&') && /^\d+-\d+$/.test(range)
-    ? url.slice(0, at - 1)
+  const param = `${encodeURIComponent(name)}=`
+  const hash = url.indexOf('#')
+  const end = hash < 0 ? url.length : hash
+  const at = url.lastIndexOf(param, end)
+  const separated = at > 0 && (url[at - 1] === '?' || url[at - 1] === '&')
+  return separated && /^\d+-\d+$/.test(url.slice(at + param.length, end))
+    ? url.slice(0, at - 1) + url.slice(end)
     : url
 }
 
@@ -161,13 +164,15 @@ scope.addEventListener('message', (event: MessageEvent<WorkerRequest | CpuReques
       request.workers < 1 ||
       request.workers > 4 ||
       (request.connections !== undefined &&
-        (!Number.isInteger(request.connections) || request.connections < 1))
+        (!Number.isInteger(request.connections) || request.connections < 1)) ||
+      request.rangeParam === ''
     ) {
       scope.postMessage({
         id: request.id,
         ok: false,
         name: 'Error',
-        error: 'Configure 1–4 workers and 1 or more connections before opening a source',
+        error:
+          'Configure 1–4 workers, 1 or more connections and a named range parameter before opening a source',
       } satisfies WorkerResponse)
     } else {
       workerCount = request.workers

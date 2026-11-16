@@ -227,8 +227,8 @@
       <small id="notes"
         >Synchronized views; counts include tile boundary copies, not unique buildings. Different
         thinning and overzoom rules still apply. A request cancelled before its response began is
-        not counted; one cancelled after counts at its full size. Times run from the end of a move.
-        Every reader goes through the browser's cache, so a view opened again is faster.</small
+        not counted; one cancelled after counts at its full size. Times run from the end of a
+        move.</small
       >
     </div>
     <dialog id="report">
@@ -261,9 +261,14 @@
       const params = new URLSearchParams(location.search)
       // This layout's requests go through the browser's cache, each range under a URL of
       // its own, as the other readers' requests go through it.
-      if (params.get('cache') !== 'off') setSourceOptions({ rangeParam: 'range' })
+      const cached = params.get('cache') !== 'off'
+      if (cached) setSourceOptions({ rangeParam: 'range' })
       const url = params.get('url')
       const localServer = params.get('demoServer') === '1'
+      // the local server answers every request with no-store
+      if (cached && !localServer)
+        document.getElementById('notes').textContent +=
+          " Every reader goes through the browser's cache, so a view opened again is faster."
       const delay = Number(params.get('latency') ?? 50)
       const abs = (u) => {
         if (!u) return null
@@ -732,8 +737,17 @@
           if (pane.ready === false) return
           if (!Object.keys(pane.sources).every((id) => map.getSource(id))) return
           if (pane.refetching) {
+            // a style chosen while these tiles loaded has its tiles asked for now
+            if (pane.tilesFor !== selectedStyle) {
+              retile(map, pane)
+              return
+            }
+            // the new tiles are in: paint them, and let the idle after that paint end the
+            // style change's time, as it does in a pane painted at once
             pane.refetching = false
             paintStyle()
+            map.triggerRepaint()
+            return
           }
           pane.firstIdle ??= performance.now() - pane.started
           if (pane.pendingSince !== undefined) pane.lastIdle = performance.now() - pane.pendingSince
@@ -866,24 +880,28 @@
         for (const { map, pane } of maps) {
           if (pane.geometryOnly) continue
           pane.pendingSince = performance.now()
-          // A paint change in the task that calls setTiles has MapLibre parse the tiles it
-          // holds again without fetching the new ones, so a pane whose tiles change is
-          // painted when its map is next idle.
-          if (pane.lodUrl) {
-            const source = lodSource(pane.lodUrl, pane.lodOptions)
-            pane.refetching =
-              Boolean(map.getSource('lod')?.setTiles(source.tiles)) || pane.refetching
-            // Also handle a style choice made before style.load.
-            pane.sources.lod = source
-          }
-          if (pane.cogpSource) {
-            const source = pane.cogpSource()
-            pane.refetching =
-              Boolean(map.getSource('cogp')?.setTiles(source.tiles)) || pane.refetching
-            pane.sources.cogp = source
-          }
+          // MapLibre parses the tiles it holds again, without fetching the new ones, when a
+          // paint change follows setTiles in the same task, and when setTiles finds a tile
+          // still loading. So a pane whose tiles change is painted at its map's next idle,
+          // and a style chosen before then has its tiles asked for at that idle.
+          if (!pane.refetching) pane.refetching = retile(map, pane)
         }
         paintStyle()
+      }
+      // Give a pane's sources the tiles of the selected style; whether any is on the map.
+      // A source the map does not have yet is added with them at style.load.
+      function retile(map, pane) {
+        let changed = false
+        if (pane.lodUrl) {
+          pane.sources.lod = lodSource(pane.lodUrl, pane.lodOptions)
+          changed = Boolean(map.getSource('lod')?.setTiles(pane.sources.lod.tiles)) || changed
+        }
+        if (pane.cogpSource) {
+          pane.sources.cogp = pane.cogpSource()
+          changed = Boolean(map.getSource('cogp')?.setTiles(pane.sources.cogp.tiles)) || changed
+        }
+        pane.tilesFor = selectedStyle
+        return changed
       }
       const reload = () => {
         const view = maps[0]?.map

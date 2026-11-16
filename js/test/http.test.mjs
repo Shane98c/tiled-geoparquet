@@ -133,9 +133,12 @@ try {
   assert.equal(calls.length, 1, 'through the cache a source opens with one connection')
   // a range parameter gives every range a URL of its own, through the cache,
   // with six connections opened past it as without one
-  for (const [url, joined] of [
-    [mirrors[0], '?'],
-    [mirrors[0] + '?v=2', '&'],
+  // ahead of a fragment, which no request carries
+  for (const [url, keyedUrl] of [
+    [mirrors[0], (range) => `${mirrors[0]}?range=${range}`],
+    [mirrors[0] + '?v=2', (range) => `${mirrors[0]}?v=2&range=${range}`],
+    [mirrors[0] + '?v=2#map', (range) => `${mirrors[0]}?v=2&range=${range}#map`],
+    [mirrors[0] + '#map', (range) => `${mirrors[0]}?range=${range}#map`],
   ]) {
     calls.length = 0
     const keyed = await httpSource([url], { rangeParam: 'range' })
@@ -145,8 +148,8 @@ try {
         .filter((call) => !opener(call))
         .map((call) => [call.url, call.headers.Range, Object.hasOwn(call, 'cache')]),
       [
-        [`${url}${joined}range=0-16383`, 'bytes=0-16383', false],
-        [`${url}${joined}range=20000-20009`, 'bytes=20000-20009', false],
+        [keyedUrl('0-16383'), 'bytes=0-16383', false],
+        [keyedUrl('20000-20009'), 'bytes=20000-20009', false],
       ],
       'each range is requested under its own URL with no cache mode',
     )
