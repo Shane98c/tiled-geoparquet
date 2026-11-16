@@ -75,7 +75,6 @@ export type WorkerRequest =
       id: number
       type: 'configure'
       workers: number
-      connections?: number
       cache?: RequestCache
       rangeParam?: string
     }
@@ -87,6 +86,7 @@ export type WorkerResponse =
       id: number
       ok: true
       stats: Record<string, Transfer>
+      parts?: Record<string, Record<string, number>>
       cache?: { bytes: number; tiles: number; decodes: number; projections: number }
       waiting: Waiting
     }
@@ -108,29 +108,16 @@ export const setWorkerCount = (count: number): void => {
   if (worker) throw new Error('Set worker count before opening a source')
   workerCount = count
 }
-let sourceOptions: { connections?: number; cache?: RequestCache; rangeParam?: string } = {}
+let sourceOptions: { cache?: RequestCache; rangeParam?: string } = {}
 /** Set how files are requested before prefetch, readMetadata, or
- * registerProtocol. `connections`, 1–6, is how many connections to each host
- * a file opens with: one-byte requests sent beside its first read open them,
- * which spares the first tiles' parallel requests a handshake each on
- * HTTP/1.1, and one sends none. `cache` is the cache mode of every request:
+ * registerProtocol. `cache` is the cache mode of every request:
  * `no-store` sends a tile's requests side by side, where Chrome's HTTP cache
  * answers the range requests of one URL one at a time. `rangeParam` names a
  * query parameter that carries each request's range, so every range has a URL
  * of its own, which the cache holds for a later visit and has in flight beside
  * the others; requests then go through the cache unless `cache` names a mode.
  */
-export const setSourceOptions = (options: {
-  connections?: number
-  cache?: RequestCache
-  rangeParam?: string
-}): void => {
-  const { connections } = options
-  if (
-    connections !== undefined &&
-    !(Number.isInteger(connections) && connections >= 1 && connections <= 6)
-  )
-    throw new Error('Expected 1–6 connections')
+export const setSourceOptions = (options: { cache?: RequestCache; rangeParam?: string }): void => {
   if (options.rangeParam === '') throw new Error('rangeParam must name a parameter')
   if (worker) throw new Error('Set source options before opening a source')
   sourceOptions = { ...options }
@@ -218,9 +205,25 @@ export const readRow = async (url: string, rowIndex: number, columns: string[]) 
 }
 
 /** Requests the worker has had answered and the bytes they declared, by URL. */
-export const readStats = async (): Promise<Record<string, Transfer>> => {
+export const readStats = async (): Promise<Record<string, Transfer>> => (await readCounts()).stats
+
+/** The transfers that `readStats` returns, with `parts` from the same worker
+ * reply: for each indexed file, by URL, the bytes that its reader has read,
+ * grouped by what they contain. The groups are `index`, `shapes`,
+ * `column:<name>` for an attribute's pages and `table:<name>` for a source
+ * column's pages. A request's bytes are counted when its response begins and
+ * a part's bytes when they have arrived. Parts leave out the bytes between
+ * nearby ranges that were merged into one request, so a file's parts add up
+ * to no more than its bytes. */
+export const readCounts = async (): Promise<{
+  stats: Record<string, Transfer>
+  parts: Record<string, Record<string, number>>
+}> => {
   const response = await call({ type: 'stats' })
-  return 'stats' in response ? response.stats : {}
+  return {
+    stats: 'stats' in response ? response.stats : {},
+    parts: ('parts' in response && response.parts) || {},
+  }
 }
 
 /** What the worker is waiting on: a tile that never arrives shows here as a

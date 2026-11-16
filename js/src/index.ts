@@ -1,5 +1,13 @@
 export { GeoParquetReader, LOD_KEY, LOD_VERSION, ENCODING, PACK_VERSION } from './reader.js'
-export type { Lod, Bbox, LodMetadata, LodRows, PrimaryRows, RangeSource } from './reader.js'
+export type {
+  AttributeSummary,
+  Lod,
+  Bbox,
+  LodMetadata,
+  LodRows,
+  PrimaryRows,
+  RangeSource,
+} from './reader.js'
 export { GeometryBuilder } from './geometry.js'
 export type { GeometryType, LodGeometry } from './geometry.js'
 export { coalescing, httpSource, s3Mirrors } from './range-buffer.js'

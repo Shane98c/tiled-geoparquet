@@ -144,7 +144,7 @@ A conforming file MUST satisfy:
 The validator checks the version, the version of the
 [spatial index](SPATIAL-INDEX.md) a file's footer advertises and its root
 states, margin, encoding and per-LOD metadata, the
-attributes, the schema shapes, the attribute columns' shape and types against
+attributes and the shape of their summaries, the schema shapes, the attribute columns' shape and types against
 the attributes and `attribute_columns`, each attribute's source column type,
 the covering declaration and its GeoParquet version, covering statistics,
 page indexes, and a sample from the first row group: every LOD's values
@@ -184,21 +184,21 @@ The following SHOULD hold and are what the reference writer does:
 
 Under the `geo` key, a `lod_columns` object:
 
-| field               | type     | meaning                                                                                                                                                                                                                     |
-| ------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `version`           | string   | `0.2.0`; readers reject a different major version, and while the major is 0 a different minor as well, since minors may change the layout                                                                                   |
-| `column`            | string   | name of the LOD struct column                                                                                                                                                                                               |
-| `order`             | string   | `hilbert_webmercator`, see Layout 1                                                                                                                                                                                         |
-| `key`               | object   | `{column, depth}`: the nullable int64 column holding each row's Hilbert index at `depth` of its Web Mercator cell, with statistics and a page index, see Layout 1                                                           |
-| `zooms`             | int[]    | every zoom the file serves, ascending                                                                                                                                                                                       |
-| `tile_size`         | int      | pixels per tile the zooms assume (512)                                                                                                                                                                                      |
-| `margin`            | number   | pixels of a `tile_size` tile, from 0 to 128, past a tile's edge within which a feature centred outside the tile is copied into it as a straddler, see Layout 1                                                              |
-| `encoding`          | string   | `packed`, see Geometry                                                                                                                                                                                                      |
-| `pack_version`      | int      | `3`, the packed row format version; readers reject any other value                                                                                                                                                          |
-| `attributes`        | object[] | `{name, type, values?}` of attributes; `type` is the Arrow name of the declared type, see Geometry; optional `values` is a string dictionary holding every value of the attribute                                           |
-| `thinning`          | object   | description of the rule used; informational                                                                                                                                                                                 |
-| `lods`              | object   | LOD name to `{zooms, geometry_type, scale, offset, placeholder}`; `scale` and `offset` are `[x, y]` pairs in EPSG:3857 metres, `placeholder` the width in grid cells of the square drawn for a shape too small for the grid |
-| `attribute_columns` | object   | `{column, lods}`: the name of the attribute column struct and the LODs that hold the attributes in it, in declared order, see Layout 5; present exactly when there are attributes                                           |
+| field               | type     | meaning                                                                                                                                                                                                                                                       |
+| ------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version`           | string   | `0.2.0`; readers reject a different major version, and while the major is 0 a different minor as well, since minors may change the layout                                                                                                                     |
+| `column`            | string   | name of the LOD struct column                                                                                                                                                                                                                                 |
+| `order`             | string   | `hilbert_webmercator`, see Layout 1                                                                                                                                                                                                                           |
+| `key`               | object   | `{column, depth}`: the nullable int64 column holding each row's Hilbert index at `depth` of its Web Mercator cell, with statistics and a page index, see Layout 1                                                                                             |
+| `zooms`             | int[]    | every zoom the file serves, ascending                                                                                                                                                                                                                         |
+| `tile_size`         | int      | pixels per tile the zooms assume (512)                                                                                                                                                                                                                        |
+| `margin`            | number   | pixels of a `tile_size` tile, from 0 to 128, past a tile's edge within which a feature centred outside the tile is copied into it as a straddler, see Layout 1                                                                                                |
+| `encoding`          | string   | `packed`, see Geometry                                                                                                                                                                                                                                        |
+| `pack_version`      | int      | `3`, the packed row format version; readers reject any other value                                                                                                                                                                                            |
+| `attributes`        | object[] | `{name, type, values?, summary?}` of attributes; `type` is the Arrow name of the declared type, see Geometry; optional `values` is a string dictionary holding every value of the attribute; optional `summary` describes its values, see Attribute summaries |
+| `thinning`          | object   | description of the rule used; informational                                                                                                                                                                                                                   |
+| `lods`              | object   | LOD name to `{zooms, geometry_type, scale, offset, placeholder}`; `scale` and `offset` are `[x, y]` pairs in EPSG:3857 metres, `placeholder` the width in grid cells of the square drawn for a shape too small for the grid                                   |
+| `attribute_columns` | object   | `{column, lods}`: the name of the attribute column struct and the LODs that hold the attributes in it, in declared order, see Layout 5; present exactly when there are attributes                                                                             |
 
 All fields but `attribute_columns` are required; readers MUST ignore fields they do not know. Every
 zoom in `zooms` MUST appear in exactly one LOD and lie in `0..key.depth`, so
@@ -212,6 +212,32 @@ contiguous and ascending. Which zooms share an LOD is writer policy: the
 reference writer gives each zoom its own LOD until the zoom from which the
 thinning keeps every row, pairs zooms from it upward, and uses one LOD for all
 complete zooms when the full-detail geometry is small.
+
+### Attribute summaries
+
+An attribute may have a `summary` that describes the values in its source
+column, so that a viewer can choose a colour ramp or a legend before it reads
+any data. The summary covers the rows that the finest LOD shows, which are the
+rows whose primary geometry has finite bounds. It is informational: no reader
+needs it to decode a tile. It does not cover values that a thinning
+assigns to rows at an LOD (Layout 5).
+
+| field       | type      | present                                      | meaning                                                                                                                                                                                                                                              |
+| ----------- | --------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `count`     | int       | always                                       | number of rows whose value is not null                                                                                                                                                                                                               |
+| `min`       | number    | when a number has at least one finite value  | smallest finite value                                                                                                                                                                                                                                |
+| `max`       | number    | whenever `min` is present                    | largest finite value                                                                                                                                                                                                                                 |
+| `quantiles` | number[5] | whenever `min` is present                    | the 0.02, 0.25, 0.5, 0.75 and 0.98 quantiles of the finite values; each is the smallest value `v` such that at least that share of the finite values are less than or equal to `v`                                                                   |
+| `counts`    | int[]     | for a string with `values`, and for a `bool` | for a string, the number of rows with each entry of `values`, in the same order; for a `bool`, the number of rows that are false, then the number that are true. The counts add up to `count`. A value that only a thinning assigns has a count of 0 |
+
+`min`, `max` and `quantiles` are values of the declared type, written as the
+exact number that a reader decodes. A `float` attribute whose value is 2.4 is
+therefore written as 2.4000000953674316. From `min` through the quantiles to
+`max`, each value is greater than or equal to the one before. An integer attribute with at least one value has all
+three fields. The reference writer writes a summary for every attribute. The
+copy of this metadata in a [spatial index](SPATIAL-INDEX.md) root may omit
+summaries, so a reader that opens a file through its root has a summary only
+if the root includes it. Every summary is in the footer's copy.
 
 ### Example
 
@@ -232,8 +258,17 @@ attributes in an attribute column, `class` as an index into its values:
   "encoding": "packed",
   "pack_version": 3,
   "attributes": [
-    { "name": "height", "type": "float" },
-    { "name": "class", "type": "string", "values": ["commercial", "house"] }
+    {
+      "name": "height",
+      "type": "float",
+      "summary": { "count": 3369587, "min": 0.5, "max": 634, "quantiles": [2.5, 4.25, 6.75, 8.5, 18] }
+    },
+    {
+      "name": "class",
+      "type": "string",
+      "values": ["commercial", "house"],
+      "summary": { "count": 4585929, "counts": [69790, 4516139] }
+    }
   ],
   "attribute_columns": { "column": "lod_attributes", "lods": ["f8", "f13"] },
   "thinning": { "name": "combine(size_threshold(4), drop_rate(2.5))" },

@@ -584,7 +584,8 @@ def test_v2_source_pages_are_indexed(styled, tmp_path):
         )
         header, _ = loads_prefix(raw[chunk.data_page_offset :])
         assert get(header, 1) == 3, f'{name} pages are DATA_PAGE_V2'
-    assert _root(out)[1]['lod']['attributes'] == [{'name': 'height', 'type': 'int32'}]
+    (height,) = _root(out)[1]['lod']['attributes']
+    assert (height['name'], height['type']) == ('height', 'int32')
     validate(out, full=True)
 
 

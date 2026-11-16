@@ -59,8 +59,7 @@ async function replay({ kind, path, latency, connections, scenario, properties, 
   let limits, fetchTile
   if (kind === 'lod') {
     const worker = await workerInProcess()
-    // the replayed network has no connections for a reader to open ahead of its tiles
-    await worker.post({ type: 'configure', workers: 1, connections: 1 })
+    await worker.post({ type: 'configure', workers: 1 })
     const { metadata } = await worker.post({ type: 'open', url })
     const { sourceLimits } = await import(dist('source-limits.js'))
     limits = sourceLimits(metadata)

@@ -18,13 +18,6 @@ let exposeRange = true,
   status = 206,
   served = file.length,
   failTail = 0
-let failOpeners = false,
-  refuseOpeners = false,
-  brokenOpeners = false,
-  wholeFile = false,
-  pulled = 0,
-  cancelled = 0
-const opener = (call) => call.headers?.Range === 'bytes=0-0'
 // every request since `calls` was emptied names `sent` as its cache mode, or none
 const allSent = (sent, message) => {
   assert.ok(calls.length, message)
@@ -43,39 +36,10 @@ const MODES = [
   ['only-if-cached', 'only-if-cached'],
   ['default', undefined],
 ]
-globalThis.fetch = (url, options = {}) => {
-  // a runtime that takes no cache mode refuses the request before it is sent
-  if (refuseOpeners && opener(options) && 'cache' in options)
-    throw new TypeError("The 'cache' field is not implemented")
-  return respond(url, options)
-}
-const respond = async (url, options) => {
+globalThis.fetch = async (url, options = {}) => {
   calls.push({ url: String(url), ...options })
   if (options.method === 'HEAD')
     return new Response(null, { headers: { 'Content-Length': String(file.length) } })
-  if (opener(options) && failOpeners) throw new TypeError('connection refused')
-  if (opener(options) && brokenOpeners)
-    return new Response(
-      new ReadableStream({
-        pull(controller) {
-          controller.error(new TypeError('connection reset'))
-        },
-      }),
-      { status: 206 },
-    )
-  if (opener(options) && wholeFile)
-    return new Response(
-      new ReadableStream({
-        pull(controller) {
-          pulled++
-          controller.enqueue(new Uint8Array(65536))
-        },
-        cancel() {
-          cancelled++
-        },
-      }),
-      { status: 200 },
-    )
   const [, a, b] = options.headers.Range.match(/bytes=(\d+)-(\d+)/)
   if (Number(a) >= served) return new Response(null, { status: 416 })
   if (failTail && Number(b) === file.length - 1 && Number(a) === file.length - 8) {
@@ -90,49 +54,22 @@ const respond = async (url, options) => {
 }
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
 try {
-  // one-byte requests beside the opening read leave six connections open to each host
+  // a file opens with one request, to its first URL, past the cache
   const mirrors = ['https://a.test/data.parquet', 'https://b.test/data.parquet']
-  const opening = new AbortController()
-  await httpSource(mirrors, { signal: opening.signal })
+  await httpSource(mirrors)
   assert.deepEqual(
-    calls.map((call) => [call.url, call.headers.Range]),
-    [
-      [mirrors[0], 'bytes=0-16383'],
-      ...Array.from({ length: 5 }, () => [mirrors[0], 'bytes=0-0']),
-      ...Array.from({ length: 6 }, () => [mirrors[1], 'bytes=0-0']),
-    ],
-    'the first host has its opening read and five more, each other host six',
+    calls.map((call) => [call.url, call.headers.Range, call.cache]),
+    [[mirrors[0], 'bytes=0-16383', 'no-store']],
   )
-  assert.ok(
-    calls
-      .filter(opener)
-      .every((call) => call.cache === 'no-store' && call.signal === opening.signal),
-    'they bypass the cache and stop with the opening signal',
-  )
-  assert.equal(calls[0].cache, 'no-store', 'the opening read bypasses the cache')
   // every request of a source carries its cache mode, and `default` names none
   for (const [cache, sent] of MODES) {
     calls.length = 0
-    const moded = await httpSource(mirrors, { cache, connections: 1 })
+    const moded = await httpSource(mirrors, { cache })
     await moded.slice(20000, 20010)
     assert.equal(calls.length, 2)
     allSent(sent, `the opening read and a slice are sent with cache ${cache}`)
   }
-  calls.length = 0
-  await httpSource(mirrors, { connections: 3 })
-  assert.equal(
-    calls.filter(opener).length,
-    5,
-    'three connections a host are two and three requests',
-  )
-  calls.length = 0
-  await httpSource(mirrors, { connections: 1 })
-  assert.equal(calls.length, 1, 'one connection sends the opening read alone')
-  calls.length = 0
-  await httpSource(mirrors, { cache: 'default' })
-  assert.equal(calls.length, 1, 'through the cache a source opens with one connection')
   // a range parameter gives every range a URL of its own, through the cache,
-  // with six connections opened past it as without one
   // ahead of a fragment, which no request carries
   for (const [url, keyedUrl] of [
     [mirrors[0], (range) => `${mirrors[0]}?range=${range}`],
@@ -144,62 +81,24 @@ try {
     const keyed = await httpSource([url], { rangeParam: 'range' })
     await keyed.slice(20000, 20010)
     assert.deepEqual(
-      calls
-        .filter((call) => !opener(call))
-        .map((call) => [call.url, call.headers.Range, Object.hasOwn(call, 'cache')]),
+      calls.map((call) => [call.url, call.headers.Range, Object.hasOwn(call, 'cache')]),
       [
         [keyedUrl('0-16383'), 'bytes=0-16383', false],
         [keyedUrl('20000-20009'), 'bytes=20000-20009', false],
       ],
       'each range is requested under its own URL with no cache mode',
     )
-    assert.deepEqual(
-      calls.filter(opener).map((call) => [call.url, call.cache]),
-      Array.from({ length: 5 }, () => [url, 'no-store']),
-      'the connections open on the plain URL, past the cache',
-    )
   }
   calls.length = 0
-  await httpSource(mirrors, { rangeParam: 'range', cache: 'no-store', connections: 1 })
+  await httpSource(mirrors, { rangeParam: 'range', cache: 'no-store' })
   assert.deepEqual(
     [calls.length, calls[0].url, calls[0].cache],
     [1, `${mirrors[0]}?range=0-16383`, 'no-store'],
-    'a cache mode and a connection count given with it are kept',
+    'a cache mode given with it is kept',
   )
   await assert.rejects(httpSource(mirrors, { rangeParam: '' }), /rangeParam must name a parameter/)
-  for (const connections of [0, 1.5, -1, NaN])
-    await assert.rejects(
-      httpSource(mirrors, { connections }),
-      /connections must be a whole number/,
-      `connections ${connections} is refused`,
-    )
-  // a host that refuses them, or answers one with the whole file, still opens,
-  // and so does a runtime that refuses their cache mode as they are sent
-  failOpeners = true
-  assert.equal((await httpSource(mirrors)).byteLength, file.length)
-  failOpeners = false
-  refuseOpeners = true
   calls.length = 0
-  assert.equal(
-    (await httpSource(mirrors, { cache: 'default', connections: 6 })).byteLength,
-    file.length,
-  )
-  assert.equal(calls.length, 1, 'the opening read goes out and the refused requests do not')
-  refuseOpeners = false
-  // nor does one whose answer breaks off as it is read fail the open
-  brokenOpeners = true
-  assert.equal((await httpSource(mirrors)).byteLength, file.length)
-  await tick()
-  brokenOpeners = false
-  wholeFile = true
-  assert.equal((await httpSource(mirrors)).byteLength, file.length)
-  await tick()
-  assert.equal(cancelled, 11, 'a whole-file answer is cancelled')
-  assert.ok(pulled <= 22, `and not read: ${pulled} chunks pulled`)
-  wholeFile = false
-  await tick()
-  calls.length = 0
-  const source = await httpSource(['https://example.test/data.parquet'], { connections: 1 })
+  const source = await httpSource(['https://example.test/data.parquet'])
   assert.equal(calls.length, 1, 'indexed startup is one GET')
   assert.equal((await source.slice(0, 16384)).byteLength, 16384)
   assert.equal(calls.length, 1, 'openReader reuses the bootstrap')
@@ -217,7 +116,7 @@ try {
   truncate = false
   calls.length = 0
   exposeRange = false
-  await httpSource(['https://example.test/data.parquet'], { connections: 1 })
+  await httpSource(['https://example.test/data.parquet'])
   assert.equal(
     calls.length,
     2,
@@ -225,14 +124,14 @@ try {
   )
   for (const [cache, sent] of MODES) {
     calls.length = 0
-    await httpSource(['https://example.test/data.parquet'], { cache, connections: 1 })
+    await httpSource(['https://example.test/data.parquet'], { cache })
     assert.equal(calls.filter((call) => call.method === 'HEAD').length, 1)
     allSent(sent, `the HEAD is sent with cache ${cache}`)
   }
   setRoot({ version: 4, file_bytes: file.length })
   calls.length = 0
   file.set(new TextEncoder().encode('PAR1'), file.length - 4)
-  const sized = await httpSource(['https://example.test/data.parquet'], { connections: 1 })
+  const sized = await httpSource(['https://example.test/data.parquet'])
   assert.equal(calls.length, 1, 'the root sizes the file when Content-Range is hidden')
   assert.equal(sized.byteLength, file.length)
   assert.equal((await sized.slice(20000, 20010)).byteLength, 10)
@@ -243,7 +142,6 @@ try {
     calls.length = 0
     const checked = await httpSource(['https://example.test/data.parquet'], {
       cache,
-      connections: 1,
     })
     await checked.slice(20000, 20010)
     assert.equal(calls.length, 3)
@@ -305,14 +203,14 @@ try {
   calls.length = 0
   file.fill(0, 4, 12)
   new DataView(file.buffer).setUint32(file.length - 8, 200, true)
-  const unindexed = await httpSource(['https://example.test/data.parquet'], { connections: 1 })
+  const unindexed = await httpSource(['https://example.test/data.parquet'])
   assert.equal(calls.length, 2, 'unindexed startup needs head and tail, no redundant margin read')
   await unindexed.slice(file.length - 208, file.length)
   assert.equal(calls.length, 2)
   // a footer longer than the tail read is fetched in a further request
   for (const [cache, sent] of MODES) {
     calls.length = 0
-    await httpSource(['https://example.test/data.parquet'], { cache, connections: 1, tail: 64 })
+    await httpSource(['https://example.test/data.parquet'], { cache, tail: 64 })
     assert.equal(calls.length, 3, 'the opening read, the tail and the rest of the footer')
     allSent(sent, `the tail and footer reads are sent with cache ${cache}`)
   }

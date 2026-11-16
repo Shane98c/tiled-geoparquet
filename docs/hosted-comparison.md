@@ -68,13 +68,63 @@ is Esri's original.
 
 ## Interpreting the comparison
 
-The counters report response body bytes requested by each reader, including
-responses served from the browser HTTP cache; they are not wire-transfer totals.
-“Fresh load” clears reader caches by reloading the page, but the browser HTTP
-cache can survive. Use a fresh browser session for a first-visit comparison.
-“Reset counters” retains reader caches for continued navigation comparisons.
+The strip under the maps shows how many bytes each reader has requested since
+the page loaded, or since the counters were last reset. It counts response bodies, including any served from the
+browser's HTTP cache, so these are not wire-transfer totals. All panes follow
+the same camera, so the totals cover the same path.
 
-The archives still have different thinning and overzoom rules. The PMTiles
+Under each bytes bar is a thinner bar that shows how long that pane took to
+draw the view. The time bars share one scale. To the right of each row is the
+number of bytes and requests that the last move added on top of what the page
+already had, which can be zero.
+
+The Tiled GeoParquet bar is divided by what the bytes are: the file's index,
+the shapes drawn on the map, each attribute column that a style has used, and
+any other column that the reader looked up in the file's full table. The
+hosted page opens coloured by `class`, using the summary of that attribute in
+the file's metadata ([Attributes](usage.md#attributes)).
+
+“Fresh load” reloads the page, which clears the readers' caches. “Reset
+counters” keeps the caches, so you can compare navigation from that point.
+
+By default the readers' requests skip the browser's HTTP cache. Every load is
+then a first visit, and the times reflect only the network and the reader. The
+COGP reader is the exception: its released reader always uses the cache.
+Ticking “Browser cache” (`cache=on`) sends every reader's requests through the
+cache, so reopening a view reads from it. Chrome's cache handles one request
+per URL at a time, so range requests that a reader sends to a single URL are
+answered one after another. In this mode the Tiled GeoParquet reader puts each
+range in the URL ([Requests](usage.md#requests)), so every request has a URL
+of its own and none waits on another. The PMTiles library sends all its ranges
+to one URL, as it does on any page.
+
+The time for a first view is measured from the request for the file until the
+map is idle. The table gives medians of five loads from R2 on 2026-11-16, for
+the two readers that the page shows by default. A new browser profile has an
+empty cache, so the cache-on columns show a first visit through the cache and
+not a reopened view. Each
+load used a new browser profile with one reader on the page, in headless
+Chrome at 1280 by 900 with software rendering, styled by `class`. The Tokyo
+views are centred on 139.76, 35.68 and the Shibuya view on 139.7, 35.66.
+
+| View        | Tiled GeoParquet, cache off | PMTiles, cache off | Tiled GeoParquet, cache on | PMTiles, cache on |
+| ----------- | --------------------------: | -----------------: | -------------------------: | ----------------: |
+| Tokyo z8    |                      1.53 s |             0.72 s |                     1.68 s |            1.25 s |
+| Tokyo z11   |                      1.59 s |             1.05 s |                     1.44 s |            2.38 s |
+| Shibuya z13 |                      1.46 s |             1.01 s |                     1.55 s |            2.50 s |
+
+With the cache on, PMTiles took 1.3 to 1.5 s longer at z11 and z13 than with
+it off. The cache is the only difference between those two columns: it answers
+the library's range requests to one URL one after another.
+
+R2 serves these files over HTTP/1.1, and Chrome opens at most six connections
+to one host, so readers loaded on the same page share those six. With the
+cache off and the two readers side by side in half-width panes, each reader's
+first view took 0.07 to 0.19 s longer than the same half-width pane loaded
+alone. With the cache off, PMTiles finished first in every view, both alone
+and together. To time one reader, load it alone.
+
+The archives have different thinning and overzoom rules. The PMTiles
 tiles hold `class`, `height` and `subtype`, the attributes its tiler was
 given. The GeoParquet file keeps 17 of its columns as attributes, the
 writer's default, those three among them, and its reader styles by any other
@@ -96,10 +146,19 @@ node demo/build-share.mjs \
   --cogp https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/6c3a4f9/japan_buildings.cogp-2.2.2.parquet \
   --esri https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/6c3a4f9/japan_buildings.sop.parquet \
   --release 469acd1 \
-  --hide id
+  --hide id \
+  --style class \
+  --domains demo/japan-domains.json
 wrangler pages deploy /private/tmp/geoparquet-lod-share \
   --project-name geoparquet-lod-compare --branch main
 ```
+
+The `--domains` option takes a JSON file of fixed colour scales.
+`demo/japan-domains.json` sets the scales for `facade_color` and `roof_color`.
+These two columns in the style menu are looked up in the table, so the
+GeoParquet file has no summary for them. The script prints scales for the
+columns without a summary, so generate the JSON from a local copy of the file
+with `uv run python demo/domains.py japan_buildings.parquet > demo/japan-domains.json`.
 
 The builder supplies public defaults only when query parameters are absent, so
 links can override the initial view, style, or datasets. It leaves the local demo

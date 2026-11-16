@@ -44,6 +44,22 @@ from .unpack import shown_rows
 SPLIT_TYPES = (4, 5)
 
 
+def _copies(held, lod) -> bool:
+    """Whether a root's `held` is a copy of the footer's LOD metadata `lod`:
+    the same, but for the attribute summaries it leaves out."""
+    if not isinstance(held, dict) or not isinstance(held.get('attributes'), list):
+        return False
+    mine, declared = held['attributes'], lod['attributes']
+    return (
+        {**held, 'attributes': None} == {**lod, 'attributes': None}
+        and len(mine) == len(declared)
+        and all(
+            a == b or a == {k: v for k, v in b.items() if k != 'summary'}
+            for a, b in zip(mine, declared, strict=True)
+        )
+    )
+
+
 def check_index(path, parquet, lod):
     """Return normally for a file without the spatial index; raise ValueError on
     corruption. Holds the decoded directories, then one row group's keys and
@@ -146,7 +162,7 @@ def check_index(path, parquet, lod):
         root = json.loads(gzip.decompress(read(16, root_length)))
         if root.get('version') != INDEX_VERSION or root.get('file_bytes') != size:
             raise ValueError('spatial root version or file length disagrees with footer')
-        if root.get('lod') != lod:
+        if not _copies(root.get('lod'), lod):
             raise ValueError('spatial root metadata disagrees with footer')
         geo = json.loads(parquet.schema_arrow.metadata[b'geo'])
         if root.get('primary') != geo.get('primary_column', 'geometry'):

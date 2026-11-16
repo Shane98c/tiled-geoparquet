@@ -39,6 +39,8 @@ from .writer import DEFAULT_WORKERS
 BOOTSTRAP_BYTES = 16384
 # reserve room for file_bytes, footer_bytes and the header
 _ROOT_TARGET_BYTES = BOOTSTRAP_BYTES - 128
+# the most the attributes' summaries add to the root, packed
+_SUMMARY_BYTES = 4096
 MAGIC = b'LODIDX01'
 CODECS = ['UNCOMPRESSED', 'SNAPPY', 'GZIP', 'LZO', 'BROTLI', 'LZ4', 'ZSTD', 'LZ4_RAW']
 BRANCH_ENTRIES = 64
@@ -1100,6 +1102,12 @@ def _without_attributes(root):
     return lean
 
 
+def _without_summaries(root):
+    """`root` with no attribute's summary in its LOD metadata."""
+    attributes = [{k: v for k, v in a.items() if k != 'summary'} for a in root['lod']['attributes']]
+    return {**root, 'lod': {**root['lod'], 'attributes': attributes}}
+
+
 def fit_root(target, root, trees, names, indexed, branched=()):
     """Put the top nodes of `trees` in `root`: each LOD's under `directories`
     in the order of `names`, the primary directory's, under None, and the row
@@ -1113,7 +1121,11 @@ def fit_root(target, root, trees, names, indexed, branched=()):
     of `branched` take a level of branches before any other.
 
     The trees first fit the root without attributes, so they branch as in
-    the same file without them, and then with the attributes' metadata."""
+    the same file without them, and then with the attributes' metadata apart
+    from their summaries. The root's copy of the metadata then keeps the
+    summaries that pack to _SUMMARY_BYTES, the largest left out first, and
+    only a row directory branches to hold them: where none can, the largest
+    summary is left out, so the LOD and primary trees are as without any."""
 
     def place():
         tops = {name: _node(level, **shards) for name, (level, shards) in trees.items()}
@@ -1135,11 +1147,27 @@ def fit_root(target, root, trees, names, indexed, branched=()):
             trees[name] = _branches(target, *trees[name])
     tops = place()
     rows = [('column', n) for n in indexed]
-    for fitted in (_without_attributes, lambda root: root):
+    for fitted in (_without_attributes, _without_summaries):
         while len(_json(fitted(root))) > _ROOT_TARGET_BYTES:
             if not branch(tops, rows) and not branch(tops, list(trees)):
                 raise ValueError('LOD metadata exceeds the 16 KiB bootstrap')
             tops = place()
+    attributes = [dict(a) for a in root['lod']['attributes']]
+    root['lod'] = {**root['lod'], 'attributes': attributes}
+
+    def leave_out():
+        largest = max(
+            (a for a in attributes if 'summary' in a), key=lambda a: len(_json(a['summary']))
+        )
+        del largest['summary']
+
+    while len(_json(root)) - len(_json(_without_summaries(root))) > _SUMMARY_BYTES:
+        leave_out()
+    while len(_json(root)) > _ROOT_TARGET_BYTES:
+        if branch(tops, rows):
+            tops = place()
+        else:
+            leave_out()
 
 
 class _Tally:

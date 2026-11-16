@@ -419,7 +419,10 @@ def test_float16_overviews_hold_the_source_rounded(buildings, tmp_path):
     validate(out, full=True)
     f = pq.ParquetFile(out)
     lod = json.loads(f.schema_arrow.metadata[b'geo'])['lod_columns']
-    assert lod['attributes'] == [{'name': 'risk', 'type': 'halffloat'}]
+    (risk,) = lod['attributes']
+    assert (risk['name'], risk['type']) == ('risk', 'halffloat')
+    summarised = [risk['summary']['min'], risk['summary']['max'], *risk['summary']['quantiles']]
+    assert all(float(np.float16(v)) == v for v in summarised)
     risk = pq.read_table(out, columns=['risk']).column('risk').combine_chunks()
     assert risk.type == pa.float32(), 'the source column keeps full precision'
     rounded = risk.cast(pa.float16()).to_numpy(zero_copy_only=False)

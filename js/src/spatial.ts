@@ -600,6 +600,7 @@ export class SpatialReader implements TileReader {
   private readonly sourceLeaves = new Map<number, Cached<SourcePage[]>>()
   private readonly pages = new Map<number, { size: number; data: SharedLoad<ArrayBuffer> }>()
   private pageBytes = 0
+  private readonly parts: Record<string, number> = {}
   private fallback?: SharedLoad<GeoParquetReader>
 
   constructor(
@@ -607,6 +608,7 @@ export class SpatialReader implements TileReader {
     private readonly root: SpatialRoot,
   ) {
     checkIndexVersion(root.version)
+    this.parts.index = Math.min(BOOTSTRAP_BYTES, file.byteLength)
     this.bounds = root.bounds ?? [-180, -85.051129, 180, 85.051129]
     this.lod = root.lod
     this.primary = root.primary
@@ -738,7 +740,7 @@ export class SpatialReader implements TileReader {
       Promise.all(
         indexed.map(async (name) => {
           const pages = await this.columnPages(name, wanted, signal)
-          const payloads = await this.pageData(pages, signal)
+          const payloads = await this.pageData(pages, `table:${name}`, signal)
           const runs = pages.map((page, i) => ({ ...page, bytes: payloads[i] }))
           runs.forEach(checkPage)
           const task: ProjectionTask = {
@@ -809,7 +811,7 @@ export class SpatialReader implements TileReader {
     for (const name of columns)
       if (this.rowTrees.has(name))
         this.columnPages(name, spans, signal)
-          .then((pages) => this.pageData(pages, signal))
+          .then((pages) => this.pageData(pages, `table:${name}`, signal))
           .catch(() => {})
   }
 
@@ -883,8 +885,8 @@ export class SpatialReader implements TileReader {
       signal,
     )
     const [payloads, sourcePayloads] = await Promise.all([
-      this.pageData(pages, signal),
-      Promise.all(sources.map((list) => this.pageData(list, signal))),
+      this.pageData(pages, 'shapes', signal),
+      Promise.all(sources.map((list, i) => this.pageData(list, `table:${located[i]}`, signal))),
     ])
     signal?.throwIfAborted()
     const out: PrimaryRows = {
@@ -948,9 +950,24 @@ export class SpatialReader implements TileReader {
     return selected.flat()
   }
 
+  /** The bytes this reader has read, by what they hold: `index` for the root
+   * and the directory nodes, `shapes` for overview and primary geometry pages,
+   * `column:<name>` for an attribute's pages at an overview level and
+   * `table:<name>` for a source column's pages. A range is counted when it
+   * arrives, so neither a cancelled read nor a page already held counts. */
+  bytesByPart(): Record<string, number> {
+    return { ...this.parts }
+  }
+
   /** `length` bytes of the file from `offset`, refused before any request
-   * unless they lie inside the file. Every directory and page read is one. */
-  private read(offset: number, length: number, signal?: AbortSignal): Promise<ArrayBuffer> {
+   * unless they lie inside the file, and counted as `part` when they
+   * arrive. Every directory and page read is one. */
+  private read(
+    offset: number,
+    length: number,
+    part: string,
+    signal?: AbortSignal,
+  ): Promise<ArrayBuffer> {
     if (
       !Number.isSafeInteger(offset) ||
       !Number.isSafeInteger(length) ||
@@ -959,7 +976,14 @@ export class SpatialReader implements TileReader {
       offset + length > this.file.byteLength
     )
       return Promise.reject(new Error('spatial index byte range outside the file'))
-    return this.file.slice(offset, offset + length, signal)
+    const bytes = this.file.slice(offset, offset + length, signal)
+    bytes.then(
+      (read) => {
+        this.parts[part] = (this.parts[part] ?? 0) + read.byteLength
+      },
+      () => {},
+    )
+    return bytes
   }
 
   /** A node from `cache` or loaded and decoded, read at `length` bytes,
@@ -978,7 +1002,7 @@ export class SpatialReader implements TileReader {
         length,
         frame,
         node: new SharedLoad(async (signal) => {
-          const bytes = await this.read(offset, length, signal)
+          const bytes = await this.read(offset, length, 'index', signal)
           return decode(await gunzipJson(frame ? unslot(bytes, frame) : bytes))
         }),
       }
@@ -1069,11 +1093,12 @@ export class SpatialReader implements TileReader {
     return selected.flat()
   }
 
-  /** The bytes of each of `pages`, which may belong to any column, from the
+  /** The bytes of each of `pages`, all of the part `part`, from the
    * compressed page cache or fetched; pages adjacent in the file share one
    * range. */
   private pageData(
     pages: { offset: number; length: number }[],
+    part: string,
     signal?: AbortSignal,
   ): Promise<ArrayBuffer[]> {
     signal?.throwIfAborted()
@@ -1103,7 +1128,7 @@ export class SpatialReader implements TileReader {
         last = run.at(-1)!
       // Each page subscribes to the run; the last departing page aborts I/O.
       const fetched = new SharedLoad((signal) =>
-        this.read(start, last.offset + last.length - start, signal),
+        this.read(start, last.offset + last.length - start, part, signal),
       )
       for (const p of run) {
         const data = new SharedLoad((signal) =>
@@ -1178,6 +1203,7 @@ export class SpatialReader implements TileReader {
     const [payloads, located] = await Promise.all([
       this.pageData(
         pages.map((p) => ({ offset: p[2], length: p[3] })),
+        'shapes',
         signal,
       ),
       this.attributePayloads(found.attributes, signal),
@@ -1344,6 +1370,7 @@ export class SpatialReader implements TileReader {
       located.map((entry) =>
         this.pageData(
           entry.pages.filter((page) => page.length),
+          `column:${entry.name}`,
           signal,
         ),
       ),

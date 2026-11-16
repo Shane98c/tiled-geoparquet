@@ -91,6 +91,33 @@ buildings below `'auto'` keeps `height` and `class` and leaves out the string
 `id`. A string with at most 256 distinct values is held as an index into the
 `values` the metadata lists.
 
+The metadata also has a `summary` for each attribute, computed over the rows
+whose geometry has finite bounds, which are the rows a map can show
+([Attribute summaries](../spec/SPEC.md#attribute-summaries)):
+
+- `count` is the number of rows with a value.
+- For a number, `min` and `max` are its smallest and largest values, and
+  `quantiles` are its values at the 0.02, 0.25, 0.5, 0.75 and 0.98 quantiles.
+- For a string with `values`, `counts` is the number of rows with each value.
+  For a boolean it is the number of rows that are false, then the number that
+  are true.
+
+Every summary is in the `lod_columns` metadata in the file's footer. A reader
+also gets a copy in its first request, so a map can choose a colour ramp or a
+legend before it requests a tile. That first request reads a fixed 16 KiB
+block at the start of the file, which also contains the top of the index. In
+the Japan buildings file of the [hosted comparison](hosted-comparison.md), the
+17 summaries take about 700 of the 8,000 bytes used in that block. The writer
+limits the summaries in the block to 4 KiB and leaves out the largest ones if
+they would take more. Summaries can push part of the index out of the block,
+but only a part that table lookups read, so no tile needs another request.
+
+In JavaScript, `readMetadata(url)` returns the copy from the first request,
+with the `lod_columns` metadata under `lod`: a summary is at
+`lod.attributes[i].summary`, and one that was left out of the block is absent
+there. In Python, read the footer's list, where each entry has its `summary`:
+`json.loads(pq.read_schema(path).metadata[b'geo'])['lod_columns']['attributes']`.
+
 `'auto'` among the names of a list stands for the default's columns, so a
 column the default leaves out is kept beside them. An id is the usual one: a
 map needs it in its tiles when it joins on it in the browser, colouring
@@ -199,10 +226,7 @@ as half floats, a cold 1280 by 800 view styled by two of them took 3
 requests at zoom 4, 11 at zoom 7, 15 at zoom 11 and 8 to 11 at zooms 13 and
 14, in two rounds, reading 1.52 MB at zoom 4, 0.58 MB at zoom 7 and 3.89 MB
 at zoom 11, against 2 to 5 requests and 0.85, 0.36 and 3.12 MB with geometry
-only. In Chrome on one laptop a first view, from opening the file to its
-last tile, took 0.75 to 1.06 s across those views styled by two attributes,
-0.69 to 1.11 s styled by one and 0.70 to 1.00 s with geometry only, read as
-[Requests](#requests) describes. The file is 24.4 GB.
+only. The file is 24.4 GB.
 
 Decoding and encoding a warm tile styled by `height` takes 0.1 to 3.5 ms
 more than with geometry only from zoom 11, and 20.0 ms against 11.7 ms for
@@ -450,6 +474,30 @@ geometry it has decoded. Change the layers' paint once the map is next idle:
 when a paint change follows `setTiles` in the same task, MapLibre 6.18 parses
 the tiles it holds again and does not fetch the new ones.
 
+You can take the colour stops from the file. `readMetadata(url)` returns each
+attribute's `summary` ([Attributes](#attributes)). A ramp built on a number's
+quantiles spreads its colours across the values that most rows have, even when
+a few rows are extreme: Japan's building heights range from 0.01 to 634, and
+their quantiles range from 2.4 to 17.9. An `interpolate` expression needs
+strictly ascending stops, so the example drops repeated quantiles, which a
+column with few distinct values will have:
+
+```js
+const { lod } = await readMetadata(url)
+const { quantiles } = lod.attributes.find((a) => a.name === 'height').summary
+const stops = [...new Set(quantiles)]
+const colours = ['#d8c9b7', '#f0a24d', '#d0421b', '#55215a', '#2b1030']
+map.setPaintProperty('fill', 'fill-color', [
+  'interpolate',
+  ['linear'],
+  ['get', 'height'],
+  ...stops.flatMap((stop, i) => [stop, colours[i]]),
+])
+```
+
+For a string, `counts` shows which values are most common, so a `match`
+expression can give colours to the values with the most rows.
+
 Tile properties keep their types: numbers are MVT floats when float32 holds
 them exactly, doubles otherwise, and integers below 2^52 are integers;
 booleans stay booleans and bigints a number holds exactly become that number.
@@ -507,7 +555,7 @@ small worker pool. `setWorkerCount(1 | 2 | 3 | 4)` from the tiles entry point
 overrides the default before calling `prefetch`, `readMetadata`,
 `registerProtocol` or `fetchTile`; one disables the pool. Four helps dense viewports but costs
 more memory. Exact geometry and analytical row reads stay on the coordinator.
-`setSourceOptions({ connections, cache })`, set at the same point, is how files
+`setSourceOptions({ cache, rangeParam })`, set at the same point, is how files
 are requested; see [Requests](#requests).
 CPU workers reuse the same `worker.js` URL, so there is no additional worker
 asset to deploy. zstd pages decode with WebAssembly, embedded in the bundle as a
@@ -634,8 +682,8 @@ see [Attributes](#attributes).
 A tile's requests go out together. S3 and most object stores answer over
 HTTP/1.1, one request to a connection, and a browser allows a host six
 connections. Whether the requests then run side by side, and whether a later
-visit finds them in the browser's cache, rests on three options of
-`httpSource`, which `setSourceOptions({ cache, connections, rangeParam })`
+visit finds them in the browser's cache, rests on two options of
+`httpSource`, which `setSourceOptions({ cache, rangeParam })`
 sets for the tiles entry point before a file opens:
 
 - `cache`, the cache mode of every request, is `no-store`. Chrome's HTTP
@@ -643,21 +691,16 @@ sets for the tiles entry point before a file opens:
   one file sent through it are answered in sequence however many connections
   are open: nine sent together came back 80 ms apart. Past the cache they run
   side by side. A view opened again then reads from the network where the
-  cache answers from disk, about 0.5 s against 0.14 s for a zoom 4 view of
-  the US buildings. `cache: 'default'` keeps the cache, and without a
+  cache answers from disk. `cache: 'default'` keeps the cache, and without a
   `rangeParam` the worker then spreads requests over the three hostnames S3
   answers on, three at a time.
-- `connections`, six, is how many connections to the host are open once the
-  file is: five one-byte requests sent beside the file's first read open the
-  others, so the first tiles' requests wait on no handshake. One sends none,
-  and it is one through the cache without a `rangeParam`.
 - `rangeParam`, unset, names a query parameter that carries each request's
   range, as in `?range=20000-20009`. Every range then has a URL of its own,
   so the cache has them in flight side by side and holds each for a later
-  visit: requests go through the cache, with six connections open. On the
-  Japan buildings in Chrome from R2, a first 1280 by 800 view styled by three
-  attributes took 1.19 to 1.52 s with it and 1.24 to 1.54 s past the cache,
-  and the same view opened again 0.10 to 0.14 s and 1.08 to 1.27 s. The
+  visit: requests go through the cache. On the
+  Japan buildings in Chrome from R2, first views at zooms 8, 11 and 13 styled
+  by `class` took 1.19 to 1.78 s with it and 1.12 to 1.66 s past the cache,
+  and the same views opened again took 0.18 to 0.58 s and 0.90 to 2.29 s. The
   server has to ignore the parameter, as R2 and S3 do, and a signed URL does
   not survive one. A CDN that keys its cache on the query string stores each
   range apart, and a later visit finds in the browser's cache the ranges it
@@ -667,9 +710,8 @@ sets for the tiles entry point before a file opens:
   It is measured in Chrome alone.
 
 First views of the US buildings styled by two attributes, in Chrome from S3,
-took 1.21 to 2.31 s through the cache on one URL, 0.99 to 1.57 s through it
-over S3's three hostnames, and 0.75 to 1.06 s past it with six connections
-opened.
+took 1.21 to 2.31 s through the cache on one URL and 0.99 to 1.57 s through
+it over S3's three hostnames.
 
 ### Plain GeoParquet
 
@@ -716,16 +758,30 @@ npm --prefix js run demo:compare -- --lod /path/current.parquet --pmtiles /path/
 
 Open the printed localhost URL. The server supports range reads without copying
 the files, binds to loopback, and adds the same selectable 0/50/100 ms delay to
-each data request. It does not simulate a bandwidth cap. The synchronized panes
-show response-body bytes, requests, cumulative tile feature deliveries, and map
-idle times. These are not unique visible-feature counts or wire-transfer
-measurements. The default blank background keeps basemap loading out of those
+each data request. It does not simulate a bandwidth cap. A strip under the
+synchronized panes shows, for each reader, the response-body bytes and
+requests since the page loaded or since its counters were reset, what the last
+move added, and how long its pane took to draw. The strip divides the Tiled
+GeoParquet reader's bytes into the index, the shapes, each attribute column,
+and each column looked up in the table. `readCounts()` returns that breakdown
+for each file, along with the transfers that `readStats()` returns; both are
+exported from the tiles entry point. The byte counts are not wire-transfer
+measurements. A move downloads only what the page does not already have, so
+compare the totals, which cover the same path for every reader. The first view
+after a load can also be compared on its own, because every reader starts it
+with nothing held.
+The default blank background keeps basemap loading out of the
 timings; add `basemap=1` for a basemap. Map idle includes rendering and is not
 a precise first-paint measurement. The style menu lists the GeoParquet file's
-attributes and its other source columns, apart from any a `hide=id` query
-parameter names. A numeric attribute is coloured by
-quantiles of the values in view, or by the stops a `stops=name:0,10,40` query
-parameter gives, once per attribute. In the Japan building fixtures the
+attributes and its other source columns, except any named in a `hide=` query
+parameter, such as `hide=id`. `style=class` sets the style that the page opens with. The
+page colours an attribute from the summary in the file's metadata
+([Attributes](#attributes)): a number by its quantiles, and a string by its
+most common values. The colours are therefore known before the first tile
+arrives. For any other column, the page takes colours from the values in view,
+or, on a page built with `demo/build-share.mjs --domains`, from the colours
+file given to that option, which accepts the output of `demo/domains.py`. A `stops=name:0,10,40` query
+parameter sets the stops for a number and can be given once per column. In the Japan building fixtures the
 GeoParquet file keeps 17 of its columns as attributes, the writer's default,
 among them `class`, `height` and `subtype`, the three the PMTiles archive
 holds in its tiles; `id` is read from the table's rows.

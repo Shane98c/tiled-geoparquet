@@ -14,11 +14,16 @@
           13px/1.4 system-ui,
           sans-serif;
       }
+      body {
+        display: flex;
+        flex-direction: column;
+      }
       #panes {
+        flex: 1;
+        min-height: 0;
         display: grid;
         grid-auto-flow: column;
         grid-auto-columns: 1fr;
-        height: 100%;
       }
       #panes.multiple {
         grid-auto-flow: row;
@@ -113,16 +118,191 @@
       #style-help p {
         margin: 8px 0 0;
       }
+      #dock {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 8px;
+        border-top: 1px solid #999;
+        background: #e9e7e2;
+      }
+      #ledger {
+        max-height: 34vh;
+        overflow: auto;
+        background: #fff;
+        padding: 8px 12px;
+        border-radius: 4px;
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+        font-variant-numeric: tabular-nums;
+      }
+      #ledger h2 {
+        margin: 0;
+        font-size: 13px;
+      }
+      #ledger h2 small {
+        margin-left: 8px;
+        color: #666;
+        font-weight: 400;
+      }
+      .ledger-row {
+        display: grid;
+        grid-template-columns: 130px minmax(120px, 1fr) minmax(0, 2fr);
+        gap: 2px 12px;
+        align-items: center;
+        margin-top: 6px;
+      }
+      .ledger-row .who {
+        font-weight: 600;
+      }
+      .ledger-row .bar {
+        display: flex;
+        gap: 2px;
+        height: 14px;
+      }
+      .seg {
+        min-width: 3px;
+        height: 14px;
+        border-radius: 3px;
+      }
+      .dot {
+        display: inline-block;
+        width: 9px;
+        height: 9px;
+        margin-right: 4px;
+        border-radius: 2px;
+      }
+      .index {
+        background: #8a8a8a;
+      }
+      .shapes {
+        background: #3b75af;
+      }
+      .column {
+        background: #e08a1e;
+      }
+      .table {
+        background: #8960a6;
+      }
+      .other {
+        background: #d5d1c9;
+      }
+      .tiles {
+        background: #2a9d8f;
+      }
+      .ledger-row .what,
+      .ledger-row .aside span {
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+      }
+      .ledger-row .what {
+        color: #444;
+        font-size: 12px;
+      }
+      .ledger-row .what b {
+        color: #111;
+      }
+      .ledger-row .what .absent {
+        color: #b00;
+        font-weight: 600;
+      }
+      .ledger-row .what span {
+        white-space: nowrap;
+      }
+      .ledger-row .time,
+      .ledger-row .aside {
+        display: flex;
+        align-items: center;
+        overflow: hidden;
+        color: #777;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      /* a pane's time to draw, on one scale across the panes, with room kept for its label */
+      .ledger-row .time {
+        grid-column: 2;
+        gap: 6px;
+      }
+      .ledger-row .time .fill {
+        flex: 0 0 auto;
+        min-width: 3px;
+        height: 6px;
+        border-radius: 3px;
+        background: #6b6b6b;
+      }
+      .ledger-row .time .fill.loading {
+        background: #c9c5bd;
+      }
+      .ledger-row .aside {
+        grid-column: 3;
+        gap: 14px;
+      }
+      .ledger-row .aside span {
+        min-width: 0;
+      }
+      @media (max-width: 900px) {
+        .ledger-row {
+          grid-template-columns: 1fr;
+        }
+        .ledger-row .time,
+        .ledger-row .aside {
+          grid-column: 1;
+        }
+        .ledger-row .aside {
+          flex-wrap: wrap;
+        }
+        .ledger-row .what,
+        .ledger-row .aside,
+        .ledger-row .aside span {
+          white-space: normal;
+        }
+      }
+      #structure {
+        margin-top: 8px;
+        font-size: 12px;
+      }
+      #structure[hidden] {
+        display: none;
+      }
+      #structure summary {
+        font-weight: 600;
+        cursor: pointer;
+      }
+      #structure dl {
+        display: grid;
+        grid-template-columns: max-content 1fr;
+        gap: 4px 12px;
+        margin: 6px 0 0;
+      }
+      #structure dt {
+        color: #666;
+        white-space: nowrap;
+      }
+      #structure dd {
+        margin: 0;
+      }
+      #structure .chip {
+        display: inline-block;
+        margin: 1px 3px 1px 0;
+        padding: 0 5px;
+        border: 1px solid #ccc;
+        border-radius: 3px;
+        font-size: 12px;
+      }
+      #structure .chip.on {
+        border-color: #1f5fbf;
+        background: #1f5fbf;
+        color: #fff;
+      }
+      #structure code {
+        font-size: 12px;
+      }
       #bar {
-        position: absolute;
-        bottom: 8px;
-        left: 8px;
+        align-self: stretch;
         background: #fff;
         padding: 6px 10px;
         border-radius: 4px;
         box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
-        z-index: 2;
-        right: 8px;
         display: flex;
         flex-wrap: wrap;
         align-items: center;
@@ -139,11 +319,15 @@
         margin-top: 4px;
         flex-basis: 100%;
       }
+      /* a row of its own at one height, so a style's legend never resizes the maps */
       #legend {
-        display: inline-flex;
-        flex-wrap: wrap;
+        display: flex;
+        flex: 0 0 100%;
         align-items: center;
         gap: 2px 10px;
+        height: 18px;
+        overflow: hidden;
+        white-space: nowrap;
       }
       #legend span {
         display: inline-flex;
@@ -159,78 +343,105 @@
   </head>
   <body>
     <div id="panes"></div>
-    <div id="bar">
-      <div id="readers" role="group" aria-label="Comparison readers"></div>
-      <button id="apply-readers">Apply readers</button>
-      <label
-        >View
-        <select id="view">
-          <option value="">Custom</option>
-          <option value="139.76,35.68,8">Tokyo metro</option>
-          <option value="139.76,35.68,11">Tokyo city</option>
-          <option value="139.76,35.68,14">Tokyo street</option>
-          <option value="135.5,34.69,14">Osaka street</option>
-        </select></label
-      >
-      <label
-        >Style
-        <select id="style">
-          <option value="geometry">Geometry</option>
-          <option value="height">Height</option>
-          <option value="subtype">Subtype</option>
-        </select></label
-      >
-      <button
-        id="style-info"
-        type="button"
-        popovertarget="style-help"
-        hidden
-        aria-label="About the style menu's two groups"
-      >
-        ?
-      </button>
-      <div id="style-help" popover>
-        <h2>Why the style menu has two groups</h2>
-        <p>
-          The GeoParquet file holds the full table of features and, beside it, a light copy of their
-          shapes for drawing the map at each zoom.
-        </p>
-        <p>
-          <b>Fast.</b> These columns were also copied into the map part when the file was built.
-          Colouring by one fetches a small extra piece for the tiles in view, at any zoom.
-        </p>
-        <p>
-          <b>Slower zoomed out.</b> These columns were not copied, because a copy would be large:
-          unique ids, and text with many distinct values. The map looks each feature up in the full
-          table instead, which is cheap zoomed in and heavy zoomed out.
-        </p>
-        <p>
-          Either way nothing is rebuilt: any column of the table can colour the map. A PMTiles
-          archive holds the columns chosen when its tiles were cut, in every tile.
-        </p>
-        <p id="style-help-columns"></p>
+    <div id="dock">
+      <div id="ledger">
+        <h2><span id="ledger-title"></span><small id="ledger-view"></small></h2>
+        <div id="ledger-rows"></div>
+        <details id="structure" hidden>
+          <summary>File structure</summary>
+          <dl>
+            <dt>Table</dt>
+            <dd id="structure-table"></dd>
+            <dt>Overview levels</dt>
+            <dd id="structure-levels"></dd>
+            <dt>Stored for the map</dt>
+            <dd id="structure-stored"></dd>
+            <dt>Looked up in the table</dt>
+            <dd id="structure-looked"></dd>
+            <dt>This view</dt>
+            <dd id="structure-view"></dd>
+          </dl>
+        </details>
       </div>
-      <span id="legend"></span>
-      <label id="latency-control" hidden
-        >Data request delay
-        <select id="latency">
-          <option value="0">Local / 0 ms</option>
-          <option value="50">50 ms</option>
-          <option value="100">100 ms</option>
-        </select></label
-      >
-      <button id="reload">Fresh load</button>
-      <button id="reset">Reset counters (keep caches)</button>
-      <button id="diagnose">Copy diagnostics</button>
-      <span id="stall"></span>
-      <span id="zoom"></span>
-      <small id="notes"
-        >Synchronized views; counts include tile boundary copies, not unique buildings. Different
-        thinning and overzoom rules still apply. A request cancelled before its response began is
-        not counted; one cancelled after counts at its full size. Times run from the end of a
-        move.</small
-      >
+      <div id="bar">
+        <div id="readers" role="group" aria-label="Comparison readers"></div>
+        <button id="apply-readers">Apply readers</button>
+        <label
+          >View
+          <select id="view">
+            <option value="">Custom</option>
+            <option value="139.76,35.68,8">Tokyo metro</option>
+            <option value="139.76,35.68,11">Tokyo city</option>
+            <option value="139.76,35.68,14">Tokyo street</option>
+            <option value="135.5,34.69,14">Osaka street</option>
+          </select></label
+        >
+        <label
+          >Style
+          <select id="style">
+            <option value="geometry">Geometry</option>
+            <option value="height">Height</option>
+            <option value="subtype">Subtype</option>
+          </select></label
+        >
+        <button
+          id="style-info"
+          type="button"
+          popovertarget="style-help"
+          hidden
+          aria-label="About the style menu's two groups"
+        >
+          ?
+        </button>
+        <div id="style-help" popover>
+          <h2>Why the style menu has two groups</h2>
+          <p>
+            The GeoParquet file holds the full table of features and, beside it, a light copy of
+            their shapes for drawing the map at each zoom.
+          </p>
+          <p>
+            <b>Fast.</b> These columns were also copied into the map part when the file was built.
+            Colouring by one fetches a small extra piece for the tiles in view, at any zoom.
+          </p>
+          <p>
+            <b>Slower zoomed out.</b> These columns were not copied, because a copy would be large:
+            unique ids, and text with many distinct values. The map looks each feature up in the
+            full table instead, which is cheap zoomed in and heavy zoomed out.
+          </p>
+          <p>
+            Either way nothing is rebuilt: any column of the table can colour the map. A PMTiles
+            archive holds the columns chosen when its tiles were cut, in every tile.
+          </p>
+          <p id="style-help-columns"></p>
+        </div>
+        <span id="legend"></span>
+        <label id="cache-control" hidden><input type="checkbox" id="cache" />Browser cache</label>
+        <label id="latency-control" hidden
+          >Data request delay
+          <select id="latency">
+            <option value="0">Local / 0 ms</option>
+            <option value="50">50 ms</option>
+            <option value="100">100 ms</option>
+          </select></label
+        >
+        <button id="reload">Fresh load</button>
+        <button id="reset">Reset counters (keep caches)</button>
+        <button id="diagnose">Copy diagnostics</button>
+        <span id="stall"></span>
+        <span id="zoom"></span>
+        <small id="notes"
+          >The views are synchronized. Totals count from when the page loaded or from the last
+          reset. The figure for a move is what that move downloaded on top of what the page already
+          had, so it can be zero. The archives use different thinning and overzoom rules. A request
+          cancelled before its response starts is not counted; one cancelled later counts at its
+          full size. Times are measured from the end of a move, and the first view's time from the
+          request for its file.</small
+        >
+      </div>
     </div>
+    <script type="application/json" id="domains">
+      {}
+    </script>
     <dialog id="report">
       <textarea readonly rows="24" cols="100"></textarea>
       <form method="dialog"><button>Close</button></form>
@@ -246,7 +457,7 @@
       //   ?center=lon,lat ?zoom=  the starting view
       //   ?panes=lod,pmtiles,cogp,esri  selected readers; only these request data
       //   ?stops=name:0,10,40  the colour stops of a numeric attribute, once per attribute
-      //   ?cache=off   this layout's requests are sent past the browser's cache
+      //   ?cache=on    the readers' requests go through the browser's cache
       //   ?hide=a,b    columns left out of the style menu
       import * as maplibregl from 'https://unpkg.com/maplibre-gl@6.18.0/dist/maplibre-gl.mjs'
       import {
@@ -254,22 +465,21 @@
         registerProtocol,
         tileUrl,
         parseTileUrl,
+        readCounts,
         readStats,
         readWaiting,
         setSourceOptions,
       } from './dist/tiles.js'
 
       const params = new URLSearchParams(location.search)
-      // This layout's requests go through the browser's cache, each range under a URL of
-      // its own, as the other readers' requests go through it.
-      const cached = params.get('cache') !== 'off'
+      // The readers' requests all go past the browser's cache, so every load is a first
+      // visit, or with ?cache=on all go through it. Past it, the page's own fetches,
+      // PMTiles' and Esri's, are sent no-store as this layout's are; through it, this
+      // layout's carry each range in a URL of its own.
+      const cached = params.get('cache') === 'on'
       if (cached) setSourceOptions({ rangeParam: 'range' })
       const url = params.get('url')
       const localServer = params.get('demoServer') === '1'
-      // the local server answers every request with no-store
-      if (cached && !localServer)
-        document.getElementById('notes').textContent +=
-          " Every reader goes through the browser's cache, so a view opened again is faster."
       const delay = Number(params.get('latency') ?? 50)
       const abs = (u) => {
         if (!u) return null
@@ -314,6 +524,16 @@
       }
       checkboxes.forEach((input) => input.addEventListener('change', updateSelection))
       updateSelection()
+      // the local server answers every request with no-store
+      if (!localServer)
+        document.getElementById('notes').textContent += cached
+          ? " Every reader uses the browser's cache, so reopening a view is faster. Chrome's cache handles one request per URL at a time, so on a first view the range requests a reader sends to a single URL are answered one after another. Tiled GeoParquet puts each range in the URL, so its requests run side by side."
+          : ` Every reader's requests skip the browser's cache, so each load is a first visit${
+              enabled('cogp') ? ', except the COGP reader, which uses the cache' : ''
+            }.`
+      if (available.filter(([id]) => enabled(id)).length > 1)
+        document.getElementById('notes').textContent +=
+          " The readers share the browser's connections to the same host, so each slows the others down. To time one reader, load it alone."
       if (enabled('esri'))
         document.getElementById('notes').textContent +=
           ' Esri reference reader displays geometry only; its feature limit is reported in its panel.'
@@ -334,7 +554,10 @@
       // a tile reads from a column per zoom, then its other flat columns, which a tile
       // looks up in the table's rows. Names come from the file: they are set as text,
       // never as markup.
+      // how long the file takes to open, which its first view counts
+      const opening = performance.now()
       const metadata = enabled('lod') ? await readMetadata(fileUrl) : undefined
+      const opened = performance.now() - opening
       const styleSelect = document.getElementById('style')
       const stored = new Set(metadata?.lod?.attributes.map((a) => a.name))
       const hidden = (params.get('hide') ?? '').split(',').filter(Boolean)
@@ -370,15 +593,44 @@
         )
       }
       let selectedStyle = params.get('style') ?? 'geometry'
+      // What the readers have read, by file and for this layout by part: as last asked, as
+      // it stood where the count begins (the page's load or a reset), and as it stood when
+      // the last move began. A style chosen after a move adds what it reads to that move.
+      let latest = { stats: {}, parts: {} }
+      let origin = latest
+      let view = latest
+      let moved = false
+      let reset = false
+      // The move under way and the latest to change the camera, each with what the
+      // readers had read when it began, once they have said. A view begins at a move
+      // that changes the camera: a resize moves a map and leaves its view where it was.
+      let move
+      let turned
+      const begin = (from) => {
+        if (from !== turned || !from.counts) return
+        view = from.counts
+        moved = true
+      }
+      let camera = ''
+      const cameraOf = (map) =>
+        [map.getCenter().lng, map.getCenter().lat, map.getZoom(), map.getBearing(), map.getPitch()]
+          .map((value) => value.toFixed(7))
+          .join()
+      let syncing = false
+      // when a style's colours were last looked for among tiles still arriving
+      let sampled = 0
       if (![...styleSelect.options].some((option) => option.value === selectedStyle))
         selectedStyle = 'geometry'
       styleSelect.value = selectedStyle
       const properties = () => (selectedStyle === 'geometry' ? [] : [selectedStyle])
 
       // What each style colours by: stops for numbers, values for categories.
-      // Stops come from ?stops=, short value tables and booleans from the
-      // metadata; anything else is sampled from the first tiles drawn with the style.
-      const RAMP = ['#d8c9b7', '#f0a24d', '#d0421b', '#55215a']
+      // An attribute's colours are fixed from the summary the file's metadata holds,
+      // a number's quantiles and the values of a table with the most rows; another
+      // column's from the element `domains`, as {name: {stops: [...]}} or
+      // {name: {values: [...]}}; and ?stops= sets any number's. A column with none of
+      // these is sampled from the first tiles drawn with the style.
+      const RAMP = ['#d8c9b7', '#f0a24d', '#e2702f', '#d0421b', '#55215a']
       const PALETTE = [
         '#d0421b',
         '#3b75af',
@@ -390,10 +642,25 @@
         '#7a6a53',
       ]
       const MISSING = '#b5b0a8'
-      const domains = {
-        height: { stops: [0, 10, 40, 150] },
-        subtype: { values: ['residential', 'commercial', 'industrial', 'civic'] },
+      const domains = {}
+      for (const a of metadata?.lod?.attributes ?? []) {
+        const { quantiles, counts } = a.summary ?? {}
+        if (quantiles) domains[a.name] = { stops: [...new Set(quantiles)] }
+        else if (a.type === 'bool') domains[a.name] = { values: [true, false] }
+        else if (a.values && counts) {
+          const held = a.values
+            .map((value, i) => [value, counts[i]])
+            .filter(([, rows]) => rows > 0)
+            .sort(([, x], [, y]) => y - x)
+          if (held.length)
+            domains[a.name] = { values: held.slice(0, PALETTE.length).map(([value]) => value) }
+        } else if (a.values && a.values.length <= PALETTE.length)
+          domains[a.name] = { values: a.values }
       }
+      for (const [name, domain] of Object.entries(
+        JSON.parse(document.getElementById('domains').textContent),
+      ))
+        domains[name] ??= domain
       for (const entry of params.getAll('stops')) {
         const colon = entry.lastIndexOf(':')
         const stops = entry
@@ -405,20 +672,15 @@
           domains[entry.slice(0, colon)] = { stops }
         else console.warn(`ignored ?stops=${entry}: expected name:ascending,numbers`)
       }
-      for (const a of metadata?.lod?.attributes ?? []) {
-        if (domains[a.name]) continue
-        if (a.values && a.values.length <= PALETTE.length) domains[a.name] = { values: a.values }
-        else if (a.type === 'bool') domains[a.name] = { values: [true, false] }
-      }
       const rampColor = (i, count) =>
         RAMP[count > 1 ? Math.round((i * (RAMP.length - 1)) / (count - 1)) : 0]
-      // names with no values among the features of a fully loaded view
+      // names with no values among the features of the view on screen, fully loaded
       const valueless = new Set()
       const color = () => {
         const domain = domains[selectedStyle]
         if (selectedStyle === 'geometry') return '#d0421b'
-        // until a domain is sampled, fills draw as outlines alone and dots not at all
-        if (!domain) return valueless.has(selectedStyle) ? MISSING : 'transparent'
+        // until a domain is sampled every feature has the colour of one without a value
+        if (!domain) return MISSING
         const value = ['get', selectedStyle]
         if (domain.stops)
           return [
@@ -444,7 +706,7 @@
       const mainStats = {}
       const fetched = window.fetch.bind(window)
       window.fetch = async (input, init) => {
-        const response = await fetched(input, init)
+        const response = await fetched(input, cached ? init : { ...init, cache: 'no-store' })
         const key = String(input instanceof Request ? input.url : input)
         const entry = (mainStats[key] ??= { requests: 0, bytes: 0 })
         entry.requests++
@@ -453,45 +715,6 @@
         return response
       }
 
-      // features in each tile a protocol hands to MapLibre, read from the MVT bytes:
-      // a tile is layers (field 3), a layer holds features (field 2)
-      const mvtFeatures = (buf) => {
-        const b = new Uint8Array(buf)
-        let n = 0
-        const walk = (start, end, field, visit) => {
-          let i = start
-          while (i < end) {
-            let key = 0
-            let shift = 0
-            let byte
-            do {
-              byte = b[i++]
-              key |= (byte & 0x7f) << shift
-              shift += 7
-            } while (byte & 0x80)
-            const tag = key >>> 3
-            const wire = key & 7
-            if (wire === 0) {
-              while (b[i++] & 0x80);
-            } else if (wire === 1) i += 8
-            else if (wire === 5) i += 4
-            else if (wire === 2) {
-              let len = 0
-              shift = 0
-              do {
-                byte = b[i++]
-                len |= (byte & 0x7f) << shift
-                shift += 7
-              } while (byte & 0x80)
-              if (tag === field) visit(i, i + len)
-              i += len
-            } else return
-          }
-        }
-        walk(0, b.length, 3, (ls, le) => walk(ls, le, 2, () => n++))
-        return n
-      }
-      const tileCounts = {}
       // every tile request with how it ended, and every map error, for the diagnostics
       const tileRequests = []
       const mapErrors = []
@@ -509,9 +732,6 @@
           })
           try {
             const result = await handler(request, abort)
-            if (result?.data instanceof ArrayBuffer || ArrayBuffer.isView(result?.data)) {
-              tileCounts[request.url] = (tileCounts[request.url] ?? 0) + mvtFeatures(result.data)
-            }
             entry.outcome = 'ok'
             return result
           } catch (error) {
@@ -529,12 +749,8 @@
       }
 
       // A styled fill's outline takes the fill's colour, so shapes too small to show a
-      // fill still show their value; with geometry alone, and until a domain is
-      // sampled, it is the plain outline.
-      const outline = () =>
-        selectedStyle === 'geometry' || color() === 'transparent'
-          ? paint['fill-outline-color']
-          : color()
+      // fill still show their value; with geometry alone it is the plain outline.
+      const outline = () => (selectedStyle === 'geometry' ? paint['fill-outline-color'] : color())
       const fill = (source, layer) => ({
         id: `${source}-fill`,
         type: 'fill',
@@ -574,8 +790,8 @@
         panes.push({
           title: 'Tiled GeoParquet',
           keys: [fileUrl],
-          tile: (u) => u.startsWith('lod://') && parseTileUrl(u).config.url === fileUrl,
           lodUrl: fileUrl,
+          opened,
           sources: { lod: lodSource(fileUrl) },
           layers: [fill('lod', 'shapes'), dots('lod', 'points')],
         })
@@ -602,7 +818,6 @@
           title: 'COGP · released reader 2.1.4',
           cogpSource,
           keys: [cogpUrl],
-          tile: (u) => u.startsWith('cogp://'),
           sources: {
             cogp: cogpSource(),
           },
@@ -614,7 +829,6 @@
         const pane = {
           title: 'PMTiles',
           keys: [pmtilesUrl],
-          tile: (u) => u.startsWith('pmtiles://'),
           sources: { shapes: { type: 'vector', url: 'pmtiles://' + pmtilesUrl } },
           layers: [fill('shapes', pmtilesLayer)],
         }
@@ -701,7 +915,9 @@
       const maps = []
       for (const pane of panes) {
         const { hud } = pane
-        pane.started = performance.now()
+        // a first view runs from the request for its file: the PMTiles pane asks for its
+        // header with its first tile, and this layout's file is open by now
+        pane.started = performance.now() - (pane.opened ?? 0)
         pane.pendingSince = pane.started
         const map = new maplibregl.Map({
           container: pane.mapDiv,
@@ -731,12 +947,22 @@
           hud.dataset.status = error.message
         })
         map.on('movestart', () => {
-          pane.pendingSince = performance.now()
+          // a move a person or the page begins, not a jump that follows another pane
+          if (syncing) return
+          const mine = (move = {})
+          current().then((counts) => {
+            mine.counts = counts
+            begin(mine)
+          })
         })
-        // A pane following another moves in jumps, each a move of its own, so every pane
-        // times a view from where its movement ends.
-        map.on('moveend', () => {
+        // A pane times a view from the last change of its camera: a pane following another
+        // moves in jumps, each a move of its own, and a resize moves a map without one.
+        pane.camera = cameraOf(map)
+        map.on('move', () => {
+          if (cameraOf(map) === pane.camera) return
+          pane.camera = cameraOf(map)
           pane.pendingSince = performance.now()
+          pane.restyling = false
         })
         map.on('idle', () => {
           if (pane.ready === false) return
@@ -747,9 +973,11 @@
               retile(map, pane)
               return
             }
-            // the new tiles are in: paint them, and let the idle after that paint end the
-            // style change's time, as it does in a pane painted at once
+            // the new tiles are in: paint them, with the domain they give, and let the
+            // idle after that paint end the style change's time, as it does in a pane
+            // painted at once
             pane.refetching = false
+            sampleDomain()
             paintStyle()
             map.triggerRepaint()
             return
@@ -757,7 +985,15 @@
           pane.firstIdle ??= performance.now() - pane.started
           if (pane.pendingSince !== undefined) pane.lastIdle = performance.now() - pane.pendingSince
           pane.pendingSince = undefined
+          pane.restyling = false
           sampleDomain()
+        })
+        // The first tiles to arrive give the style its colours, so the rest draw in them.
+        map.on('sourcedata', (e) => {
+          if (!e.tile || pane.refetching || selectedStyle === 'geometry') return
+          if (domains[selectedStyle] || performance.now() - sampled < 250) return
+          sampled = performance.now()
+          sampleDomain(500)
         })
         map.on('error', (e) => {
           const id = e.tile?.tileID.canonical
@@ -804,10 +1040,11 @@
         showLegend()
       }
       // The selected style's domain from the features the panes have drawn:
-      // quantile stops for numbers, the commonest values for anything else.
-      function sampleDomain() {
+      // quantile stops for numbers, the commonest values for anything else. It
+      // waits for `least` values, more than one where tiles are still arriving.
+      function sampleDomain(least = 1) {
         const name = selectedStyle
-        if (name === 'geometry' || domains[name]) return
+        if (name === 'geometry' || domains[name] || valueless.has(name)) return
         const found = []
         for (const { map, pane } of maps)
           for (const layer of pane.layers) {
@@ -820,11 +1057,10 @@
               if (value !== undefined && value !== null) found.push(value)
             }
           }
+        if (found.length < least) return
         if (!found.length) {
-          if (!valueless.has(name) && maps.every(({ map }) => map.loaded())) {
-            valueless.add(name)
-            paintStyle()
-          }
+          // nothing to sample until the view changes
+          if (maps.every(({ map }) => map.loaded())) valueless.add(name)
           return
         }
         if (found.every((value) => typeof value === 'number')) {
@@ -885,12 +1121,29 @@
         for (const { map, pane } of maps) {
           if (pane.geometryOnly) continue
           pane.pendingSince = performance.now()
+          pane.restyling = true
           // MapLibre parses the tiles it holds again, without fetching the new ones, when a
           // paint change follows setTiles in the same task, and when setTiles finds a tile
           // still loading. So a pane whose tiles change is painted at its map's next idle,
           // and a style chosen before then has its tiles asked for at that idle.
           if (!pane.refetching) pane.refetching = retile(map, pane)
+          // a pane waiting for its tiles shows the colour of no value meanwhile where
+          // that needs no parse of the tiles it holds: one flat colour giving way to another
+          if (pane.refetching)
+            for (const layer of pane.layers) {
+              const property = layer.type === 'circle' ? 'circle-color' : 'fill-color'
+              if (typeof layer.paint[property] !== 'string' || !map.getLayer(layer.id)) continue
+              const flat = typeof color() === 'string' ? color() : MISSING
+              layer.paint[property] = flat
+              map.setPaintProperty(layer.id, property, flat)
+              if (layer.type !== 'circle') {
+                const edge = selectedStyle === 'geometry' ? paint['fill-outline-color'] : flat
+                layer.paint['fill-outline-color'] = edge
+                map.setPaintProperty(layer.id, 'fill-outline-color', edge)
+              }
+            }
         }
+        valueless.clear()
         paintStyle()
       }
       // Give a pane's sources the tiles of the selected style; whether any is on the map.
@@ -928,6 +1181,15 @@
         reload()
       }
       document.getElementById('reload').onclick = reload
+      if (!localServer) {
+        document.getElementById('cache-control').hidden = false
+        document.getElementById('cache').checked = cached
+        document.getElementById('cache').onchange = (event) => {
+          if (event.target.checked) params.set('cache', 'on')
+          else params.delete('cache')
+          reload()
+        }
+      }
       if (localServer) {
         document.getElementById('latency-control').hidden = false
         document.getElementById('latency').value = String(delay)
@@ -939,75 +1201,285 @@
           ' Delay applies equally to all data files; no bandwidth cap. Fresh load clears reader caches.'
       }
 
-      // keep the views together
-      let syncing = false
+      // keep the views together, and begin a view where the camera changes
+      if (maps.length) camera = cameraOf(maps[0].map)
       for (const { map } of maps) {
         map.on('move', () => {
           if (syncing) return
+          if (cameraOf(map) !== camera) {
+            camera = cameraOf(map)
+            if (move && move !== turned) {
+              turned = move
+              valueless.clear()
+              begin(move)
+            }
+          }
           syncing = true
-          const view = {
+          const to = {
             center: map.getCenter(),
             zoom: map.getZoom(),
             bearing: map.getBearing(),
             pitch: map.getPitch(),
           }
-          for (const other of maps) if (other.map !== map) other.map.jumpTo(view)
+          for (const other of maps) if (other.map !== map) other.map.jumpTo(to)
           syncing = false
         })
       }
 
-      let baseline = {}
-      let featureBaseline = {}
       const format = (bytes) => (bytes / 1e6).toFixed(2) + ' MB'
       // a file is fetched under several hostnames; match on the object name and query
-      const tally = (stats, keys) => {
+      const tally = (stats, keys, since) => {
         let requests = 0
         let bytes = 0
         for (const key of keys) {
           const name = key.slice(key.lastIndexOf('/') + 1)
           for (const [u, entry] of Object.entries(stats)) {
             if (!u.endsWith('/' + name) && u !== key) continue
-            const base = baseline[u] ?? { requests: 0, bytes: 0 }
+            const base = since[u] ?? { requests: 0, bytes: 0 }
             requests += entry.requests - base.requests
             bytes += entry.bytes - base.bytes
           }
         }
         return { requests, bytes }
       }
-      // each pane says which tile URLs are its own
-      const features = (pane) => {
-        let n = 0
-        for (const [u, count] of Object.entries(tileCounts))
-          if (pane.tile?.(u)) n += count - (featureBaseline[u] ?? 0)
-        return n
-      }
+      // What every reader has read by URL, and the indexed readers' bytes by part: the
+      // page's own counts as they stand when asked, and the worker's from one reply.
       const current = async () => {
-        const stats = {
-          ...(maps.some(({ pane }) => pane.lodUrl) ? await readStats() : {}),
-          ...mainStats,
-        }
-        for (const { pane } of maps) if (pane.stats) Object.assign(stats, await pane.stats())
-        return stats
+        const mine = structuredClone(mainStats)
+        const { stats, parts } = maps.some(({ pane }) => pane.lodUrl)
+          ? await readCounts()
+          : { stats: {}, parts: {} }
+        const all = { ...stats, ...mine }
+        for (const { pane } of maps) if (pane.stats) Object.assign(all, await pane.stats())
+        return { stats: structuredClone(all), parts }
       }
-      // Where a pane's tiles get the styled column from.
-      const styleNote = (pane) => {
-        const name = selectedStyle
-        if (name === 'geometry') return []
-        if (pane.lodUrl && metadata?.lod)
-          return [
-            [
-              stored.has(name)
-                ? `${name}: stored for the map, fetched only when a style uses it`
-                : `${name}: not stored for the map, looked up in the full table`,
-            ],
-          ]
-        if (!pane.fields) return []
-        return pane.fields.includes(name)
-          ? [[`${name}: carried in every tile, styled or not`]]
-          : [[`No ${name} in these tiles`, 'absent']]
+      // The structure panel: what the file holds, with the overview level and the column
+      // the view is reading marked.
+      const chips = (id, names, label = (name) => name) => {
+        const parent = document.getElementById(id)
+        parent.replaceChildren(
+          ...names.map((name) => {
+            const chip = Object.assign(document.createElement('span'), {
+              className: 'chip',
+              textContent: label(name),
+            })
+            chip.dataset.name = name
+            return chip
+          }),
+        )
+        if (!names.length) parent.textContent = 'none'
+      }
+      const mark = (id, name) => {
+        for (const chip of document.getElementById(id).children)
+          chip.classList.toggle('on', chip.dataset.name === name)
+      }
+      const structured = maps.find(({ pane }) => pane.lodUrl && metadata?.lod)
+      if (structured) {
+        const { lod } = metadata
+        const others = metadata.columns.filter(
+          (name) => !stored.has(name) && name !== lod.key?.column,
+        )
+        document.getElementById('structure').hidden = false
+        document.getElementById('structure-table').textContent =
+          `One row per feature, with its geometry and the ${others.length + stored.size} columns listed below`
+        chips('structure-levels', Object.keys(lod.lods), (name) => {
+          const zooms = lod.lods[name].zooms
+          return zooms.length > 1 ? `${zooms[0]}–${zooms.at(-1)}` : String(zooms[0])
+        })
+        chips('structure-stored', [...stored])
+        chips('structure-looked', others)
+      }
+      const metres = (m) =>
+        m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${m >= 10 ? Math.round(m) : m.toFixed(1)} m`
+      // the 512-pixel tiles a view covers at the zoom its tiles are drawn from
+      const tilesInView = (map, z) => {
+        const n = 2 ** z
+        const x = (lon) => Math.floor(((lon + 180) / 360) * n)
+        const y = (lat) =>
+          Math.floor(((1 - Math.asinh(Math.tan((lat * Math.PI) / 180)) / Math.PI) / 2) * n)
+        const bounds = map.getBounds()
+        return (
+          (x(bounds.getEast()) - x(bounds.getWest()) + 1) *
+          (y(bounds.getSouth()) - y(bounds.getNorth()) + 1)
+        )
+      }
+      // the overview level a map's zoom draws from: its name and the zoom its tiles are cut at
+      const levelOf = (map) => {
+        const lod = metadata?.lod
+        if (!lod || !map) return undefined
+        const z = Math.max(lod.zooms[0], Math.min(lod.zooms.at(-1), Math.floor(map.getZoom())))
+        const name = Object.keys(lod.lods).find((level) => lod.lods[level].zooms.includes(z))
+        return { name, z }
+      }
+      const showStructure = () => {
+        if (!structured) return
+        const { lod } = metadata
+        const { map } = structured
+        const { name: level, z } = levelOf(map)
+        const name = selectedStyle === 'geometry' ? undefined : selectedStyle
+        mark('structure-levels', level)
+        mark('structure-stored', name)
+        mark('structure-looked', name)
+        const source =
+          name === undefined
+            ? []
+            : [
+                ', coloured from ',
+                Object.assign(document.createElement('code'), {
+                  textContent: stored.has(name)
+                    ? `${lod.attribute_columns.column}.${level}.${name}`
+                    : name,
+                }),
+              ]
+        document.getElementById('structure-view').replaceChildren(
+          `zoom ${map.getZoom().toFixed(1)} draws `,
+          Object.assign(document.createElement('code'), {
+            textContent: `${lod.column}.${level}`,
+          }),
+          ` on a ${metres(lod.lods[level].scale[0])} grid`,
+          ...source,
+          `: ${tilesInView(map, z)} tiles`,
+        )
+      }
+      // What a pane has read since an earlier count: its bytes and requests, and the bytes
+      // in parts where its reader tells them apart. What a file's requests carried past
+      // its parts, between ranges read as one or in a read cut short, is `other`.
+      const ORDER = ['index', 'shapes', 'column', 'table', 'other', 'tiles']
+      const readSince = (pane, since) => {
+        const counted = tally(latest.stats, pane.keys, since.stats)
+        const { bytes } = counted
+        const mine = pane.lodUrl && latest.parts[pane.lodUrl]
+        if (!mine) return { ...counted, parts: bytes > 0 ? [['tiles', bytes]] : [] }
+        const before = since.parts[pane.lodUrl] ?? {}
+        const parts = Object.entries(mine)
+          .map(([part, n]) => [part, n - (before[part] ?? 0)])
+          .filter(([, n]) => n > 0)
+          .sort(([a], [b]) => ORDER.indexOf(a.split(':')[0]) - ORDER.indexOf(b.split(':')[0]))
+        const held = parts.reduce((sum, [, n]) => sum + n, 0)
+        // a response's bytes count when it begins and its parts when it has arrived, so
+        // a count begun between the two finds parts past its bytes: they keep to them
+        if (held > bytes)
+          return {
+            ...counted,
+            parts: parts
+              .map(([part, n]) => [part, Math.floor((n * bytes) / held)])
+              .filter(([, n]) => n > 0),
+          }
+        if (bytes > held) parts.push(['other', bytes - held])
+        return { ...counted, parts }
+      }
+      const element = (tag, properties, ...children) => {
+        const node = Object.assign(document.createElement(tag), properties)
+        node.append(...children)
+        return node
+      }
+      const size = (bytes) =>
+        bytes >= 995_000 ? format(bytes) : `${Math.max(1, Math.round(bytes / 1000))} KB`
+      const showLedger = () => {
+        const name = selectedStyle === 'geometry' ? undefined : selectedStyle
+        const now = performance.now()
+        const rows = maps.map(({ pane }) => {
+          const loading = pane.pendingSince !== undefined || pane.firstIdle === undefined
+          return {
+            pane,
+            ...readSince(pane, origin),
+            move: readSince(pane, view),
+            loading,
+            // how long its view took to draw, or has taken so far
+            time: loading
+              ? now - (pane.pendingSince ?? pane.started ?? now)
+              : (pane.lastIdle ?? pane.firstIdle),
+          }
+        })
+        const scale = Math.max(1, ...rows.map((row) => row.bytes))
+        const longest = Math.max(1, ...rows.map((row) => row.time))
+        document.getElementById('ledger-title').textContent =
+          `Downloaded since ${reset ? 'the counters were reset' : 'the page loaded'}`
+        document.getElementById('ledger-view').textContent = maps.length
+          ? `zoom ${maps[0].map.getZoom().toFixed(1)}${name ? `, coloured by ${name}` : ''}`
+          : ''
+        const label = (pane, part) => {
+          const [kind, column] = part.split(':')
+          if (kind === 'column') return column
+          if (kind === 'table') return `${column}, from the table`
+          if (kind === 'other') return 'between ranges'
+          if (kind === 'tiles')
+            return pane.fields?.length ? `tiles: shapes with ${pane.fields.join(', ')}` : 'data'
+          return kind
+        }
+        document.getElementById('ledger-rows').replaceChildren(
+          ...rows.map(({ pane, requests, bytes, parts, move, loading, time }) => {
+            const what = element(
+              'div',
+              { className: 'what' },
+              element('b', { textContent: format(bytes) }),
+              ` · ${requests} requests`,
+              ...parts.flatMap(([part, n]) => [
+                ' · ',
+                element(
+                  'span',
+                  {},
+                  element('i', { className: `dot ${part.split(':')[0]}` }),
+                  `${label(pane, part)} ${size(n)}`,
+                ),
+              ]),
+              ...(lacks(pane)
+                ? [
+                    ' · ',
+                    element('span', {
+                      className: 'absent',
+                      textContent: `no ${name} in these tiles`,
+                    }),
+                  ]
+                : []),
+            )
+            const row = element(
+              'div',
+              { className: 'ledger-row' },
+              element('div', { className: 'who', textContent: pane.title }),
+              element(
+                'div',
+                { className: 'bar' },
+                ...parts.map(([part, n]) =>
+                  element('span', {
+                    className: `seg ${part.split(':')[0]}`,
+                    title: `${label(pane, part)}: ${size(n)}`,
+                    style: `width: ${(n / scale) * 100}%`,
+                  }),
+                ),
+              ),
+              what,
+              element(
+                'div',
+                {
+                  className: 'time',
+                  title: `${Math.round(time)} ms to draw the view, from the end of a move or a change of style`,
+                },
+                element('span', {
+                  className: loading ? 'fill loading' : 'fill',
+                  style: `flex-basis: calc((100% - 96px) * ${time / longest})`,
+                }),
+                loading
+                  ? pane.restyling
+                    ? 'Restyling…'
+                    : 'Loading…'
+                  : `Drew in ${(time / 1000).toFixed(1)} s`,
+              ),
+            )
+            const aside = element('div', { className: 'aside' })
+            row.append(aside)
+            if (moved)
+              aside.append(
+                element('span', {
+                  textContent: `Since the last move: ${format(move.bytes)} · ${move.requests} requests`,
+                }),
+              )
+            return row
+          }),
+        )
       }
       const show = async () => {
-        const stats = await current()
+        latest = await current()
         let repaint = false
         for (const { hud, pane } of maps) {
           const absent = lacks(pane)
@@ -1022,32 +1494,30 @@
                 `Its tiles were cut with ${pane.fields.join(', ') || 'no attributes'}. Styling by another column means cutting the tiles again.`,
               ),
             )
-          const { requests, bytes } = tally(stats, pane.keys)
-          const children = [
+          hud.replaceChildren(
             Object.assign(document.createElement('b'), { textContent: pane.title }),
-            document.createTextNode(`${format(bytes)} in ${requests} requests`),
-            Object.assign(document.createElement('small'), {
-              textContent: hud.dataset.status
-                ? hud.dataset.status
-                : `${features(pane).toLocaleString()} features delivered (cumulative)`,
-            }),
-            ...styleNote(pane).map(([textContent, className = '']) =>
-              Object.assign(document.createElement('small'), { textContent, className }),
-            ),
-            Object.assign(document.createElement('small'), {
-              textContent: `First map idle: ${pane.firstIdle === undefined ? 'loading…' : Math.round(pane.firstIdle) + ' ms'} · After last move or style: ${pane.pendingSince !== undefined ? 'loading…' : Math.round(pane.lastIdle ?? 0) + ' ms'}`,
-            }),
-          ]
-          hud.replaceChildren(...children)
+            ...(hud.dataset.status
+              ? [
+                  Object.assign(document.createElement('small'), {
+                    textContent: hud.dataset.status,
+                  }),
+                ]
+              : []),
+          )
         }
         if (repaint) paintStyle()
+        showLedger()
+        showStructure()
         document.getElementById('zoom').textContent = maps.length
           ? ` zoom ${maps[0].map.getZoom().toFixed(1)}`
           : ''
       }
       document.getElementById('reset').onclick = async () => {
-        baseline = structuredClone(await current())
-        featureBaseline = { ...tileCounts }
+        await show()
+        origin = view = latest
+        turned = undefined
+        moved = false
+        reset = true
         show()
       }
       setInterval(show, 500)

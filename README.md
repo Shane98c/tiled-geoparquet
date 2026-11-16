@@ -173,7 +173,7 @@ public bucket. Bytes are decimal.
 
 | Tile                  | Tiled GeoParquet             | COGP 2.2.2                  | Esri SOP                    | PMTiles                      | Baked PMTiles                |
 | --------------------- | ---------------------------- | --------------------------- | --------------------------- | ---------------------------- | ---------------------------- |
-| open                  | 16 KB, 6 req                 | 1.50 MB, 3 req              | 2.62 MB, 3 req              | 16 KB, 1 req                 | 16.46 MB, 4 req              |
+| open                  | 16 KB, 1 req                 | 1.50 MB, 3 req              | 2.62 MB, 3 req              | 16 KB, 1 req                 | 16.46 MB, 4 req              |
 | z8 metro, Tokyo       | 0.56 MB, 2 req, 93,801 feat. | 0.12 MB, 8 req, 1,152 feat. | 26.65 MB, 1,048 req, 28,000 | 0.50 MB, 2 req, 95,774 feat. | 0.50 MB, 2 req, 95,774 feat. |
 | z11 city, Tokyo       | 0.26 MB, 2 req, 23,371       | 0.25 MB, 17 req, 860        | 5.39 MB, 143 req, 177,679   | 0.31 MB, 2 req, 24,373       | 0.31 MB, 2 req, 24,373       |
 | z13 downtown, Shibuya | 0.30 MB, 2 req, 28,630       | 0.68 MB, 42 req, 2,739      | 2.61 MB, 92 req, 51,996     | 0.35 MB, 2 req, 28,908       | 0.35 MB, 2 req, 28,908       |
@@ -181,8 +181,7 @@ public bucket. Bytes are decimal.
 | z15 street, Tokyo     | 0.01 MB, 2 req, 206          | 0.86 MB, 82 req, 213        | 1.30 MB, 62 req, 229        | 0.03 MB, 2 req, 1,441        | 0.19 MB, 10 req, 378         |
 | z15 street, Osaka     | 0.03 MB, 2 req, 1,261        | 0.80 MB, 80 req, 1,287      | 1.01 MB, 57 req, 1,362      | 0.11 MB, 2 req, 6,523        | 0.29 MB, 10 req, 1,593       |
 
-This layout opens with one request for its 16 KB index and five one-byte
-requests that open the connections its tiles are then read over. The five
+The five
 files do not agree on what a tile should contain, so bytes only mean something
 next to the feature counts. COGP's conversion keeps very few features
 at coarse levels; PMTiles stops at z14 and serves the overzoomed parent at z15;
@@ -224,10 +223,9 @@ competitive request counts and transfer sizes, not a general speed ranking.
   same two rounds, and reads 14 to 50% more bytes; the next tile takes one
   more request. On 155.6 million US buildings read from S3 in Chrome, a first
   view styled by two half-float attributes took 3 to 15 requests in two
-  rounds and 0.75 to 1.06 s, against 2 to 5 requests and 0.70 to 1.00 s with
-  geometry only. That is with a tile's requests sent past the
-  browser's HTTP cache, which answers the range requests of one URL one at a
-  time, and six connections opened as the file opens, the reader's defaults
+  rounds, against 2 to 5 requests with geometry only. By default a tile's
+  requests are sent past the browser's HTTP cache, which answers the range
+  requests of one URL one at a time
   ([Requests](docs/usage.md#requests)); a view opened again then reads from
   the network where the cache would answer from disk, unless `rangeParam`
   gives each range a URL of its own, which keeps both. Switching drawn tiles

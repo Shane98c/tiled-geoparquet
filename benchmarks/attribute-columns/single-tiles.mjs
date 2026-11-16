@@ -33,8 +33,6 @@ import { printVerdict } from './verdict.mjs'
 const values = parse({ latency: { type: 'string', default: '20' } })
 const latency = Number(values.latency)
 const { openReader, httpSource, coalescing, renderTile } = await import(dist('index.js'))
-// the replayed network has no connections for a reader to open ahead of its tiles
-const ONE = { connections: 1 }
 const { zstdReady } = await import(dist('compressors.js'))
 await zstdReady
 const { PMTiles } = await import(nodeModule('pmtiles/dist/esm/index.js'))
@@ -69,7 +67,7 @@ const result = {
 
 for (const [label, path] of files) {
   const { net, url } = await fresh(path)
-  const reader = await openReader(coalescing(await httpSource([url], ONE), { windowMs: 1 }))
+  const reader = await openReader(coalescing(await httpSource([url]), { windowMs: 1 }))
   await net.settle()
   const { log, ...open } = net.snapshot()
   result.opens[label] = { ...open, zooms: reader.lod.zooms }
@@ -81,16 +79,14 @@ for (const [index, [z, lon, lat, name]] of scenario.tiles.entries()) {
   for (const [label, path] of files)
     for (const [style, properties] of Object.entries(styleMap)) {
       const { net, url } = await fresh(path)
-      const reader = await openReader(coalescing(await httpSource([url], ONE), { windowMs: 1 }))
+      const reader = await openReader(coalescing(await httpSource([url]), { windowMs: 1 }))
       await net.settle()
       const options = { layer: 'shapes', pointLayer: 'points', properties }
       const cold = await measure(net, () => renderTile(reader, z, x, y, options))
       const next = await measure(net, () => renderTile(reader, z, x + 1, y, options))
       await net.close()
       const primed = await fresh(path)
-      const again = await openReader(
-        coalescing(await httpSource([primed.url], ONE), { windowMs: 1 }),
-      )
+      const again = await openReader(coalescing(await httpSource([primed.url]), { windowMs: 1 }))
       await renderTile(again, z, x - 4, y + 4, options)
       await primed.net.settle()
       const warm = await measure(primed.net, () => renderTile(again, z, x, y, options))

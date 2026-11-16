@@ -95,6 +95,14 @@ The compressed root is bounded by the first 16 KiB and contains:
 - `footer_bytes`: the length of the standard footer's metadata, so a reader
   fetches the footer and its trailer in one request.
 - `lod`, `primary`: copies of the logical LOD metadata and primary column name.
+  The copy may omit attribute summaries
+  ([Attribute summaries](SPEC.md#attribute-summaries)). The reference writer
+  first fits the root into the bootstrap as if there were no summaries. It
+  then adds summaries that take up to 4 KiB of the gzip root, leaving out the
+  largest ones first. To make room for them
+  it branches only row directories, and where none can branch it leaves out
+  the largest remaining summary. A summary therefore never moves a node of an
+  LOD directory or of the primary directory out of the root.
 - `bounds`, `columns`: map extent and the scalar (non-nested) columns other
   than the primary geometry, including the key column, so a map can
   initialize without another reader open.

@@ -78,12 +78,30 @@ export interface LodMetadata {
   /** Attributes a map can style by: a row's own value is in an attribute
    * column, or the source column at an LOD without one, and its boundary
    * copies pack it. */
-  attributes: { name: string; type: string; values?: string[] }[]
+  attributes: { name: string; type: string; values?: string[]; summary?: AttributeSummary }[]
   /** The struct of attribute columns, and the LODs with one per attribute;
    * other LODs read the source columns. */
   attribute_columns?: { column: string; lods: string[] }
   thinning: Record<string, unknown>
   lods: Record<string, Omit<Lod, 'name'>>
+}
+
+/** What a file says of an attribute's values over the rows its finest LOD
+ * shows, enough to choose a legend without reading data. The copy of the
+ * metadata in a spatial index root may leave it out. */
+export interface AttributeSummary {
+  /** Rows with a value */
+  count: number
+  /** A number's least and greatest finite value, absent with `quantiles`
+   * where it has none */
+  min?: number
+  max?: number
+  /** A number's values at the 0.02, 0.25, 0.5, 0.75 and 0.98 quantiles of
+   * its finite values */
+  quantiles?: number[]
+  /** Rows with each entry of `values`, in its order, or the rows of a
+   * boolean that are false and those that are true */
+  counts?: number[]
 }
 
 /** A hyparquet-style byte source whose slices can be aborted. */

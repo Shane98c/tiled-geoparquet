@@ -21,6 +21,8 @@ PACK_VERSION = 3
 INDEX_VERSION = 4
 # a copy's presence bitmap is one 64-bit varint, a bit per attribute
 MAX_ATTRIBUTES = 64
+# the probabilities of the quantiles an attribute's summary holds
+SUMMARY_QUANTILES = (0.02, 0.25, 0.5, 0.75, 0.98)
 # the columns `read_overview` returns beside the attributes
 OVERVIEW_COLUMNS = ('row', 'geometry')
 GEOMETRY_TYPES = {'point': 'Point', 'line': 'MultiLineString', 'polygon': 'MultiPolygon'}

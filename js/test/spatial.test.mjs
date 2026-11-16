@@ -35,6 +35,15 @@ assert.deepEqual(fast.bounds, old.bounds)
 assert.deepEqual(fast.scalarColumns(), old.scalarColumns())
 assert.deepEqual(optimized.reads, [[0, 16384]], 'one small open, no footer')
 const footer = await GeoParquetReader.open(coalescing(await makeSource(newPath)))
+// The one small open brings the attributes as the footer declares them, each
+// with its summary unless a root with no room has left it out.
+assert.ok(footer.lod.attributes.every((a) => Number.isInteger(a.summary?.count)))
+assert.equal(fast.lod.attributes.length, footer.lod.attributes.length)
+for (const [i, declared] of footer.lod.attributes.entries()) {
+  const { summary, ...bare } = declared
+  const held = fast.lod.attributes[i]
+  assert.deepEqual(held, 'summary' in held ? declared : bare)
+}
 const canonical = (buffer) => {
   const tile = new VectorTile(new PbfReader(new Uint8Array(buffer)))
   const features = []
@@ -257,6 +266,29 @@ aborted.abort()
 await assert.rejects(renderTile(cached, z, x, y, { signal: aborted.signal }), {
   name: 'AbortError',
 })
+
+// A reader tells its bytes apart by what they hold: the open is index, a tile of
+// shapes alone adds index and shapes, and a styled one the columns it names.
+{
+  const source = await makeSource(newPath)
+  const reader = await openReader(source)
+  assert.deepEqual(reader.bytesByPart(), { index: 16384 })
+  const [z, x, y] = cases[expected.findIndex((features) => features?.length)]
+  await renderTile(reader, z, x, y)
+  const plain = reader.bytesByPart()
+  assert.deepEqual(Object.keys(plain).sort(), ['index', 'shapes'])
+  assert.ok(plain.shapes > 0)
+  const [name] = reader.lod.attributes.map((a) => a.name)
+  await renderTile(reader, z, x, y, { properties: [name] })
+  const styled = reader.bytesByPart()
+  assert.ok(styled[`column:${name}`] > 0)
+  assert.equal(styled.shapes, plain.shapes, 'a style reads no shapes again')
+  assert.equal(
+    Object.values(styled).reduce((sum, bytes) => sum + bytes, 0),
+    source.reads.reduce((sum, [start, end]) => sum + end - start, 0),
+    'every byte read belongs to a part',
+  )
+}
 console.log(`spatial tests passed: ${cases.length} tiles, analytical rows, footer reads and cache`)
 
 for (const workers of [1, 2, 4]) {
@@ -269,9 +301,10 @@ for (const workers of [1, 2, 4]) {
     assert.deepEqual(opened.metadata.columns, old.scalarColumns())
     assert.deepEqual(
       (await call({ type: 'stats' })).stats[url],
-      { bytes: 16389, requests: 6 },
-      'one bootstrap, five one-byte requests beside it, regardless of worker count',
+      { bytes: 16384, requests: 1 },
+      'one bootstrap, regardless of worker count',
     )
+    assert.deepEqual((await call({ type: 'stats' })).parts[url], { index: 16384 })
     const cancelled = call({ type: 'tile', config: { url }, z, x, y })
     const rejection = assert.rejects(cancelled, { name: 'AbortError' })
     client.cancel(cancelled.id)
@@ -309,6 +342,12 @@ for (const workers of [1, 2, 4]) {
       (await call({ type: 'stats' })).stats[url],
       before,
       'transfers never detach the shared page cache',
+    )
+    const parts = (await call({ type: 'stats' })).parts[url]
+    assert.ok(parts.shapes > 0)
+    assert.ok(
+      Object.values(parts).reduce((sum, bytes) => sum + bytes, 0) <= before.bytes,
+      'the parts of a file sum to no more than its bytes',
     )
     const tile = await call({ type: 'tile', config: { url }, z, x, y })
     assert.deepEqual(new Uint8Array(tile.data), new Uint8Array(await renderTile(fast, z, x, y)))

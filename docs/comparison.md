@@ -28,14 +28,13 @@ is not a CDN benchmark.
 
 | Reader           | Open            |
 | ---------------- | --------------- |
-| Tiled GeoParquet | 0.02 MB, 6 req  |
+| Tiled GeoParquet | 0.02 MB, 1 req  |
 | COGP             | 1.50 MB, 3 req  |
 | Esri SOP         | 2.62 MB, 3 req  |
 | PMTiles          | 0.02 MB, 1 req  |
 | Baked PMTiles    | 16.46 MB, 4 req |
 
-Tiled GeoParquet opens with one request for its 16 KiB index root and five
-one-byte requests, which open the connections its tiles are then read over.
+Tiled GeoParquet opens with one request for its 16 KiB index root.
 Baked PMTiles opens with a 64 KB read of the file's end, which finds the
 archive, two requests for the archive's header and metadata, and the Parquet
 footer, 16.37 MB over this file's 3,281 row groups, which its page reads at

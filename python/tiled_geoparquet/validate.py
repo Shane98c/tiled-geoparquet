@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import math
 import re
@@ -19,6 +20,7 @@ from .encoding import (
     INT32,
     MAX_ATTRIBUTES,
     PACK_VERSION,
+    SUMMARY_QUANTILES,
     check_index_version,
     column_type,
     is_attribute_type,
@@ -149,7 +151,7 @@ def validate(path: str | Path, sample_rows: int = 2000, *, full: bool = False) -
             isinstance(placeholder, (int, float)) and math.isfinite(placeholder) and placeholder > 0
         ):
             raise ValidationError(f'lod {name}: placeholder must be a positive width in grid cells')
-    _check_attributes(lod.get('attributes', []))
+    _check_attributes(lod.get('attributes', []), f.metadata.num_rows)
     columns = _check_attribute_columns(f.schema_arrow, lod)
     paths = [f.schema.column(i).path for i in range(len(f.schema))]
     shared = sorted(path for path in set(paths) if paths.count(path) > 1)
@@ -375,9 +377,11 @@ def _check_covering(field: pa.Field, covering, geometry: str) -> None:
             )
 
 
-def _check_attributes(attributes) -> None:
+def _check_attributes(attributes, rows: int | None = None) -> None:
     """Raise unless every attribute has a distinct name, the Arrow name of a
-    type an attribute can have, and a value table only when it is a string."""
+    type an attribute can have, a value table only when it is a string, and a
+    summary, where it has one, of the shape its type takes in a file of
+    `rows` rows."""
     if not isinstance(attributes, list) or not all(isinstance(a, dict) for a in attributes):
         raise ValidationError('attributes must be a list of {name, type} objects')
     if len(attributes) > MAX_ATTRIBUTES:
@@ -403,9 +407,77 @@ def _check_attributes(attributes) -> None:
             or not 0 < len(values) <= 256
         ):
             raise ValidationError(f'attribute {name}: values must be a table of 1 to 256 strings')
+        if 'summary' in a:
+            _check_summary(name, t, values, a['summary'], rows)
     names = [a['name'] for a in attributes]
     if len(set(names)) != len(names):
         raise ValidationError('attribute names must be distinct')
+
+
+def _check_summary(name: str, t: pa.DataType, values, summary, rows: int | None) -> None:
+    """Raise unless an attribute's `summary` holds a `count` of rows; on a
+    number, `min`, `max` and ascending `quantiles` between them, values its
+    type holds, all three or none and all three where an integer has a
+    value, and on no other type; and `counts` adding up to `count`, one for
+    each entry of a string's value table or two for a boolean, on those and
+    no other."""
+
+    def whole(v) -> bool:
+        return isinstance(v, int) and not isinstance(v, bool) and v >= 0
+
+    def held(v) -> bool:
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+            return False
+        if pa.types.is_integer(t):
+            low, high = np.iinfo(t.to_pandas_dtype()).min, np.iinfo(t.to_pandas_dtype()).max
+            return isinstance(v, int) and low <= v <= high
+        with np.errstate(over='ignore'):
+            return float(np.dtype(t.to_pandas_dtype()).type(v)) == v
+
+    def fail(why: str):
+        raise ValidationError(f'attribute {name}: summary {why}')
+
+    if not isinstance(summary, dict):
+        fail('must be an object')
+    count = summary.get('count')
+    if not whole(count) or (rows is not None and count > rows):
+        fail('count must be a number of the rows')
+    number = pa.types.is_integer(t) or pa.types.is_floating(t)
+    spread = [key for key in ('min', 'max', 'quantiles') if key in summary]
+    if spread:
+        quantiles = summary.get('quantiles')
+        steps = [
+            summary.get('min'),
+            *(quantiles if isinstance(quantiles, list) else []),
+            summary.get('max'),
+        ]
+        if (
+            not number
+            or len(spread) != 3
+            or count == 0
+            or len(steps) != len(SUMMARY_QUANTILES) + 2
+            or not all(held(v) for v in steps)
+            or any(a > b for a, b in itertools.pairwise(steps))
+        ):
+            fail(
+                f'must hold min, {len(SUMMARY_QUANTILES)} ascending quantiles and max together, '
+                'values of its type, on a number with a value'
+            )
+    elif pa.types.is_integer(t) and count:
+        fail('must hold min, max and quantiles on an integer with a value')
+    slots = len(values) if values is not None else 2 if pa.types.is_boolean(t) else None
+    if slots is None:
+        if 'counts' in summary:
+            fail('counts go with a value table or a boolean')
+    else:
+        counts = summary.get('counts')
+        if (
+            not isinstance(counts, list)
+            or len(counts) != slots
+            or not all(whole(v) for v in counts)
+            or sum(counts) != count
+        ):
+            fail(f'counts must be {slots} numbers of rows adding up to count')
 
 
 def _check_coverings(

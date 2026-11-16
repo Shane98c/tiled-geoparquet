@@ -22,8 +22,10 @@ const visible = new VisibleTileCache()
 let geometryDecodes = 0,
   projectionJobs = 0
 const readers = new Map<string, Promise<TileReader>>()
+/** The readers that have opened, for what each has read by part. */
+const opened = new Map<string, TileReader>()
 let workerCount = 2
-let sourceOptions: { connections?: number; cache?: RequestCache; rangeParam?: string } = {}
+let sourceOptions: { cache?: RequestCache; rangeParam?: string } = {}
 let pool: Promise<TilePool | undefined> | undefined
 let helpers: TilePool | undefined
 let started = false
@@ -107,7 +109,10 @@ const getReader = (url: string): Promise<TileReader> => {
       openReader(coalescing(timed(file), { windowMs: 1 })),
     )
     readers.set(url, reader)
-    reader.catch(() => readers.delete(url))
+    reader.then(
+      (open) => opened.set(url, open),
+      () => readers.delete(url),
+    )
   }
   return reader
 }
@@ -163,21 +168,17 @@ scope.addEventListener('message', (event: MessageEvent<WorkerRequest | CpuReques
       !Number.isInteger(request.workers) ||
       request.workers < 1 ||
       request.workers > 4 ||
-      (request.connections !== undefined &&
-        (!Number.isInteger(request.connections) || request.connections < 1)) ||
       request.rangeParam === ''
     ) {
       scope.postMessage({
         id: request.id,
         ok: false,
         name: 'Error',
-        error:
-          'Configure 1–4 workers, 1 or more connections and a named range parameter before opening a source',
+        error: 'Configure 1–4 workers and a named range parameter before opening a source',
       } satisfies WorkerResponse)
     } else {
       workerCount = request.workers
       sourceOptions = {
-        connections: request.connections,
         cache: request.cache,
         rangeParam: request.rangeParam,
       }
@@ -194,6 +195,11 @@ scope.addEventListener('message', (event: MessageEvent<WorkerRequest | CpuReques
       id: request.id,
       ok: true,
       stats,
+      parts: Object.fromEntries(
+        [...opened].flatMap(([url, reader]) =>
+          reader instanceof SpatialReader ? [[url, reader.bytesByPart()]] : [],
+        ),
+      ),
       cache: {
         bytes: visible.bytes,
         tiles: visible.size,

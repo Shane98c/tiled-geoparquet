@@ -20,6 +20,7 @@ from tiled_geoparquet import cluster, drop_rate, read_overview, tile_sizes, vali
 from tiled_geoparquet._compact import get, loads
 from tiled_geoparquet._layout import (
     _ROOT_TARGET_BYTES,
+    _SUMMARY_BYTES,
     _grouping,
     _json,
     _node,
@@ -235,7 +236,7 @@ def test_metadata_declares_the_attribute_columns(built):
     lod = json.loads(pq.read_schema(columns).metadata[b'geo'])['lod_columns']
     assert lod['version'] == '0.2.0' and lod['pack_version'] == 3
     assert [a['name'] for a in lod['attributes']] == ['flag', 'height', 'kind', 'rps', 'name']
-    assert all(set(a) <= {'name', 'type', 'values'} for a in lod['attributes'])
+    assert all(set(a) <= {'name', 'type', 'values', 'summary'} for a in lod['attributes'])
     # every LOD holds them, those showing every row too
     assert lod['attribute_columns'] == {'column': 'lod_attributes', 'lods': list(lod['lods'])}
     schema = pq.read_schema(columns).field('lod_attributes').type
@@ -806,6 +807,80 @@ def test_a_large_file_reads_its_lods_as_without_attributes(rows):
         assert primary[0][0] > 1, 'the primary tree branches'
     assert with_columns == without
     assert primary_with == primary
+
+
+def _fit(attributes):
+    """The root of the large file keeping `attributes`, fitted."""
+    root, lods, indexed = _large_root(attributes)
+    target = io.BytesIO()
+    target.write(bytes(16384))
+    fit_root(target, root, _large_trees(lods, indexed, 50_000_000), lods, indexed)
+    assert len(_json(root)) <= _ROOT_TARGET_BYTES
+    return root
+
+
+def _unsummarised(attributes):
+    return [{k: v for k, v in a.items() if k != 'summary'} for a in attributes]
+
+
+def test_a_root_that_branched_to_fit_holds_small_summaries():
+    """Twenty-one numbers with summaries, in a root whose row directories
+    branch to fit: every summary is in the root, and the LOD and primary trees
+    are as without them."""
+    declared = [
+        {
+            'name': f'attribute_{i}',
+            'type': 'double',
+            'summary': {
+                'count': 1000 + i,
+                'min': 0.5,
+                'max': 99.5 + i,
+                'quantiles': [1.5, 20.5, 40.5, 60.5 + i, 98.5],
+            },
+        }
+        for i in range(21)
+    ]
+    plain, summarised = _fit(_unsummarised(declared)), _fit(declared)
+    assert summarised['lod']['attributes'] == declared
+    assert summarised['directories'] == plain['directories']
+    assert summarised['primary_index'] == plain['primary_index']
+
+
+def test_summaries_past_their_share_of_the_root_are_left_out_largest_first():
+    """Twenty value tables whose summaries pack to more than the bootstrap:
+    the root's copy keeps the smallest, within their share of the root, and
+    the LOD and primary trees are as without them."""
+    rng = np.random.default_rng(7)
+    declared = [
+        {
+            'name': 'height',
+            'type': 'float',
+            'summary': {'count': 9, 'min': 1.0, 'max': 9.0, 'quantiles': [1.0] * 5},
+        }
+    ]
+    for i in range(20):
+        counts = rng.integers(0, 10 ** (3 + i % 6), 256).tolist()
+        declared.append(
+            {
+                'name': f'class_{i}',
+                'type': 'string',
+                'values': [f'value {j}' for j in range(256)],
+                'summary': {'count': sum(counts), 'counts': counts},
+            }
+        )
+    plain, summarised = _fit(_unsummarised(declared)), _fit(declared)
+    assert summarised['directories'] == plain['directories']
+    assert summarised['primary_index'] == plain['primary_index']
+
+    held = summarised['lod']['attributes']
+    assert _unsummarised(held) == plain['lod']['attributes']
+    assert all(a == d or a == _unsummarised([d])[0] for a, d in zip(held, declared, strict=True))
+    sizes = [len(_json(d['summary'])) for d in declared]
+    kept = [size for a, size in zip(held, sizes, strict=True) if 'summary' in a]
+    left_out = [size for a, size in zip(held, sizes, strict=True) if 'summary' not in a]
+    assert 'summary' in held[0] and left_out
+    assert max(kept) <= min(left_out)
+    assert len(_json(summarised)) - len(_json(_fit(_unsummarised(held)))) <= _SUMMARY_BYTES + 64
 
 
 def _leaves(raw, root):

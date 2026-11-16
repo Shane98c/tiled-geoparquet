@@ -509,16 +509,14 @@ assert.equal(plainServed.code, 0)
   await once(origin, 'listening')
   const url = `http://127.0.0.1:${origin.address().port}/buildings.lod.parquet`
   const remote = await run([url, '--port', '0', '--layer', 'buildings'], async (served) => {
-    // the one-byte requests beside the opening read open connections
-    const reads = () => requested.filter((range) => range !== 'bytes=0-0')
-    assert.deepEqual(reads(), ['bytes=0-16383'], 'an indexed file opens in one read')
+    assert.deepEqual(requested, ['bytes=0-16383'], 'an indexed file opens in one read')
     const [z, x, y] = tileAt(...centre, finest)
     const body = await (await fetch(`${served}/${z}/${x}/${y}.mvt`)).arrayBuffer()
     assert.deepEqual(
       new Uint8Array(body),
       new Uint8Array(await renderTile(reader, z, x, y, { layer: 'buildings' })),
     )
-    assert.ok(reads().length > 1, 'the tile is read from the URL')
+    assert.ok(requested.length > 1, 'the tile is read from the URL')
   })
   assert.equal(remote.code, 0, remote.stderr)
   origin.closeAllConnections()

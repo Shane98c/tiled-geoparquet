@@ -36,6 +36,7 @@ from .encoding import (
     MAX_ATTRIBUTES,
     OVERVIEW_COLUMNS,
     PACK_VERSION,
+    SUMMARY_QUANTILES,
     column_type,
     infer_attributes,
     is_attribute_type,
@@ -594,6 +595,59 @@ def _value_table(con, path: Path, name: str, overrides: Iterable[pa.Array]) -> l
                 return None
             values.update(distinct.to_pylist())
     return sorted(values) if len(values) <= DICTIONARY_MAX else None
+
+
+def _summaries(
+    con, rows: str, attributes: list[pa.Field], tables: Mapping[str, list[str]]
+) -> dict[str, dict]:
+    """Each attribute's summary of its column over the SQL relation `rows`,
+    for a viewer to draw a legend from: `count`, the rows with a value; for a
+    number `min`, `max` and `quantiles`, the values at SUMMARY_QUANTILES, of
+    its finite values as the declared type holds them; for a string with a
+    value table in `tables` `counts`, the rows with each of the table's
+    values, and for a boolean the rows that are false and those that are
+    true."""
+    out = {}
+    for a in attributes:
+        c = _quoted(a.name)
+        if a.name in tables:
+            held = dict(
+                con.sql(
+                    f'SELECT {c}, count(*) FROM {rows} WHERE {c} IS NOT NULL GROUP BY {c}'
+                ).fetchall()
+            )
+            counts = [held.get(v, 0) for v in tables[a.name]]
+            out[a.name] = {'count': sum(counts), 'counts': counts}
+        elif pa.types.is_boolean(a.type):
+            count, true = con.sql(
+                f'SELECT count({c}), count(*) FILTER (WHERE {c}) FROM {rows}'
+            ).fetchall()[0]
+            out[a.name] = {'count': count, 'counts': [count - true, true]}
+        elif pa.types.is_integer(a.type) or pa.types.is_floating(a.type):
+            finite = f'FILTER (WHERE isfinite({c}::DOUBLE))'
+            count, low, high, quantiles = con.sql(
+                f'SELECT count({c}), min({c}) {finite}, max({c}) {finite}, '
+                f'quantile_disc({c}, {list(SUMMARY_QUANTILES)}) {finite} FROM {rows}'
+            ).fetchall()[0]
+            out[a.name] = {'count': count}
+            if low is not None:
+                held = _as_declared([low, high, *quantiles], a.type)
+                out[a.name].update(min=held[0], max=held[1], quantiles=held[2:])
+        else:
+            out[a.name] = {'count': con.sql(f'SELECT count({c}) FROM {rows}').fetchall()[0][0]}
+    return out
+
+
+def _as_declared(values: list, t: pa.DataType) -> list:
+    """Numbers as attribute type `t` holds them: an integer as it is, and a
+    float rounded to the type's width, so a reader's decoded value equals
+    it."""
+    if not pa.types.is_floating(t):
+        return [int(v) for v in values]
+    width = np.dtype(t.to_pandas_dtype()).type
+    # a value past the type's range is refused where the attribute is cast
+    with np.errstate(over='ignore'):
+        return [float(width(v)) for v in values]
 
 
 def _spill_for_batch(
@@ -1192,11 +1246,19 @@ def _build(src: str, out: Path, o: SimpleNamespace, held: contextlib.ExitStack) 
             if table is not None:
                 dictionaries[a.name] = table
 
+    # over the rows a map can show, those the finest LOD holds
+    summaries = _summaries(
+        con,
+        f"(SELECT * FROM '{sorted_path}' WHERE __cx IS NOT NULL)",
+        attributes,
+        dictionaries,
+    )
     attribute_metadata = [
         {
             'name': a.name,
             'type': str(a.type),
             **({'values': dictionaries[a.name]} if a.name in dictionaries else {}),
+            'summary': summaries[a.name],
         }
         for a in attributes
     ]

@@ -14,6 +14,8 @@ const { values } = parseArgs({
     esri: { type: 'string' },
     release: { type: 'string' },
     hide: { type: 'string' },
+    style: { type: 'string' },
+    domains: { type: 'string' },
   },
 })
 if (!values.out || !values.url || !values.pmtiles || !values.release)
@@ -31,7 +33,7 @@ const defaults = {
   center: '139.76,35.68',
   zoom: '11',
   basemap: '0',
-  style: 'geometry',
+  style: values.style ?? 'geometry',
   demoServer: '0',
   latency: '0',
 }
@@ -47,6 +49,13 @@ html = html.replace(
   anchor,
   `${anchor}\n      for (const [key, value] of Object.entries(${json(defaults)})) {\n        if (!params.has(key)) params.set(key, value)\n      }\n      document.getElementById('notes').textContent += ${json(` R2 release ${values.release}; real network timing, no artificial delay.`)}`,
 )
+// The colours of the file's columns, fixed ahead of its data: {name: {stops}} or {name: {values}}.
+if (values.domains) {
+  const element = /(<script type="application\/json" id="domains">)[\s\S]*?(<\/script>)/
+  if (!element.test(html)) throw new Error('Comparison domains element has changed')
+  const domains = json(JSON.parse(await readFile(values.domains, 'utf8')))
+  html = html.replace(element, (_, open, close) => `${open}${domains}${close}`)
+}
 await cp(new URL('./dist/', import.meta.url), resolve(out, 'dist'), { recursive: true })
 // The deck.gl example opens the hosted GeoParquet file unless ?url= overrides it.
 const deckDefault = 'value="/buildings.lod.parquet"'
