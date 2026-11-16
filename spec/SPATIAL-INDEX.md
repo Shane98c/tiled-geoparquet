@@ -30,7 +30,10 @@ standard Parquet footer | footer_length:u32le | PAR1
 The footer retains the original row groups, columns, schema, statistics, and
 GeoParquet metadata, with relocated offsets and updated physical sizes.
 `lod_spatial_index` in its key/value metadata advertises the profile version
-and bootstrap location, `{"version":4,"offset":4,"length":16380}`. Primary
+and bootstrap location, `{"version":4,"offset":4,"length":16380}`. The root
+states the same version: a reader refuses any other in whichever of the two
+it opens the file through, before it reads a value, and the validator
+refuses a file where they differ. Primary
 geometry and source attribute chunks are copied byte for byte. LOD chunks are
 re-encoded in the original row order, with the same nullable binary schema and
 zstd, with page breaks at the LOD's finest tile grid. Every LOD page is a v1
@@ -70,7 +73,9 @@ no dictionary, of PLAIN values, or BYTE_STREAM_SPLIT ones in a FLOAT or DOUBLE
 column, the two types every reader of that encoding decodes; the reference
 writer encodes such a chunk both ways and keeps the smaller. All attribute column chunks share one codec, the root's
 `attribute_codec`. The column remains an ordinary nullable Parquet column,
-whose values a reader matches to rows through the LOD's pages. A reader
+whose values a reader matches to rows through the LOD's pages. Read as a
+table it pairs each value with a row the value does not describe, so
+[analysis readers](SPEC.md#analysis-readers) leave it out. A reader
 MUST refuse an attribute page it reads that holds a value past as many rows
 as its LOD page shows. The pages a tile styled by an attribute reads therefore hold
 the rows of the overview pages it reads that hold a value, in the same

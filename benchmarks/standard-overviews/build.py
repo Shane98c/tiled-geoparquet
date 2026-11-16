@@ -19,6 +19,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
+from tiled_geoparquet.encoding import check_index_version
 from tiled_geoparquet.unpack import (
     PageBounds,
     column_values,
@@ -34,6 +35,7 @@ GEOMETRY = pa.list_(pa.list_(pa.list_(pa.struct([('x', pa.int32()), ('y', pa.int
 def decode_chunk(args):
     path, group, name, family, lod, dictionaries, first_row = args
     f = pq.ParquetFile(path)
+    check_index_version(f)
     keys = f.read_row_group(group, columns=['hilbert']).column(0).combine_chunks()
     values = lod_values(f, group, 'lod', name)
     arrow_fields = [pa.field(a['name'], pa.type_for_alias(a['type'])) for a in lod['attributes']]
@@ -85,6 +87,7 @@ def main():
     args = parser.parse_args()
     t0 = time.time()
     f = pq.ParquetFile(args.packed)
+    check_index_version(f)
     lod = json.loads(f.schema_arrow.metadata[b'geo'])['lod_columns']
     fields = lod['attributes']
     dictionaries = {a['name']: a['values'] for a in fields if 'values' in a}

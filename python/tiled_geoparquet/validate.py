@@ -13,12 +13,13 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 import shapely
 
-from ._tile_sizes import tile_sizes
+from ._tile_sizes import _root, tile_sizes
 from .encoding import (
     ENCODING,
     INT32,
     MAX_ATTRIBUTES,
     PACK_VERSION,
+    check_index_version,
     column_type,
     is_attribute_type,
     is_compatible_version,
@@ -73,6 +74,12 @@ def validate(path: str | Path, sample_rows: int = 2000, *, full: bool = False) -
         raise ValidationError(f'geometry encoding {lod.get("encoding")!r} is not {ENCODING}')
     if lod.get('pack_version') != PACK_VERSION:
         raise ValidationError(f'pack_version {lod.get("pack_version")!r} is not {PACK_VERSION}')
+    try:
+        indexed = check_index_version(f)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    if indexed:
+        _check_root_version(path)
     margin = lod.get('margin')
     if not (
         isinstance(margin, (int, float))
@@ -499,6 +506,17 @@ def _check_key_covering(parquet: pq.ParquetFile, group: int, key_column: str) ->
         else:
             message = 'bbox covering on a row with a null Hilbert key'
         raise ValidationError(f'row group {group}, row {row}: {message}')
+
+
+def _check_root_version(path) -> None:
+    """Raise unless the index root at the head of the file states the
+    version its footer advertises."""
+    try:
+        with open(path, 'rb') as source:
+            if _root(source) is None:
+                raise ValueError('spatial index advertised but bootstrap magic missing')
+    except Exception as exc:
+        raise ValidationError(f'spatial index: {exc}') from exc
 
 
 def _check_spatial_index(path, parquet, lod):

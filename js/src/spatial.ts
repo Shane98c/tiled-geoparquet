@@ -17,6 +17,7 @@ import { GeometryBuilder } from './geometry.js'
 import { cellInterval, tileInterval, type Interval } from './key.js'
 import {
   GeoParquetReader,
+  checkIndexVersion,
   checkLod,
   type Bbox,
   type Lod,
@@ -30,7 +31,6 @@ import { MAX_LATITUDE } from './web-mercator.js'
 
 export const BOOTSTRAP_BYTES = 16384
 const MAGIC = 'LODIDX01'
-const VERSION = 4
 const MAX_LEVEL = 32
 /** An attribute slot's length and attribute, each a u32
  * little-endian, and its leaf's offset, a u64 little-endian */
@@ -560,7 +560,7 @@ export async function openReader(file: RangeSource): Promise<TileReader> {
   const length = new DataView(head).getUint32(12, true)
   if (!length || length > head.byteLength - 16) throw new Error('invalid spatial index root length')
   const root = await gunzipJson<SpatialRoot>(head.slice(16, 16 + length))
-  if (root.version !== VERSION) throw new Error(`unsupported spatial index version ${root.version}`)
+  checkIndexVersion(root.version)
   if (root.file_bytes !== file.byteLength)
     throw new Error('spatial index file length disagrees with the file')
   if (!root.lod) throw new Error('spatial index root holds no LOD metadata')
@@ -606,6 +606,7 @@ export class SpatialReader implements TileReader {
     private readonly file: RangeSource,
     private readonly root: SpatialRoot,
   ) {
+    checkIndexVersion(root.version)
     this.bounds = root.bounds ?? [-180, -85.051129, 180, 85.051129]
     this.lod = root.lod
     this.primary = root.primary

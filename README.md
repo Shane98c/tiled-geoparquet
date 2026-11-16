@@ -90,6 +90,13 @@ duckdb.sql("""
 
 This query counts source features, not the thinned overviews.
 
+Analysis reads the source columns and nothing else. The `lod` and
+`lod_attributes` columns are tile payloads for the map reader: leave them out
+of every query. `lod` is packed binary. `lod_attributes` looks like ordinary
+typed values, but in an indexed file each value sits on a leading row of its
+page and not on the row it describes, so a query that reads it pairs values
+with the wrong rows and reports no error.
+
 To view your output locally, install Node 22+ and run:
 
 ```sh
@@ -190,7 +197,9 @@ competitive request counts and transfer sizes, not a general speed ranking.
   minutes on a 16-core machine with 128 GB of memory, with free disk of
   about twice the output.
 - **A custom display encoding and index.** Ordinary tools read original
-  geometries and attributes, but cannot interpret the overview payloads. There
+  geometries and attributes, but cannot interpret the overview payloads, and
+  the per-zoom attribute columns among them decode as typed values on rows
+  they do not describe, so an analysis has to leave them out. There
   is one implementation, a draft spec, and no independent conformance suite.
   Compatibility has been exercised with PyArrow and DuckDB, not every Parquet
   reader or rewriter. [Design alternatives](docs/design-alternatives.md)

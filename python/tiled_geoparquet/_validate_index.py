@@ -18,7 +18,6 @@ from ._layout import (
     PAGE_FIELDS,
     SLOT_HEADER,
     SOURCE_FIELDS,
-    VERSION,
     attribute_cuts,
     coarsest_zoom,
     column_schema,
@@ -38,6 +37,7 @@ from ._layout import (
     slot_place,
     tile_edges,
 )
+from .encoding import INDEX_VERSION
 from .unpack import shown_rows
 
 # FLOAT and DOUBLE among the physical types of a column chunk's metadata
@@ -133,7 +133,7 @@ def check_index(path, parquet, lod):
                 raise ValueError('spatial index advertised but bootstrap magic missing')
             return
         if advertised is None or json.loads(advertised) != {
-            'version': VERSION,
+            'version': INDEX_VERSION,
             'offset': 4,
             'length': BOOTSTRAP_BYTES - 4,
         }:
@@ -144,7 +144,7 @@ def check_index(path, parquet, lod):
         if not 0 < root_length <= BOOTSTRAP_BYTES - 16:
             raise ValueError('invalid spatial root length')
         root = json.loads(gzip.decompress(read(16, root_length)))
-        if root.get('version') != VERSION or root.get('file_bytes') != size:
+        if root.get('version') != INDEX_VERSION or root.get('file_bytes') != size:
             raise ValueError('spatial root version or file length disagrees with footer')
         if root.get('lod') != lod:
             raise ValueError('spatial root metadata disagrees with footer')

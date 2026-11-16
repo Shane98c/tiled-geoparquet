@@ -141,7 +141,9 @@ A conforming file MUST satisfy:
    thinning gives an attribute values of its own MUST be listed, and a
    file with the [spatial index](SPATIAL-INDEX.md) lists every LOD.
 
-The validator checks the version, margin, encoding and per-LOD metadata, the
+The validator checks the version, the version of the
+[spatial index](SPATIAL-INDEX.md) a file's footer advertises and its root
+states, margin, encoding and per-LOD metadata, the
 attributes, the schema shapes, the attribute columns' shape and types against
 the attributes and `attribute_columns`, each attribute's source column type,
 the covering declaration and its GeoParquet version, covering statistics,
@@ -404,13 +406,19 @@ Writers SHOULD record the zooms in `zooms` and MAY use any rule.
 
 Nothing here changes the primary geometry or attribute columns. `SELECT
 count(*)`, spatial joins and attribute queries are correct with no filter.
-The `bbox` column is the standard 1.1 covering. The LOD column is a
-struct of binary columns, and the attribute column a struct of overview
-values, both of which a reader can drop. A query of the table takes a
-row's attribute from the source column: the attribute column's values
-belong to the overviews, whose readers match them to rows, and in a file
-with the spatial index they are not on their rows. The
-reference writer keeps
+The `bbox` column is the standard 1.1 covering.
+
+The LOD column and the attribute column are tile payloads, and an analysis
+of the table MUST leave both out. The LOD column is a struct of binary
+columns in the packed encoding. The attribute column is a struct of typed
+columns that decode as table values and are not: in a file with the spatial
+index a value is on a leading row of its page, not on the row it describes,
+so a query that reads the column pairs its values with other rows and
+nothing reports it. Overview readers match the values to rows. A query of
+the table takes a row's attribute from the source column, which holds every
+row's on its own row, and a reader can drop both payload columns.
+
+The reference writer keeps
 statistics and page indexes on the source's scalar columns, so a filter on
 one, such as an ID or a region code, skips row groups and pages that cannot
 match.

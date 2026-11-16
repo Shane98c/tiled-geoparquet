@@ -30,13 +30,12 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from ._compact import dumps, get, loads, set_value
-from .encoding import check_format
+from .encoding import INDEX_VERSION, check_format, check_index_version
 from .key import hilbert_key
 from .spill import ranges
 from .unpack import PageBounds, leading_rows, leads, moved, shown_rows
 from .writer import DEFAULT_WORKERS
 
-VERSION = 4
 BOOTSTRAP_BYTES = 16384
 # reserve room for file_bytes, footer_bytes and the header
 _ROOT_TARGET_BYTES = BOOTSTRAP_BYTES - 128
@@ -1232,6 +1231,7 @@ def finalize_layout(
     if workers < 1:
         raise ValueError('workers must be positive')
     parquet = pq.ParquetFile(src)
+    check_index_version(parquet)
     geo = json.loads(parquet.schema_arrow.metadata[b'geo'])
     lod = geo['lod_columns']
     check_format(lod)
@@ -1239,7 +1239,7 @@ def finalize_layout(
     if not 0 <= lod['key']['depth'] <= 26:
         raise ValueError('Hilbert depth must fit exact JavaScript integers (0..26)')
     primary = geo['primary_column']
-    root = {'version': VERSION, 'lod': lod, 'primary': primary, 'codecs': {}}
+    root = {'version': INDEX_VERSION, 'lod': lod, 'primary': primary, 'codecs': {}}
     flat = [f.name for f in parquet.schema_arrow if not pa.types.is_nested(f.type)]
     root['columns'] = [name for name in flat if name != primary]
     bbox_column, bbox_fields = covering(geo)
@@ -1636,7 +1636,7 @@ def finalize_layout(
                 kv.append(
                     {
                         1: (8, b'lod_spatial_index'),
-                        2: (8, f'{{"version":{VERSION},"offset":4,"length":16380}}'.encode()),
+                        2: (8, f'{{"version":{INDEX_VERSION},"offset":4,"length":16380}}'.encode()),
                     }
                 )
                 metadata[5] = (9, (12, kv))

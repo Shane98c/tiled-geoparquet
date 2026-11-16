@@ -24,7 +24,7 @@ import pyarrow.parquet as pq
 import shapely
 
 from ._compact import get, loads
-from .encoding import OVERVIEW_COLUMNS, check_format
+from .encoding import OVERVIEW_COLUMNS, check_format, check_index_version
 from .pack import FAMILY_DEPTH, cast_attribute
 
 # larger than any real count; counts are clipped to it so positions stay in int64
@@ -101,8 +101,10 @@ def shown_rows(values: pa.Array | pa.ChunkedArray, geometry_type: str) -> np.nda
 
 def leads(parquet: pq.ParquetFile) -> bool:
     """Whether the file's attribute columns hold their values on the leading
-    rows of their LOD's pages, as a file with the spatial index does."""
-    return b'lod_spatial_index' in (parquet.metadata.metadata or {})
+    rows of their LOD's pages, as a file with the spatial index does. Raise
+    ValueError when the file advertises an index of a version this package
+    does not read."""
+    return check_index_version(parquet)
 
 
 def leading_rows(shown: np.ndarray, bounds: np.ndarray) -> np.ndarray:
@@ -165,6 +167,7 @@ def column_values(
     has none. Meaningful on the rows the LOD shows. `led` is, for a file whose
     attribute columns lead their pages, the rows the LOD shows in the row
     group and the bounds of its pages there."""
+    check_index_version(parquet)
     spec = lod['attribute_columns']
     if name in spec['lods']:
         path = f'{spec["column"]}.{name}.{field.name}'
@@ -200,6 +203,7 @@ def read_overview(path: str | Path, zoom: int) -> pa.Table:
     if not lod:
         raise ValueError(f'{path} has no LOD columns')
     check_format(lod)
+    check_index_version(f)
     name = next((n for n, c in lod['lods'].items() if zoom in c['zooms']), None)
     if name is None:
         raise ValueError(f'zoom {zoom} is not one of the file zooms {lod["zooms"]}')

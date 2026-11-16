@@ -35,7 +35,15 @@ export const LOD_KEY = 'lod_columns'
 export const LOD_VERSION = '0.2.0'
 export const ENCODING = 'packed'
 export const PACK_VERSION = 3
+/** The spatial index profile version, which the footer's
+ * `lod_spatial_index` and the index's root state. */
+export const INDEX_VERSION = 4
 const MAX_MARGIN = 128
+
+/** Raise unless `version` is the spatial index version this reader reads. */
+export function checkIndexVersion(version: unknown): void {
+  if (version !== INDEX_VERSION) throw new Error(`unsupported spatial index version ${version}`)
+}
 
 /** Same major version, and the same minor while the major is 0. */
 export function isCompatibleVersion(version: string): boolean {
@@ -180,7 +188,17 @@ export class GeoParquetReader {
     this.file = file
     this.metadata = metadata
     this.footer = footer
-    this.leads = !!metadata.key_value_metadata?.some((kv) => kv.key === 'lod_spatial_index')
+    const index = metadata.key_value_metadata?.find((kv) => kv.key === 'lod_spatial_index')
+    if (index) {
+      let advertised: { version?: unknown } | undefined
+      try {
+        advertised = JSON.parse(index.value ?? '')
+      } catch {
+        advertised = undefined
+      }
+      checkIndexVersion(advertised?.version)
+    }
+    this.leads = index !== undefined
     const geo = JSON.parse(
       metadata.key_value_metadata?.find((kv) => kv.key === 'geo')?.value ?? '{}',
     )

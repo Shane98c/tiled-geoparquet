@@ -9,12 +9,16 @@ one, the source column.
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pyarrow as pa
 
 LOD_VERSION = '0.2.0'
 ENCODING = 'packed'
 PACK_VERSION = 3
+# the spatial index profile version, which the footer's `lod_spatial_index` and the root state
+INDEX_VERSION = 4
 # a copy's presence bitmap is one 64-bit varint, a bit per attribute
 MAX_ATTRIBUTES = 64
 # the columns `read_overview` returns beside the attributes
@@ -42,6 +46,22 @@ def check_format(lod: dict) -> None:
             f'lod_columns encoding {lod.get("encoding")}/{lod.get("pack_version")} is not '
             f'{ENCODING}/{PACK_VERSION}'
         )
+
+
+def check_index_version(parquet) -> bool:
+    """Whether the Parquet file `parquet` advertises the spatial index in its
+    footer. Raise ValueError when it advertises a version other than
+    INDEX_VERSION, whose pages this package does not read."""
+    advertised = (parquet.metadata.metadata or {}).get(b'lod_spatial_index')
+    if advertised is None:
+        return False
+    try:
+        version = json.loads(advertised).get('version')
+    except (ValueError, AttributeError):
+        version = None
+    if type(version) is not int or version != INDEX_VERSION:
+        raise ValueError(f'spatial index version {version} is not {INDEX_VERSION}')
+    return True
 
 
 def lod_type() -> pa.DataType:

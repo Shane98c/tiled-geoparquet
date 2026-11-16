@@ -161,8 +161,12 @@ the rows an overview page shows on that page's leading rows, in their order,
 and nulls after them, so a page says which of its rows hold a value in a few
 bytes however few of them the zoom shows. The column is an ordinary nullable
 Parquet column, but its values belong to the overviews, whose readers match
-them to rows: a query of the table itself, in DuckDB or Arrow, takes a row's
-attribute from the source column of the same name, which holds every row's
+them to rows.
+
+Leave the `lod` and `lod_attributes` columns out of every analysis. A query
+of the table, in DuckDB or Arrow, that reads an attribute column pairs each
+value with a row it does not describe and reports no error. A row's
+attribute is in the source column of the same name, which holds every row's
 on its own row.
 
 Replaying a 14-step session with 100 ms per request, `auto` took 2.10 s, and
@@ -693,7 +697,8 @@ loading.
 
 ### Validation
 
-`tiled-geoparquet validate file.parquet` checks the layout metadata, the bbox
+`tiled-geoparquet validate file.parquet` checks the layout metadata, the
+spatial index version in the footer and in the index root, the bbox
 covering's schema and declaration, required page indexes, and up to 2,000 rows
 of the first row group: their overview values decode, and each one's covering
 is its geometry's bounds rounded outward to float32, null exactly where the

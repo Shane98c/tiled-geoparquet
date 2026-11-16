@@ -11,7 +11,6 @@ import numpy as np
 from ._layout import (
     BOOTSTRAP_BYTES,
     MAGIC,
-    VERSION,
     grid_zoom,
     read_attribute_leaf,
     read_attribute_slot,
@@ -19,7 +18,7 @@ from ._layout import (
     slot_place,
 )
 from ._validate_index import directory_leaves
-from .encoding import check_format
+from .encoding import INDEX_VERSION, check_format
 from .key import hilbert_cell
 
 
@@ -55,7 +54,7 @@ def _root(source):
     if head[4:12] != MAGIC:
         return None
     root = json.loads(gzip.decompress(head[16 : 16 + int.from_bytes(head[12:16], 'little')]))
-    if root.get('version') != VERSION:
+    if root.get('version') != INDEX_VERSION:
         raise ValueError(f'unsupported spatial index version {root.get("version")}')
     check_format(root['lod'])
     return root

@@ -681,7 +681,11 @@ def test_spatial_index_corruption(indexed, tmp_path, mutation):
         raw = raw[:footer] + encoded + raw[footer:]
         root['file_bytes'] = len(raw)
     _write_root(bad, raw, root)
-    validate(bad, sample_rows=3)  # quick mode intentionally does not traverse directories
+    if mutation == 'magic':
+        with pytest.raises(ValidationError, match='spatial index'):
+            validate(bad, sample_rows=3)
+    else:
+        validate(bad, sample_rows=3)  # quick mode reads the root's version and no directory
     with pytest.raises(ValidationError, match='spatial index'):
         validate(bad, full=True)
 
