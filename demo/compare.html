@@ -85,6 +85,34 @@
         color: #b00;
         font-size: 17px;
       }
+      #style-info {
+        width: 22px;
+        height: 22px;
+        padding: 0;
+        border: 1px solid #888;
+        border-radius: 50%;
+        background: #fff;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      #style-help {
+        max-width: min(92vw, 520px);
+        padding: 16px 20px;
+        border: 0;
+        border-radius: 8px;
+        box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+        line-height: 1.45;
+      }
+      #style-help::backdrop {
+        background: rgba(0, 0, 0, 0.25);
+      }
+      #style-help h2 {
+        margin: 0 0 8px;
+        font-size: 17px;
+      }
+      #style-help p {
+        margin: 8px 0 0;
+      }
       #bar {
         position: absolute;
         bottom: 8px;
@@ -152,6 +180,36 @@
           <option value="subtype">Subtype</option>
         </select></label
       >
+      <button
+        id="style-info"
+        type="button"
+        popovertarget="style-help"
+        hidden
+        aria-label="About the style menu's two groups"
+      >
+        ?
+      </button>
+      <div id="style-help" popover>
+        <h2>Why the style menu has two groups</h2>
+        <p>
+          The GeoParquet file holds the full table of features and, beside it, a light copy of their
+          shapes for drawing the map at each zoom.
+        </p>
+        <p>
+          <b>Fast.</b> These columns were also copied into the map part when the file was built.
+          Colouring by one fetches a small extra piece for the tiles in view, at any zoom.
+        </p>
+        <p>
+          <b>Slower zoomed out.</b> These columns were not copied, because a copy would be large:
+          unique ids, and text with many distinct values. The map looks each feature up in the full
+          table instead, which is cheap zoomed in and heavy zoomed out.
+        </p>
+        <p>
+          Either way nothing is rebuilt: any column of the table can colour the map. A PMTiles
+          archive holds the columns chosen when its tiles were cut, in every tile.
+        </p>
+        <p id="style-help-columns"></p>
+      </div>
       <span id="legend"></span>
       <label id="latency-control" hidden
         >Data request delay
@@ -276,6 +334,13 @@
             ),
           ],
         ]
+        const [, looked] = groups[1]
+        document.getElementById('style-info').hidden = false
+        document.getElementById('style-help-columns').textContent =
+          `In this file ${stored.size} columns are fast` +
+          (looked.length
+            ? `, and ${looked.join(', ')} ${looked.length > 1 ? 'are' : 'is'} looked up in the table.`
+            : '.')
         styleSelect.replaceChildren(
           new Option('Geometry', 'geometry'),
           ...groups
