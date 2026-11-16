@@ -226,7 +226,9 @@
       <span id="zoom"></span>
       <small id="notes"
         >Synchronized views; counts include tile boundary copies, not unique buildings. Different
-        thinning and overzoom rules still apply.</small
+        thinning and overzoom rules still apply. A request cancelled before its response began is
+        not counted; one cancelled after counts at its full size. Times run from the end of a
+        move.</small
       >
     </div>
     <dialog id="report">
@@ -716,6 +718,11 @@
         map.on('movestart', () => {
           pane.pendingSince = performance.now()
         })
+        // A pane following another moves in jumps, each a move of its own, so every pane
+        // times a view from where its movement ends.
+        map.on('moveend', () => {
+          pane.pendingSince = performance.now()
+        })
         map.on('idle', () => {
           if (pane.ready === false) return
           if (!Object.keys(pane.sources).every((id) => map.getSource(id))) return
@@ -1000,7 +1007,7 @@
               Object.assign(document.createElement('small'), { textContent, className }),
             ),
             Object.assign(document.createElement('small'), {
-              textContent: `First map idle: ${pane.firstIdle === undefined ? 'loading…' : Math.round(pane.firstIdle) + ' ms'} · Last view/style: ${pane.pendingSince !== undefined ? 'loading…' : Math.round(pane.lastIdle ?? 0) + ' ms'}`,
+              textContent: `First map idle: ${pane.firstIdle === undefined ? 'loading…' : Math.round(pane.firstIdle) + ' ms'} · After last move or style: ${pane.pendingSince !== undefined ? 'loading…' : Math.round(pane.lastIdle ?? 0) + ' ms'}`,
             }),
           ]
           hud.replaceChildren(...children)
