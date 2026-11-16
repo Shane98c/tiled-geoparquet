@@ -43,7 +43,7 @@ if (html.split(anchor).length !== 2) throw new Error('Comparison bootstrap has c
 const json = (value) => JSON.stringify(value).replaceAll('<', '\\u003c')
 html = html.replace(
   anchor,
-  `${anchor}\n      for (const [key, value] of Object.entries(${json(defaults)})) {\n        if (!params.has(key)) params.set(key, value)\n      }\n      document.getElementById('notes').textContent += ${json(` R2 release ${values.release}; real network timing, no artificial delay. Subtype uses the GeoParquet source columns.`)}`,
+  `${anchor}\n      for (const [key, value] of Object.entries(${json(defaults)})) {\n        if (!params.has(key)) params.set(key, value)\n      }\n      document.getElementById('notes').textContent += ${json(` R2 release ${values.release}; real network timing, no artificial delay.`)}`,
 )
 await cp(new URL('./dist/', import.meta.url), resolve(out, 'dist'), { recursive: true })
 // The deck.gl example opens the hosted GeoParquet file unless ?url= overrides it.

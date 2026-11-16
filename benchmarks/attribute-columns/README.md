@@ -160,7 +160,7 @@ npm --prefix js ci
 npm --prefix js run build
 mkdir -p ~/attr-bench
 R2=https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases
-uv run python benchmarks/attribute-columns/derive-source.py $R2/9fc50d5/japan_buildings.parquet ~/attr-bench/source.parquet
+uv run python benchmarks/attribute-columns/derive-source.py $R2/469acd1/japan_buildings.parquet ~/attr-bench/source.parquet
 curl -fL -o ~/attr-bench/japan_buildings.pmtiles $R2/6c3a4f9/japan_buildings.pmtiles
 uv run python benchmarks/attribute-columns/build-variants.py ~/attr-bench/source.parquet ~/attr-bench --recipe japan --attributes height,class
 node benchmarks/attribute-columns/single-tiles.mjs --dir ~/attr-bench --pmtiles ~/attr-bench/japan_buildings.pmtiles --scenario japan --named height --other subtype
@@ -169,7 +169,7 @@ node benchmarks/attribute-columns/check-session.mjs --file columns=$HOME/attr-be
 node benchmarks/attribute-columns/verdict.mjs --dir ~/attr-bench --scenario japan
 ```
 
-`derive-source.py` streams the 6.32 GB hosted file from R2. It reads only the
+`derive-source.py` streams the 6.42 GB hosted file from R2. It reads only the
 source columns, about 4.3 GB, and keeps one of the 52 row groups in memory at
 a time. Every source column is in the hosted file, so the derived source
 has the same rows and columns as the source of the hosted build. The PMTiles archive (1.30 GB)

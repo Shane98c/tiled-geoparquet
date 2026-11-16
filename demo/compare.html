@@ -120,8 +120,8 @@
         >Style
         <select id="style">
           <option value="geometry">Geometry</option>
-          <option value="height">Height (attribute)</option>
-          <option value="subtype">Subtype (source column)</option>
+          <option value="height">Height</option>
+          <option value="subtype">Subtype</option>
         </select></label
       >
       <span id="legend"></span>
@@ -228,7 +228,8 @@
         'fill-opacity': 0.5,
         'fill-outline-color': '#7a1f08',
       }
-      // The style menu lists the file's attributes, then its other source columns.
+      // The style menu lists the file's attributes, which a tile reads from a column per
+      // zoom, then its other flat columns, which a tile reads from the table by row.
       // Names come from the file: they are set as text, never as markup.
       const metadata = enabled('lod') ? await readMetadata(fileUrl) : undefined
       const styleSelect = document.getElementById('style')
@@ -236,9 +237,9 @@
         const attributes = metadata.lod.attributes
         const held = new Set(attributes.map((a) => a.name))
         const groups = [
-          ['Attributes', attributes.map((a) => a.name)],
+          ['Attributes (a column per zoom)', attributes.map((a) => a.name)],
           [
-            'Source columns (slow: reads the whole column)',
+            'Other columns (read from the table by row)',
             metadata.columns.filter((name) => !held.has(name) && name !== metadata.lod.key?.column),
           ],
         ]
@@ -589,6 +590,10 @@
         map.on('idle', () => {
           if (pane.ready === false) return
           if (!Object.keys(pane.sources).every((id) => map.getSource(id))) return
+          if (pane.refetching) {
+            pane.refetching = false
+            paintStyle()
+          }
           pane.firstIdle ??= performance.now() - pane.started
           if (pane.pendingSince !== undefined) pane.lastIdle = performance.now() - pane.pendingSince
           pane.pendingSince = undefined
@@ -615,7 +620,7 @@
 
       function paintStyle() {
         for (const { map, pane } of maps) {
-          if (pane.geometryOnly) continue
+          if (pane.geometryOnly || pane.refetching) continue
           for (const layer of pane.layers) {
             const property = layer.type === 'circle' ? 'circle-color' : 'fill-color'
             layer.paint[property] = color()
@@ -706,15 +711,20 @@
         for (const { map, pane } of maps) {
           if (pane.geometryOnly) continue
           pane.pendingSince = performance.now()
+          // A paint change in the task that calls setTiles has MapLibre parse the tiles it
+          // holds again without fetching the new ones, so a pane whose tiles change is
+          // painted when its map is next idle.
           if (pane.lodUrl) {
             const source = lodSource(pane.lodUrl, pane.lodOptions)
-            map.getSource('lod')?.setTiles(source.tiles)
+            pane.refetching =
+              Boolean(map.getSource('lod')?.setTiles(source.tiles)) || pane.refetching
             // Also handle a style choice made before style.load.
             pane.sources.lod = source
           }
           if (pane.cogpSource) {
             const source = pane.cogpSource()
-            map.getSource('cogp')?.setTiles(source.tiles)
+            pane.refetching =
+              Boolean(map.getSource('cogp')?.setTiles(source.tiles)) || pane.refetching
             pane.sources.cogp = source
           }
         }

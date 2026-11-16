@@ -45,7 +45,7 @@ and ready status are shown explicitly; initial timing waits for data rendering.
 
 Objects live under `geoparquet-lod/releases/<tag>/` in the
 `live-classify-data` bucket. The tag is the commit whose recipe produced the
-object: `9fc50d5` built the GeoParquet file with
+object: `469acd1` built the GeoParquet file with
 `benchmarks/write-japan-tippecanoe.py`; `d51954c` built the baked-PMTiles
 file with `benchmarks/baked-pmtiles/build.py`; the PMTiles and COGP archives
 were converted at `6c3a4f9`, and the Esri SOP file, uploaded at that release,
@@ -53,13 +53,13 @@ is Esri's original.
 
 | Dataset       | Release   |         Bytes | MD5                                |
 | ------------- | --------- | ------------: | ---------------------------------- |
-| GeoParquet    | `9fc50d5` | 6,317,435,821 | `5f96ff2f7538eb4c9417fad81d619501` |
+| GeoParquet    | `469acd1` | 6,418,172,157 | `8d9e9eb990e114e17f02cc5769999005` |
 | PMTiles       | `6c3a4f9` | 1,297,122,745 | `0b733b7511dda51102c1b58a4983706b` |
 | COGP 2.2.2    | `6c3a4f9` | 9,081,139,765 | `f9a986b09224256534b530ed80dd245a` |
 | Esri SOP      | `6c3a4f9` | 6,177,950,661 | `6224bdf08e1915e367baa61ee566f650` |
 | Baked PMTiles | `d51954c` | 6,337,852,318 | `08388a4ba5add01de04cf4bcb8cd9477` |
 
-- [GeoParquet](https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/9fc50d5/japan_buildings.parquet)
+- [GeoParquet](https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/469acd1/japan_buildings.parquet)
 - [PMTiles](https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/6c3a4f9/japan_buildings.pmtiles)
 - [Released COGP](https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/6c3a4f9/japan_buildings.cogp-2.2.2.parquet)
 - [Esri SOP](https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/6c3a4f9/japan_buildings.sop.parquet)
@@ -74,10 +74,12 @@ responses served from the browser HTTP cache; they are not wire-transfer totals.
 cache can survive. Use a fresh browser session for a first-visit comparison.
 “Reset counters” retains reader caches for continued navigation comparisons.
 
-The archives still have different thinning and overzoom rules. Subtype is
-stored in the PMTiles payload and fetched from original source columns by the
-GeoParquet reader. Full archive sizes include different capabilities and should
-not be confused with viewport transfer sizes.
+The archives still have different thinning and overzoom rules. The PMTiles
+tiles hold `class`, `height` and `subtype`, the attributes its tiler was
+given. The GeoParquet file keeps 17 of its columns as attributes, the
+writer's default, those three among them, and its reader styles by any other
+column from the table's rows. Full archive sizes include different
+capabilities and should not be confused with viewport transfer sizes.
 
 ## Rebuilding the hosted page
 
@@ -87,11 +89,11 @@ From the repository root, bundle the reader and build a separate static folder:
 npm --prefix js run demo:bundle
 node demo/build-share.mjs \
   --out /private/tmp/geoparquet-lod-share \
-  --url https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/9fc50d5/japan_buildings.parquet \
+  --url https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/469acd1/japan_buildings.parquet \
   --pmtiles https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/6c3a4f9/japan_buildings.pmtiles \
   --cogp https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/6c3a4f9/japan_buildings.cogp-2.2.2.parquet \
   --esri https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/6c3a4f9/japan_buildings.sop.parquet \
-  --release 9fc50d5
+  --release 469acd1
 wrangler pages deploy /private/tmp/geoparquet-lod-share \
   --project-name geoparquet-lod-compare --branch main
 ```

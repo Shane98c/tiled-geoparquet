@@ -87,23 +87,27 @@ do not establish whole-session or cross-device parity.
 
 A PMTiles tile holds the attributes its tiler was given, here `class`,
 `height` and `subtype` in every tile, and the baked tiles through z13 are the
-same tiles. This layout holds an attribute a map styles with as a column per
-zoom, which a tile reads only when its style names the attribute, as further
-ranges in the same two request rounds. The same tiles with
-`PROPERTIES=height,class`, which has this layout's tiles hold those two:
+same tiles. This layout keeps 17 of the source's columns as attributes, a
+column per zoom each, which a tile reads only when its style names the
+attribute, as further ranges in the same two request rounds. A map can
+therefore style by any of them, or by any other column from the table's rows,
+without the file being rebuilt. The same tiles with
+`PROPERTIES=class,height,subtype`, which has this layout's tiles hold the
+three the PMTiles tiles hold:
 
-| Tile                  | Tiled GeoParquet, geometry only | Tiled GeoParquet, `height` and `class` | PMTiles, three attributes       |
-| --------------------- | ------------------------------- | -------------------------------------- | ------------------------------- |
-| z8 metro, Tokyo       | 0.56 MB, 2 req; next 0.02 MB, 1 | 0.60 MB, 4 req; next 0.02 MB, 2        | 0.50 MB, 2 req; next 0.02 MB, 1 |
-| z11 city, Tokyo       | 0.26 MB, 2 req; next 0.15 MB, 1 | 0.28 MB, 5 req; next 0.15 MB, 3        | 0.31 MB, 2 req; next 0.17 MB, 1 |
-| z13 downtown, Shibuya | 0.30 MB, 2 req; next 0.23 MB, 1 | 0.31 MB, 6 req; next 0.23 MB, 3        | 0.35 MB, 2 req; next 0.26 MB, 1 |
-| z13 suburbs, Chiba    | 0.05 MB, 2 req; next 0.08 MB, 1 | 0.05 MB, 6 req; next 0.08 MB, 2        | 0.06 MB, 2 req; next 0.08 MB, 1 |
-| z15 street, Tokyo     | 0.01 MB, 2 req; next 0.02 MB, 1 | 0.01 MB, 6 req; next 0.02 MB, 3        | 0.03 MB, 2 req; next 0.11 MB, 1 |
-| z15 street, Osaka     | 0.03 MB, 2 req; next 0.03 MB, 1 | 0.03 MB, 6 req; next 0.03 MB, 3        | 0.11 MB, 2 req; next 0.13 MB, 1 |
+| Tile                  | Tiled GeoParquet, geometry only | Tiled GeoParquet, the same three | PMTiles, three attributes       |
+| --------------------- | ------------------------------- | -------------------------------- | ------------------------------- |
+| z8 metro, Tokyo       | 0.56 MB, 2 req; next 0.02 MB, 1 | 0.63 MB, 5 req; next 0.02 MB, 3  | 0.50 MB, 2 req; next 0.02 MB, 1 |
+| z11 city, Tokyo       | 0.26 MB, 2 req; next 0.15 MB, 1 | 0.28 MB, 7 req; next 0.15 MB, 4  | 0.31 MB, 2 req; next 0.17 MB, 1 |
+| z13 downtown, Shibuya | 0.30 MB, 2 req; next 0.23 MB, 1 | 0.31 MB, 8 req; next 0.23 MB, 4  | 0.35 MB, 2 req; next 0.26 MB, 1 |
+| z13 suburbs, Chiba    | 0.05 MB, 2 req; next 0.08 MB, 1 | 0.06 MB, 8 req; next 0.08 MB, 3  | 0.06 MB, 2 req; next 0.08 MB, 1 |
+| z15 street, Tokyo     | 0.01 MB, 2 req; next 0.02 MB, 1 | 0.02 MB, 8 req; next 0.02 MB, 4  | 0.03 MB, 2 req; next 0.11 MB, 1 |
+| z15 street, Osaka     | 0.03 MB, 2 req; next 0.03 MB, 1 | 0.04 MB, 8 req; next 0.04 MB, 4  | 0.11 MB, 2 req; next 0.13 MB, 1 |
 
-The two attributes add 0.04 MB at z8 and 0.02 MB or less from z11, in two to
-four more requests. With them this layout reads more bytes than PMTiles at z8
-and fewer from z11.
+The three attributes add 0.07 MB at z8 and 0.02 MB or less from z11, in three
+to six more requests. With them this layout reads more bytes than PMTiles at
+z8 and no more from z11. Styled by one attribute, a zoom 8 tile takes one
+more request than its geometry and a tile from zoom 11 two.
 
 ## What each format stores
 
@@ -133,13 +137,13 @@ npm --prefix /tmp/geoparquet-pmtiles install
 npx esbuild /tmp/geoparquet-pmtiles/web/baked.js --bundle --platform=node --format=esm --outfile=test/baked-node.mjs
 npx esbuild /tmp/geoparquet-pmtiles/web/src/detail-worker.js --bundle --format=esm --outfile=test/baked-worker-node.mjs
 R=https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/
-BASE=${R}6c3a4f9/ LOD=${R}9fc50d5/japan_buildings.parquet \
+BASE=${R}6c3a4f9/ LOD=${R}469acd1/japan_buildings.parquet \
   COGP=${R}6c3a4f9/japan_buildings.cogp-2.2.2.parquet \
   BAKED=${R}d51954c/japan_buildings.baked.parquet \
   PMTILES=japan_buildings.pmtiles node test/compare-readers.mjs
 ```
 
 `SKIP=cogp,esri,baked` leaves readers out, and the baked reader's two bundles
-are needed only when it runs. `PROPERTIES=height,class` gives the
+are needed only when it runs. `PROPERTIES=class,height,subtype` gives the
 [styled tiles](#styled-tiles). The archives, their sizes and checksums are
 listed in the [hosted comparison notes](hosted-comparison.md#data-provenance).

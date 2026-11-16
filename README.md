@@ -27,6 +27,11 @@ with competitive map access. The original geometry appears once in the source
 column. Display geometry, per-zoom attribute values, and tile-boundary copies
 take extra space, but there is no separate archive of pre-encoded MVT tiles.
 
+A map over the file can style by any column of the table without the file
+being rebuilt. The writer keeps each cheap column per zoom, which a styled
+tile reads in the same request rounds as its geometry, and the reader fetches
+any other column from the table's rows.
+
 The intended use is a static dataset that people need to both explore and query.
 If map delivery is the only requirement, PMTiles is the simpler choice. Several
 other GeoParquet overview designs exist: COGP, Esri's Spatially Optimized
@@ -41,8 +46,9 @@ The [hosted demo](https://geoparquet-lod-compare.pages.dev/) shows Tiled
 GeoParquet and PMTiles built from the same Japan building source. COGP and Esri panes
 are optional: select their checkboxes and click **Apply readers**. Start over
 Tokyo, zoom out to see the overviews, then zoom into a neighbourhood. Pan the
-maps together and compare the request and byte counters. Switch from geometry
-styling to an attribute style to exercise more than geometry delivery. The
+maps together and compare the request and byte counters. The style menu lists
+every flat column of the table: switch from geometry to any of them to
+exercise more than geometry delivery. The
 browser reads ranges from the hosted files; nothing needs downloading. See the
 [hosted comparison notes](docs/hosted-comparison.md) for what the counters
 measure and where the files come from.
@@ -185,8 +191,8 @@ rows from z14, for which its page reads the Parquet footer at load. This layout'
 thinning budgets were calibrated against PMTiles feature counts, as the
 [Japan evaluation](docs/japan-evaluation.md) describes, so the two agree within
 a few percent where both serve native tiles. PMTiles tiles carry `class`,
-`height` and `subtype`; styled by `height` and `class`, this layout's z8 tile
-reads 0.60 MB and its z11 tile 0.28 MB
+`height` and `subtype`; styled by the same three, this layout's z8 tile
+reads 0.63 MB and its z11 tile 0.28 MB
 ([styled tiles](docs/comparison.md#styled-tiles)). [The comparison page](docs/comparison.md)
 has definitions, provenance, and reproduction steps.
 
@@ -195,10 +201,10 @@ competitive request counts and transfer sizes, not a general speed ranking.
 
 ## Main tradeoffs
 
-- **Size and construction.** The evaluated Japan file is 6.32 GB, versus the
+- **Size and construction.** The evaluated Japan file is 6.42 GB, versus the
   4.84 GB analytical source and 1.30 GB PMTiles archive. Those files provide
   different capabilities. Building overviews and indexing is an offline step;
-  updates require rebuilding. On a 64 GB laptop the Japan build takes 8
+  updates require rebuilding. On a 64 GB laptop the Japan build takes 11
   minutes, and 155.6 million US buildings with nine attributes take 66
   minutes on a 16-core machine with 128 GB of memory, with free disk of
   about twice the output.

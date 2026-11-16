@@ -9,11 +9,13 @@ GeoParquet tools.
 ## Construction
 
 The overview policy applies `drop_smallest` followed by `tiny_polygons`, with
-height and class kept for styling. It uses one Hilbert order, full detail
+the writer's default attributes kept for styling: 17 of the source's columns,
+every flat number and boolean and every string of at most 256 distinct
+values. It uses one Hilbert order, full detail
 from z14 in one LOD serving z14 and z15, 16 KiB staging pages and 64 KiB final
 overview pages. Past z15 the reader draws the primary geometry; the hosted
 demo's source has `maxzoom` 15, so MapLibre overzooms z15 there. The indexed
-file is **6.32 GB**, compared with **4.84 GB** for the analytical source and
+file is **6.42 GB**, compared with **4.84 GB** for the analytical source and
 **1.30 GB** for PMTiles. These totals represent different capabilities.
 
 Estimated-byte thinning budgets were calibrated against PMTiles feature counts:
@@ -56,20 +58,20 @@ simulated latency; elapsed times are not a CDN performance benchmark.
 
 | Tokyo tile | GeoParquet bytes | PMTiles bytes | Requests, each |
 | ---------- | ---------------: | ------------: | -------------: |
-| z8         |          556,454 |       499,425 |              2 |
-| z11        |          259,390 |       306,211 |              2 |
-| z12        |          309,967 |       363,153 |              2 |
+| z8         |          556,477 |       499,425 |              2 |
+| z11        |          259,841 |       306,211 |              2 |
+| z12        |          310,536 |       363,153 |              2 |
 
-Request counts match. At z11 and z12 GeoParquet transfers 15% fewer bytes
-than PMTiles. Its tiles hold 4% and 3% fewer features, all of them boundary
+Request counts match. At z11 and z12 GeoParquet transfers 15% and 14% fewer
+bytes than PMTiles. Its tiles hold 4% and 3% fewer features, all of them boundary
 copies; inside the tile it has 2% more. At z8 it transfers 11% more bytes,
 with 1% more features inside the tile: there, page layout and geometry
 encoding cost more than PMTiles' pre-cut tiles. These tile measurements do not
 establish equal whole-session performance across datasets or devices.
 
 The [hosted demo](hosted-comparison.md) serves this build; the
-[four-reader comparison](comparison.md) measures it beside COGP, PMTiles and
-Esri SOP over the public internet.
+[five-reader comparison](comparison.md) measures it beside COGP, PMTiles,
+Esri SOP and GeoParquet with baked PMTiles over the public internet.
 
 ## Integrity and reproduction
 
@@ -79,7 +81,7 @@ original geometry. This is a multiset checksum, not an exact equality proof.
 Writer output versus indexed output: the schema metadata is equal and every
 column of every row compares equal, bbox values included, except the attribute
 columns. The indexed file holds a page's attribute values on the page's leading
-rows, and all 15,456,854 of them compare equal in order.
+rows, and all 340,809,878 of them compare equal in order.
 
 The build recipe is [`benchmarks/write-japan-tippecanoe.py`](../benchmarks/write-japan-tippecanoe.py).
 It takes source, staging-output, and indexed-output paths. It uses private build

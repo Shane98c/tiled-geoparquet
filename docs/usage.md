@@ -423,6 +423,14 @@ over its whole area, so the map does not blank there, though shapes smaller
 than the tile's grid drop out as it zooms further out. A `minzoom` on the
 source's layers stops those reads.
 
+A map already drawn changes what it styles by without the file changing: give
+the source the tile URL of a config naming the new columns,
+`map.getSource('buildings').setTiles([tileUrl({ ...config, properties: ['height'] })])`,
+and the reader fetches those columns for the tiles in view, keeping the
+geometry it has decoded. Change the layers' paint once the map is next idle:
+when a paint change follows `setTiles` in the same task, MapLibre 6.18 parses
+the tiles it holds again and does not fetch the new ones.
+
 Tile properties keep their types: numbers are MVT floats when float32 holds
 them exactly, doubles otherwise, and integers below 2^52 are integers;
 booleans stay booleans and bigints a number holds exactly become that number.
@@ -681,9 +689,10 @@ timings; add `basemap=1` for a basemap. Map idle includes rendering and is not
 a precise first-paint measurement. The style menu lists the GeoParquet file's
 attributes and its other source columns. A numeric attribute is coloured by
 quantiles of the values in view, or by the stops a `stops=name:0,10,40` query
-parameter gives, once per attribute. In the Japan building fixtures, height is
-in both formats' tiles, an attribute of the GeoParquet file, while subtype is
-fetched from GeoParquet source rows and is stored in the PMTiles archive.
+parameter gives, once per attribute. In the Japan building fixtures the
+GeoParquet file keeps 17 of its columns as attributes, the writer's default,
+among them `class`, `height` and `subtype`, the three the PMTiles archive
+holds in its tiles; `id` is read from the table's rows.
 
 Use **Fresh load** to recreate readers at the current location and style;
 **Reset counters** keeps caches warm. Browser HTTP caches can survive Fresh
