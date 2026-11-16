@@ -15,8 +15,9 @@ draw those first row groups first, so a whole-extent view fills in coarse
 before fine. On the Tokyo file a prefix through zoom 10 is 166,545 rows, 3.4%
 of the table, in one leading row group. The cost falls on the indexed map
 reader, because fine levels then live in both sections and a tile needs a
-range from each. Same Tokyo tiles as the table below, cold geometry reads
-with the current reader:
+range from each. Same Tokyo tiles as the table below, cold geometry reads of
+the two files of this comparison, recorded under `prefix` in
+`benchmarks/standard-overviews/results.json`:
 
 | Tile                      | One order      | Coarse prefix  | Next tile, one order / prefix |
 | ------------------------- | -------------- | -------------- | ----------------------------- |
@@ -214,10 +215,11 @@ serves, columns `level, row, tile, geometry, height, class, key`, geometry as
 nested int32 x/y on the level's grid (COGP's `quantized_geoarrow` shape), in
 Hilbert order with row groups cut at the level's tile boundaries and at 4,096
 rows. A tile then reads whole row groups, each one contiguous byte range, and
-a directory over the row groups replaces the 11 MB footer. The reader's
-coalescing policy is applied to both; the packed numbers are the real reader
-on the local file, the standard numbers a simulation from the footer with
-membership checked equal to the packed reader on every tile.
+a directory over the row groups, in the form of the spatial index's directory
+nodes, replaces the 11 MB footer. The reader's coalescing policy is applied to
+both; the packed numbers are the real reader on the local file, the standard
+numbers a simulation from the footer with membership checked equal to the
+packed reader on every tile.
 `benchmarks/standard-overviews/` holds the Tokyo build, the converter, the
 simulator, and the results.
 
@@ -226,26 +228,35 @@ simulator, and the results.
 
 | Tile                      | Packed cold                   | Standard cold  | Packed next    | Standard next  |
 | ------------------------- | ----------------------------- | -------------- | -------------- | -------------- |
-| z8 metro, Tokyo           | 0.53 MB, 2 req, 102,403 feat. | 0.81 MB, 2 req | 0.01 MB, 1 req | 0.01 MB, 1 req |
-| z11 city, Tokyo           | 0.29 MB, 2 req, 24,086 feat.  | 0.41 MB, 2 req | 0.16 MB, 1 req | 0.24 MB, 1 req |
-| z12 city, Tokyo           | 0.36 MB, 2 req, 29,342 feat.  | 0.51 MB, 2 req | 0.32 MB, 1 req | 0.47 MB, 1 req |
-| z13 downtown, Shibuya     | 0.36 MB, 2 req, 29,877 feat.  | 0.51 MB, 2 req | 0.25 MB, 1 req | 0.38 MB, 1 req |
-| z13 suburbs, Kawasaki     | 0.26 MB, 2 req, 20,283 feat.  | 0.36 MB, 2 req | 0.34 MB, 1 req | 0.52 MB, 1 req |
-| z15 street, Tokyo station | 0.04 MB, 2 req, 229 feat.     | 0.03 MB, 2 req | 0.02 MB, 1 req | 0.03 MB, 1 req |
-| z15 street, Shinjuku      | 0.05 MB, 2 req, 1,107 feat.   | 0.04 MB, 2 req | 0.02 MB, 1 req | 0.03 MB, 1 req |
+| z8 metro, Tokyo           | 0.47 MB, 2 req, 102,414 feat. | 0.84 MB, 2 req | 6 KB, 1 req    | 8 KB, 1 req    |
+| z11 city, Tokyo           | 0.25 MB, 2 req, 23,371 feat.  | 0.41 MB, 2 req | 0.14 MB, 1 req | 0.24 MB, 1 req |
+| z12 city, Tokyo           | 0.30 MB, 2 req, 28,334 feat.  | 0.50 MB, 2 req | 0.28 MB, 1 req | 0.47 MB, 1 req |
+| z13 downtown, Shibuya     | 0.29 MB, 2 req, 28,630 feat.  | 0.49 MB, 2 req | 0.22 MB, 1 req | 0.38 MB, 1 req |
+| z13 suburbs, Kawasaki     | 0.21 MB, 2 req, 19,336 feat.  | 0.35 MB, 2 req | 0.30 MB, 1 req | 0.52 MB, 1 req |
+| z15 street, Tokyo station | 10 KB, 2 req, 206 feat.       | 15 KB, 2 req   | 20 KB, 1 req   | 29 KB, 1 req   |
+| z15 street, Shinjuku      | 20 KB, 2 req, 1,031 feat.     | 29 KB, 2 req   | 20 KB, 1 req   | 31 KB, 1 req   |
 
-Request counts are identical. The standard table costs 40 to 55% more bytes
-at city zooms; at street zooms it costs slightly fewer on a cold read and 29%
-more on the next tile; and it stores 344 MB against 219 MB for the packed
-overview columns. Styled reads, measured with the attribute packed in the
-rows, cost the same as geometry-only there and at most 3% more in the standard table, apart from its z8 next tile
-at 14% more: with 4,096-row groups the attribute chunks mostly sit inside the
-gaps the coalescer bridges anyway. The table is ordinary Parquet; DuckDB
-queries it and reads the nested coordinates directly, though no tool treats
-them as geometry without the level's scale and offset. Not measured: decode CPU,
-which the standard-geometry ablation above puts at about twice the packed
-rows, and larger datasets, where the 15,345 row groups here become hundreds
-of thousands and the directory must hold them.
+Geometry-only request counts are identical. On a cold read the standard
+table costs 66 to 81% more bytes from z8 to z13 and 41 to 47% more at street
+zooms; on the next tile it costs 42 to 73% more; and it stores 333 MB against
+187 MB for the packed overview and attribute columns.
+
+A styled read of `height` and `class` fetches each attribute's pages as a
+range of its own, in the same two rounds as the geometry. On a cold read it
+adds 4 to 9% to the packed bytes through z13 and 4 to 5 KB at street zooms,
+and takes 3 or 4 requests, or 6 at street zooms, where each attribute's
+directory leaf is a range too; the next tile takes up to 3. The standard
+table stays at 2 requests and 1, and adds at most 5%, apart from its z8 next
+tile at 14%: a row group's attribute chunks sit beside its geometry, inside
+the range the group is read as. Its cold styled reads cost 59 to 66% more
+bytes than the packed ones through z13 and 7 to 25% more at street zooms.
+
+The table is ordinary Parquet; DuckDB queries it and reads the nested
+coordinates directly, though no tool treats them as geometry without the
+level's scale and offset. Not measured: decode CPU, which the
+standard-geometry ablation above puts at about twice the packed rows, and
+larger datasets, where the 15,219 row groups here become hundreds of thousands
+and the directory must hold them.
 
 ## Modified COGP reader
 

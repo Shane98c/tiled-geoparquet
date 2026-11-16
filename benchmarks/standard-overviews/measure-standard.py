@@ -4,17 +4,18 @@ A tile's row groups are those of its level whose key statistics intersect the
 tile interval, plus the copy host group. Each group is read as one contiguous
 byte range from its first needed column chunk to its last, then ranges are
 coalesced with the reader's policy. Directory lookups are charged as in the
-packed layout: a gzip JSON shard of up to 1,024 group records per level.
+packed layout: per level, leaves of up to 1,024 row groups in the form of the
+spatial index's directory nodes, under a level-one node in the root.
 
     uv run python benchmarks/standard-overviews/measure-standard.py standard.parquet tiles.json packed.json
 """
 
-import gzip
 import json
 import sys
 
 import numpy as np
 import pyarrow.parquet as pq
+from tiled_geoparquet._layout import _json, _node
 from tiled_geoparquet.key import hilbert_key
 
 MAX_GAP, MIN_GAP, GAP_RATIO, MAX_RUN = 32 * 1024, 4 * 1024, 0.5, 4 * 1024 * 1024
@@ -65,21 +66,24 @@ def main():
     stats = [
         (md.row_group(g).column(columns.index('key')).statistics) for g in range(md.num_row_groups)
     ]
-    levels = {}
+    levels, root = {}, {}
     for name, info in summary['levels'].items():
         a, b = info['groups']
-        records = [[stats[g].min, stats[g].max, *chunk_span(g, styled_end)] for g in range(a, b)]
+        shift = 2 * max(0, depth - max(meta['lods'][name]['zooms']))
+        low = np.array([stats[g].min >> shift for g in range(a, b)])
+        high = np.array([stats[g].max >> shift for g in range(a, b)])
+        spans = np.array([chunk_span(g, styled_end) for g in range(a, b)])
+        offset, length = spans[:, 0], spans[:, 1] - spans[:, 0]
+        firsts = range(0, b - a, SHARD)
         shards = [
-            gzip.compress(json.dumps(records[i : i + SHARD], separators=(',', ':')).encode())
-            for i in range(0, len(records), SHARD)
+            _json(_node(0, *(v[i : i + SHARD] for v in (low, high, offset, length))))
+            for i in firsts
         ]
+        sizes = np.array([len(s) for s in shards])
+        lasts = [min(i + SHARD, b - a) - 1 for i in firsts]
+        root[name] = _node(1, low[firsts], high[lasts], np.cumsum(sizes) - sizes, sizes)
         levels[name] = {'groups': list(range(a, b)), 'shards': shards}
-    root = {
-        name: [[records[0][0], records[-1][1], len(s)] for s in lv['shards']]
-        for name, lv in levels.items()
-        for records in [[[stats[g].min, stats[g].max] for g in lv['groups']]]
-    }
-    root_bytes = len(gzip.compress(json.dumps(root, separators=(',', ':')).encode()))
+    root_bytes = len(_json(root))
     directory_bytes = sum(len(s) for lv in levels.values() for s in lv['shards'])
 
     def lod_for(z):

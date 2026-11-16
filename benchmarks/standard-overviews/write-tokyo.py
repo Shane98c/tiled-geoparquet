@@ -6,14 +6,14 @@ the Japan recipe's calibrated budgets in one Hilbert order:
 
     uv run python benchmarks/standard-overviews/write-tokyo.py tokyo.source.parquet tokyo.packed.parquet
 
-The coarse-prefix file of the measurements stores the rows shown through z10
-in a leading row group. It was written from the same source by the writer at
-commit `0a06e75^`, whose `write` takes `prefix_zoom=10`.
+An existing source file is reused. measure-packed.mjs reads the file with
+tiles.json, and a rebuild gives the measurements results.json records under
+`packed`.
 
-An existing source file is reused. A rebuild matches the recorded request
-counts and comes within about 1% of the recorded bytes and feature counts; the
-measured files were cut in the source's original row order. measure-packed.mjs
-reads either file with tiles.json.
+The `prefix` section of results.json holds a coarse-prefix file, which stores
+the rows shown through z10 in a leading row group, and under `one_order` the
+file it was measured against. The prefix file was written from the same source
+by the writer at commit `0a06e75^`, whose `write` takes `prefix_zoom=10`.
 """
 
 import argparse
