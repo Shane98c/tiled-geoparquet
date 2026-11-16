@@ -46,7 +46,6 @@ if __name__ == '__main__':
         args.src,
         args.out,
         thinning=chain(drop_smallest(budget), tiny_polygons()),
-        attributes=['height', 'class'],
         workers=12,
         zooms=list(range(16)),
         complete_from=14,
