@@ -511,12 +511,19 @@
         logged.addProtocol('pmtiles', protocol.tile)
       }
 
+      // A styled fill's outline takes the fill's colour, so shapes too small to show a
+      // fill still show their value; with geometry alone, and until a domain is
+      // sampled, it is the plain outline.
+      const outline = () =>
+        selectedStyle === 'geometry' || color() === 'transparent'
+          ? paint['fill-outline-color']
+          : color()
       const fill = (source, layer) => ({
         id: `${source}-fill`,
         type: 'fill',
         source,
         'source-layer': layer,
-        paint: { ...paint, 'fill-color': color() },
+        paint: { ...paint, 'fill-color': color(), 'fill-outline-color': outline() },
       })
       const dots = (source, layer) => ({
         id: `${source}-dots`,
@@ -755,7 +762,7 @@
                 ? { 'circle-color': pane.faint ? FAINT : color() }
                 : {
                     'fill-color': pane.faint ? FAINT : color(),
-                    'fill-outline-color': pane.faint ? FAINT_OUTLINE : paint['fill-outline-color'],
+                    'fill-outline-color': pane.faint ? FAINT_OUTLINE : outline(),
                   }
             for (const [property, value] of Object.entries(colours)) {
               layer.paint[property] = value
