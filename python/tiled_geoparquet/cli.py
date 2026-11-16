@@ -85,7 +85,8 @@ def cli():
     multiple=True,
     help=(
         'column[:arrow type] a map can style by, read only when a style asks, e.g. '
-        "risk:float32. 'auto', the default, keeps every cheap column; 'none' keeps none"
+        "risk:float32. 'auto', the default, keeps every cheap column, and beside other "
+        "names keeps them too, as in --attributes auto --attributes id; 'none' keeps none"
     ),
 )
 @click.option('--geometry', default='geometry', show_default=True)

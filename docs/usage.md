@@ -83,13 +83,32 @@ may also fetch the slot block between them.
 The default, `'auto'` (`--attributes auto`), keeps every flat number and
 boolean column, except integer columns whose values are mostly distinct,
 such as ids, and every string column with at most 256 distinct values. It
-leaves out the geometry and covering columns, the names thinnings reserve,
-and `row` and `geometry`, which `read_overview` returns as its own columns.
+leaves out the geometry and covering columns, and `row` and `geometry`, which
+`read_overview` returns as its own columns.
 `attributes=()` (`--attributes none`) keeps none, and a list keeps the
 columns it names, as names or `(name, Arrow type)` pairs. On the Denver
 buildings below `'auto'` keeps `height` and `class` and leaves out the string
 `id`. A string with at most 256 distinct values is held as an index into the
 `values` the metadata lists.
+
+`'auto'` among the names of a list stands for the default's columns, so a
+column the default leaves out is kept beside them. An id is the usual one: a
+map needs it in its tiles when it joins on it in the browser, colouring
+features from a table keyed by id or giving the source a `promoteId`.
+
+```python
+write('buildings.parquet', 'buildings.lod.parquet', attributes=['auto', 'id'])
+```
+
+The command line takes `--attributes auto --attributes id`. On 4.9 million
+Tokyo buildings with a 36-character id, a cold zoom 8 tile styled by the id
+then reads 2.7 MB in three requests, where reading it from the source column
+takes 185 MB in eight, and a zoom 11 tile 0.75 MB against 9.6 MB. The id's
+columns take 290 MB of the 972 MB file, about three times its source column;
+an integer id takes less. Two uses need no id in the tiles: the id of one
+feature is a row read, `readRow(url, feature.id, ['id'])`, and features a
+query of the table finds are highlighted by row, which is the feature id,
+with `setFeatureState`.
 
 A tile holds the attributes its request names in `properties`, and any
 source columns named there. A request that names none, to `renderTile`, the

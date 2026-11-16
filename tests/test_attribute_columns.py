@@ -541,6 +541,29 @@ def test_auto_keeps_cheap_flat_columns(tmp_path, built):
 
 
 @pytest.mark.parametrize(
+    'given,kept',
+    [
+        (['auto', 'name'], ['kind', 'height', 'rps', 'flag', 'name']),
+        (['code', 'auto'], ['code', 'kind', 'height', 'rps', 'flag']),
+        (['auto', ('height', 'float32')], ['kind', 'rps', 'flag', 'height']),
+    ],
+)
+def test_auto_among_names_keeps_the_default_columns_too(tmp_path, built, given, kept):
+    """A column the default leaves out, such as an id, is kept beside the
+    default's columns, and one the list names itself is kept as the list
+    gives it."""
+    src, _ = built
+    out = tmp_path / 'more.parquet'
+    _write_unindexed(src, out, zooms=range(10, 13), attributes=given, workers=1, log=_quiet)
+    lod = json.loads(pq.read_schema(out).metadata[b'geo'])['lod_columns']
+    assert [a['name'] for a in lod['attributes']] == kept
+    types = {a['name']: a['type'] for a in lod['attributes']}
+    if ('height', 'float32') in given:
+        assert types['height'] == 'float'
+    validate(out)
+
+
+@pytest.mark.parametrize(
     'options,message',
     [
         (dict(attributes=['height', 'height']), 'more than once'),
@@ -553,6 +576,47 @@ def test_attributes_are_checked(tmp_path, built, options, message):
     src, _ = built
     with pytest.raises((ValueError, KeyError), match=message):
         _write_unindexed(src, tmp_path / 'out.parquet', zooms=range(10, 12), log=_quiet, **options)
+
+
+def test_columns_named_as_the_thinnings_columns_are_kept(tmp_path):
+    """A source column named `id`, `area` or `cx` is an attribute as any
+    other, and a thinning goes on seeing the row id and area the writer
+    computes under those names."""
+    n = 600
+    rng = np.random.default_rng(3)
+    x, y = -105 + rng.random(n) * 0.2, 39.6 + rng.random(n) * 0.2
+    table = pa.table(
+        {
+            'geometry': shapely.to_wkb(shapely.box(x, y, x + 0.004, y + 0.001)),
+            'id': [f'b-{i:05d}' for i in range(n)],
+            'area': pa.array(rng.random(n) * 100, pa.float64()),
+            'cx': pa.array(np.arange(n) % 5, pa.int32()),
+        }
+    )
+    src = tmp_path / 'named.parquet'
+    pq.write_table(table.replace_schema_metadata({b'geo': json.dumps(GEO).encode()}), src)
+    seen = {}
+
+    def thinning(rows, zoom, ctx):
+        seen.update({f.name: f.type for f in rows.schema})
+        return _thinning(rows, zoom, ctx)
+
+    out = _build(src, tmp_path / 'named.lod.parquet', thinning=thinning, attributes=['auto', 'id'])
+    assert pa.types.is_integer(seen['id']) and seen['cx'] == pa.float64()
+    lod = json.loads(pq.read_schema(out).metadata[b'geo'])['lod_columns']
+    assert [a['name'] for a in lod['attributes']] == ['area', 'cx', 'id']
+    validate(out, full=True)
+    source = pq.read_table(out, columns=['id', 'area', 'cx'])
+    for zoom in (11, 13, 15):
+        shown = read_overview(out, zoom)
+        assert shown.num_rows
+        rows = shown.column('row')
+        for name in ('id', 'area', 'cx'):
+            assert (
+                shown.column(name)
+                .combine_chunks()
+                .equals(source.column(name).take(rows).combine_chunks())
+            ), (zoom, name)
 
 
 def test_cli_takes_attributes(tmp_path, built, monkeypatch):
@@ -571,6 +635,9 @@ def test_cli_takes_attributes(tmp_path, built, monkeypatch):
     result = runner.invoke(cli, [*args, '--attributes', 'auto'])
     assert result.exit_code == 0, result.output
     assert given['attributes'] == 'auto'
+    result = runner.invoke(cli, [*args, '--attributes', 'auto', '--attributes', 'name'])
+    assert result.exit_code == 0, result.output
+    assert given['attributes'] == ['auto', 'name']
 
 
 def _large_root(attributes):

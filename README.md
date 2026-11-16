@@ -65,7 +65,8 @@ Save the following as `build.py` and run `uv run python build.py`. Supply your
 own `buildings.parquet`. Every cheap source column (numbers, booleans and
 strings with at most 256 distinct values) is also kept as an attribute, a
 column per zoom level, which a tile reads only when a style names it;
-`attributes=['height']` keeps only the columns it names
+`attributes=['height']` keeps only the columns it names, and
+`['auto', 'id']` the default's with an id a map joins on beside them
 ([Attributes](docs/usage.md#attributes)). The first build may download
 DuckDB's spatial extension.
 

@@ -517,8 +517,8 @@ def _auto_attributes(con, src: str, schema: pa.Schema, geometry: str, log) -> li
     flat number and boolean column, except an integer column with more
     distinct values than AUTO_ID_SHARE of its values, such as an id, and every
     string column with at most DICTIONARY_MAX distinct values. The covering,
-    the geometry and names thinnings or `read_overview` reserve are left out,
-    and columns past the attribute limit with them."""
+    the geometry and the names `read_overview` returns as its own are left
+    out, and columns past the attribute limit with them."""
     geo = json.loads((schema.metadata or {}).get(b'geo', b'{}') or b'{}')
     covering = {
         path[0]
@@ -530,7 +530,7 @@ def _auto_attributes(con, src: str, schema: pa.Schema, geometry: str, log) -> li
     candidates = [
         f
         for f in schema
-        if f.name not in (geometry, 'bbox', *covering, *THINNING_COLUMNS, *OVERVIEW_COLUMNS)
+        if f.name not in (geometry, 'bbox', *covering, *OVERVIEW_COLUMNS)
         and is_attribute_type(f.type)
     ]
     source = f"read_parquet('{src}')"
@@ -801,7 +801,8 @@ def write(
     (name, Arrow type) pairs. Its default, ``'auto'``, takes every flat number
     and boolean column, except integers whose values are mostly distinct such
     as ids, and every string column with at most 256 distinct values; ``()``
-    keeps none.
+    keeps none. ``'auto'`` among the names stands for those columns, so
+    ``['auto', 'id']`` keeps them and an id a map joins on.
     ``compression_level`` applies to source and overview Zstd pages; decoding
     speed does not depend on it.
     ``placeholder_pixels`` is the width of the square a shape under a pixel
@@ -904,7 +905,21 @@ def _build(src: str, out: Path, o: SimpleNamespace, held: contextlib.ExitStack) 
     if isinstance(items, str):
         if items != 'auto':
             raise ValueError(f"attributes must be a list or 'auto', not {items!r}")
-        items = _auto_attributes(con, src, source_schema, geometry, log)
+        items = ['auto']
+    items = list(items)
+    if 'auto' in items:
+        # 'auto' stands for the default's columns, apart from those the list names itself
+        named = {
+            i.name if isinstance(i, pa.Field) else i[0] if isinstance(i, tuple) else i
+            for i in items
+        }
+        at = items.index('auto')
+        default = _auto_attributes(con, src, source_schema, geometry, log)
+        items = [
+            *items[:at],
+            *(n for n in default if n not in named),
+            *(i for i in items[at + 1 :] if i != 'auto'),
+        ]
     attributes = infer_attributes(source_schema, items)
     column_names = [a.name for a in attributes]
     if len(set(column_names)) != len(column_names):
@@ -953,8 +968,7 @@ def _build(src: str, out: Path, o: SimpleNamespace, held: contextlib.ExitStack) 
     for name in ('lod', KEY_COLUMN, ATTRIBUTE_COLUMN):
         if name in source_schema.names:
             raise ValueError(f'source column {name!r} clashes with the output column of that name')
-    bad = [a.name for a in attributes if a.name in THINNING_COLUMNS]
-    bad += [c for c in o.columns if c in THINNING_COLUMNS]
+    bad = [c for c in o.columns if c in THINNING_COLUMNS]
     if bad:
         raise ValueError(
             f'columns {bad} clash with the names thinnings see; rename them in the source'
@@ -1057,7 +1071,8 @@ def _build(src: str, out: Path, o: SimpleNamespace, held: contextlib.ExitStack) 
                 '__area AS area',
                 '__nv AS nv',
             ]
-            + [_quoted(a.name) for a in attributes]
+            # an attribute named as a column thinnings see is kept without their seeing it
+            + [_quoted(a.name) for a in attributes if a.name not in THINNING_COLUMNS]
             + [_quoted(c) for c in o.columns]
         )
     )
@@ -1103,7 +1118,8 @@ def _build(src: str, out: Path, o: SimpleNamespace, held: contextlib.ExitStack) 
             changed = [
                 a.name
                 for a in attributes
-                if a.name in kept.column_names
+                if a.name not in THINNING_COLUMNS
+                and a.name in kept.column_names
                 and not _same_values(kept.column(a.name), rows.column(a.name).take(source_rows))
             ]
             if changed:
@@ -1414,7 +1430,7 @@ def _build(src: str, out: Path, o: SimpleNamespace, held: contextlib.ExitStack) 
 
         scanned = 0
         reader = con.sql(
-            f'SELECT __id, {quoted} AS g, __cx AS cx, __cy AS cy{attr_select} '
+            f'SELECT __id, {quoted} AS __g, __cx, __cy{attr_select} '
             f"FROM '{sorted_path}' WHERE __cx IS NOT NULL"
         ).to_arrow_reader(COPY_SCAN_ROWS)
         for batch in reader:
@@ -1427,9 +1443,9 @@ def _build(src: str, out: Path, o: SimpleNamespace, held: contextlib.ExitStack) 
                 continue
             table = pa.Table.from_batches([batch]).take(pa.array(hit))
             chunk_ids = ids_b[hit]
-            cx_c = table.column('cx').to_numpy(zero_copy_only=False)
-            cy_c = table.column('cy').to_numpy(zero_copy_only=False)
-            wkb_c = table.column('g').to_numpy(zero_copy_only=False)
+            cx_c = table.column('__cx').to_numpy(zero_copy_only=False)
+            cy_c = table.column('__cy').to_numpy(zero_copy_only=False)
+            wkb_c = table.column('__g').to_numpy(zero_copy_only=False)
             attr_ids.append(chunk_ids)
             for a in attributes:
                 attr_chunks[a.name].append(table.column(a.name).combine_chunks())
