@@ -451,6 +451,17 @@ this layout is in which rows a coarse view reads and how it finds them.
   maintainers have decided to converge that output on COGP, which makes COGP
   the layout most other tooling will produce. The question this repository
   asks is whether the page-level access path is worth adding to it.
+- **GeoParquet with baked PMTiles** ([gsueur/geoparquet-pmtiles](https://github.com/gsueur/geoparquet-pmtiles))
+  places a PMTiles archive between the last data byte and the footer of a
+  GeoParquet 2.0 file and names its byte range in the footer's key-value
+  metadata, so Parquet readers see the plain file and removing the archive
+  restores it byte for byte. Overview zooms are the archive's vector tiles,
+  with the attributes chosen when they were cut. From a detail zoom its
+  reader builds tiles from the rows, choosing pages by the page index of the
+  bbox columns, and the widest features come from baked tiles there too.
+  This layout keeps the overviews in columns of the table, with one spatial
+  index over the pages of every zoom and per-zoom attribute columns read
+  when a style asks for them.
 - **GeoParquet PR 299** ([LOD extension, mmgeorge](https://github.com/opengeospatial/geoparquet/pull/299))
   declares simplified geometry columns with a resolution each, nested paths
   allowed, with the primary geometry as the fallback. It reduces geometric
