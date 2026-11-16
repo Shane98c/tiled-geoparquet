@@ -53,6 +53,17 @@ const getPool = (): Promise<TilePool | undefined> => {
   })())
 }
 const stats: Record<string, Transfer> = {}
+/** A request's URL without the range parameter, so a file's requests are
+ * counted together. */
+const fileUrl = (url: string): string => {
+  const name = sourceOptions.rangeParam
+  if (name === undefined) return url
+  const at = url.lastIndexOf(`${encodeURIComponent(name)}=`)
+  const range = url.slice(at + encodeURIComponent(name).length + 1)
+  return at > 0 && (url[at - 1] === '?' || url[at - 1] === '&') && /^\d+-\d+$/.test(range)
+    ? url.slice(0, at - 1)
+    : url
+}
 
 /** When each request the server has yet to answer was sent. */
 const unanswered = new Set<{ began: number }>()
@@ -61,7 +72,7 @@ scope.fetch = async (input, init) => {
   const sent = { began: performance.now() }
   unanswered.add(sent)
   const response = await fetched(input, init).finally(() => unanswered.delete(sent))
-  const key = String(input instanceof Request ? input.url : input)
+  const key = fileUrl(String(input instanceof Request ? input.url : input))
   const entry = (stats[key] ??= { requests: 0, bytes: 0 })
   entry.requests++
   if (init?.method !== 'HEAD') entry.bytes += Number(response.headers.get('content-length') ?? 0)
