@@ -641,7 +641,10 @@ sets for the tiles entry point before a file opens:
   server has to ignore the parameter, as R2 and S3 do, and a signed URL does
   not survive one. A CDN that keys its cache on the query string stores each
   range apart, and a later visit finds in the browser's cache the ranges it
-  asks for again byte for byte.
+  asks for again byte for byte. Use it for a file that never changes at its
+  URL: each range is cached on its own, so once a file is replaced a browser
+  can answer some ranges from the file it held and the rest from the new one.
+  It is measured in Chrome alone.
 
 First views of the US buildings styled by two attributes, in Chrome from S3,
 took 1.21 to 2.31 s through the cache on one URL, 0.99 to 1.57 s through it

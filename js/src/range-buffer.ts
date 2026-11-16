@@ -27,7 +27,8 @@ import { rootFileBytes } from './spatial.js'
  * then holds each range for a later visit and has them in flight side by side.
  * With it requests go through the cache and six connections are open, unless
  * `cache` or `connections` say otherwise. The server has to ignore the
- * parameter, and a signed URL does not survive it.
+ * parameter, a signed URL does not survive it, and the file must not change at
+ * its URL, since each range is cached apart from the others.
  */
 /** Bytes read ahead of the footer when it must be fetched separately, for the page index just before it. */
 const FOOTER_MARGIN = 64 * 1024
