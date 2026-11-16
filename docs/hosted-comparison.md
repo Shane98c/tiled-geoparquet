@@ -78,7 +78,9 @@ The archives still have different thinning and overzoom rules. The PMTiles
 tiles hold `class`, `height` and `subtype`, the attributes its tiler was
 given. The GeoParquet file keeps 17 of its columns as attributes, the
 writer's default, those three among them, and its reader styles by any other
-column from the table's rows. Full archive sizes include different
+column from the table's rows. The page leaves `id` out of its style menu
+(`--hide id`): looked up for a zoomed-out view, that column of unique strings
+reads hundreds of megabytes, 429 MB for one zoom 8 tile. Full archive sizes include different
 capabilities and should not be confused with viewport transfer sizes.
 
 ## Rebuilding the hosted page
@@ -93,7 +95,8 @@ node demo/build-share.mjs \
   --pmtiles https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/6c3a4f9/japan_buildings.pmtiles \
   --cogp https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/6c3a4f9/japan_buildings.cogp-2.2.2.parquet \
   --esri https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/6c3a4f9/japan_buildings.sop.parquet \
-  --release 469acd1
+  --release 469acd1 \
+  --hide id
 wrangler pages deploy /private/tmp/geoparquet-lod-share \
   --project-name geoparquet-lod-compare --branch main
 ```

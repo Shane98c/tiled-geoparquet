@@ -247,6 +247,7 @@
       //   ?panes=lod,pmtiles,cogp,esri  selected readers; only these request data
       //   ?stops=name:0,10,40  the colour stops of a numeric attribute, once per attribute
       //   ?cache=off   this layout's requests are sent past the browser's cache
+      //   ?hide=a,b    columns left out of the style menu
       import * as maplibregl from 'https://unpkg.com/maplibre-gl@6.18.0/dist/maplibre-gl.mjs'
       import {
         readMetadata,
@@ -336,23 +337,27 @@
       const metadata = enabled('lod') ? await readMetadata(fileUrl) : undefined
       const styleSelect = document.getElementById('style')
       const stored = new Set(metadata?.lod?.attributes.map((a) => a.name))
+      const hidden = (params.get('hide') ?? '').split(',').filter(Boolean)
       if (metadata?.lod) {
+        const others = metadata.columns.filter(
+          (name) => !stored.has(name) && name !== metadata.lod.key?.column,
+        )
+        const looked = others.filter((name) => !hidden.includes(name))
+        const left = others.filter((name) => hidden.includes(name))
         const groups = [
           ['Fast: stored for the map at every zoom', [...stored]],
-          [
-            'Slower zoomed out: looked up in the full table',
-            metadata.columns.filter(
-              (name) => !stored.has(name) && name !== metadata.lod.key?.column,
-            ),
-          ],
+          ['Slower zoomed out: looked up in the full table', looked],
         ]
-        const [, looked] = groups[1]
+        const are = (names) => (names.length > 1 ? 'are' : 'is')
         document.getElementById('style-info').hidden = false
         document.getElementById('style-help-columns').textContent =
           `In this file ${stored.size} columns are fast` +
           (looked.length
-            ? `, and ${looked.join(', ')} ${looked.length > 1 ? 'are' : 'is'} looked up in the table.`
-            : '.')
+            ? `, and ${looked.join(', ')} ${are(looked)} looked up in the table.`
+            : '.') +
+          (left.length
+            ? ` ${left.join(', ')} ${are(left)} left out of this menu: looked up for a zoomed-out view, a column of unique values reads hundreds of megabytes.`
+            : '')
         styleSelect.replaceChildren(
           new Option('Geometry', 'geometry'),
           ...groups

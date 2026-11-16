@@ -13,6 +13,7 @@ const { values } = parseArgs({
     cogp: { type: 'string' },
     esri: { type: 'string' },
     release: { type: 'string' },
+    hide: { type: 'string' },
   },
 })
 if (!values.out || !values.url || !values.pmtiles || !values.release)
@@ -25,6 +26,7 @@ const defaults = {
   pmtiles: values.pmtiles,
   ...(values.cogp ? { cogp: values.cogp } : {}),
   ...(values.esri ? { esri: values.esri } : {}),
+  ...(values.hide ? { hide: values.hide } : {}),
   panes: 'lod,pmtiles',
   center: '139.76,35.68',
   zoom: '11',

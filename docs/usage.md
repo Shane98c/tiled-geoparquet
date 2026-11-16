@@ -703,7 +703,8 @@ idle times. These are not unique visible-feature counts or wire-transfer
 measurements. The default blank background keeps basemap loading out of those
 timings; add `basemap=1` for a basemap. Map idle includes rendering and is not
 a precise first-paint measurement. The style menu lists the GeoParquet file's
-attributes and its other source columns. A numeric attribute is coloured by
+attributes and its other source columns, apart from any a `hide=id` query
+parameter names. A numeric attribute is coloured by
 quantiles of the values in view, or by the stops a `stops=name:0,10,40` query
 parameter gives, once per attribute. In the Japan building fixtures the
 GeoParquet file keeps 17 of its columns as attributes, the writer's default,
