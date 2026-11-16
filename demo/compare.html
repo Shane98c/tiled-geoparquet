@@ -231,19 +231,21 @@
         'fill-opacity': 0.5,
         'fill-outline-color': '#7a1f08',
       }
-      // The style menu lists the file's attributes, which a tile reads from a column per
-      // zoom, then its other flat columns, which a tile reads from the table by row.
-      // Names come from the file: they are set as text, never as markup.
+      // The style menu lists the columns the file stores for the map, its attributes, which
+      // a tile reads from a column per zoom, then its other flat columns, which a tile
+      // looks up in the table's rows. Names come from the file: they are set as text,
+      // never as markup.
       const metadata = enabled('lod') ? await readMetadata(fileUrl) : undefined
       const styleSelect = document.getElementById('style')
+      const stored = new Set(metadata?.lod?.attributes.map((a) => a.name))
       if (metadata?.lod) {
-        const attributes = metadata.lod.attributes
-        const held = new Set(attributes.map((a) => a.name))
         const groups = [
-          ['Attributes (a column per zoom)', attributes.map((a) => a.name)],
+          ['Fast: stored for the map at every zoom', [...stored]],
           [
-            'Other columns (read from the table by row)',
-            metadata.columns.filter((name) => !held.has(name) && name !== metadata.lod.key?.column),
+            'Slower zoomed out: looked up in the full table',
+            metadata.columns.filter(
+              (name) => !stored.has(name) && name !== metadata.lod.key?.column,
+            ),
           ],
         ]
         styleSelect.replaceChildren(
@@ -835,6 +837,28 @@
         for (const { pane } of maps) if (pane.stats) Object.assign(stats, await pane.stats())
         return stats
       }
+      // Where a pane's tiles get the styled column from.
+      const styleNote = (pane) => {
+        const name = selectedStyle
+        if (name === 'geometry') return []
+        if (pane.lodUrl && metadata?.lod)
+          return [
+            [
+              stored.has(name)
+                ? `${name}: stored for the map, fetched only when a style uses it`
+                : `${name}: not stored for the map, looked up in the full table`,
+            ],
+          ]
+        if (!pane.fields) return []
+        return pane.fields.includes(name)
+          ? [[`${name}: carried in every tile, styled or not`]]
+          : [
+              [
+                `No ${name} in these tiles: they were cut with ${pane.fields.join(', ') || 'no attributes'}`,
+                'absent',
+              ],
+            ]
+      }
       const show = async () => {
         const stats = await current()
         for (const { hud, pane } of maps) {
@@ -847,14 +871,9 @@
                 ? hud.dataset.status
                 : `${features(pane).toLocaleString()} features delivered (cumulative)`,
             }),
-            ...(selectedStyle !== 'geometry' && pane.fields && !pane.fields.includes(selectedStyle)
-              ? [
-                  Object.assign(document.createElement('small'), {
-                    className: 'absent',
-                    textContent: `No ${selectedStyle} in these tiles: they were cut with ${pane.fields.join(', ') || 'no attributes'}`,
-                  }),
-                ]
-              : []),
+            ...styleNote(pane).map(([textContent, className = '']) =>
+              Object.assign(document.createElement('small'), { textContent, className }),
+            ),
             Object.assign(document.createElement('small'), {
               textContent: `First map idle: ${pane.firstIdle === undefined ? 'loading…' : Math.round(pane.firstIdle) + ' ms'} · Last view/style: ${pane.pendingSince !== undefined ? 'loading…' : Math.round(pane.lastIdle ?? 0) + ' ms'}`,
             }),
