@@ -227,8 +227,8 @@
       <small id="notes"
         >Synchronized views; counts include tile boundary copies, not unique buildings. Different
         thinning and overzoom rules still apply. A request cancelled before its response began is
-        not counted; one cancelled after counts at its full size. Times run from the end of a
-        move.</small
+        not counted; one cancelled after counts at its full size. Times run from the end of a move.
+        Every reader goes through the browser's cache, so a view opened again is faster.</small
       >
     </div>
     <dialog id="report">
@@ -246,6 +246,7 @@
       //   ?center=lon,lat ?zoom=  the starting view
       //   ?panes=lod,pmtiles,cogp,esri  selected readers; only these request data
       //   ?stops=name:0,10,40  the colour stops of a numeric attribute, once per attribute
+      //   ?cache=off   this layout's requests are sent past the browser's cache
       import * as maplibregl from 'https://unpkg.com/maplibre-gl@6.18.0/dist/maplibre-gl.mjs'
       import {
         readMetadata,
@@ -254,9 +255,13 @@
         parseTileUrl,
         readStats,
         readWaiting,
+        setSourceOptions,
       } from './dist/tiles.js'
 
       const params = new URLSearchParams(location.search)
+      // This layout's requests go through the browser's cache, each range under a URL of
+      // its own, as the other readers' requests go through it.
+      if (params.get('cache') !== 'off') setSourceOptions({ rangeParam: 'range' })
       const url = params.get('url')
       const localServer = params.get('demoServer') === '1'
       const delay = Number(params.get('latency') ?? 50)

@@ -131,6 +131,39 @@ try {
   calls.length = 0
   await httpSource(mirrors, { cache: 'default' })
   assert.equal(calls.length, 1, 'through the cache a source opens with one connection')
+  // a range parameter gives every range a URL of its own, through the cache,
+  // with six connections opened past it as without one
+  for (const [url, joined] of [
+    [mirrors[0], '?'],
+    [mirrors[0] + '?v=2', '&'],
+  ]) {
+    calls.length = 0
+    const keyed = await httpSource([url], { rangeParam: 'range' })
+    await keyed.slice(20000, 20010)
+    assert.deepEqual(
+      calls
+        .filter((call) => !opener(call))
+        .map((call) => [call.url, call.headers.Range, Object.hasOwn(call, 'cache')]),
+      [
+        [`${url}${joined}range=0-16383`, 'bytes=0-16383', false],
+        [`${url}${joined}range=20000-20009`, 'bytes=20000-20009', false],
+      ],
+      'each range is requested under its own URL with no cache mode',
+    )
+    assert.deepEqual(
+      calls.filter(opener).map((call) => [call.url, call.cache]),
+      Array.from({ length: 5 }, () => [url, 'no-store']),
+      'the connections open on the plain URL, past the cache',
+    )
+  }
+  calls.length = 0
+  await httpSource(mirrors, { rangeParam: 'range', cache: 'no-store', connections: 1 })
+  assert.deepEqual(
+    [calls.length, calls[0].url, calls[0].cache],
+    [1, `${mirrors[0]}?range=0-16383`, 'no-store'],
+    'a cache mode and a connection count given with it are kept',
+  )
+  await assert.rejects(httpSource(mirrors, { rangeParam: '' }), /rangeParam must name a parameter/)
   for (const connections of [0, 1.5, -1, NaN])
     await assert.rejects(
       httpSource(mirrors, { connections }),

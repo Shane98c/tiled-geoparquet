@@ -21,6 +21,13 @@ import { rootFileBytes } from './spatial.js'
  * parallel requests of the first tiles find them ready. 1 sends none. It is
  * six with `no-store` and one through the cache, which has one request of a
  * URL in flight at a time.
+ *
+ * `rangeParam` names a query parameter that carries each request's range, as in
+ * `?range=20000-20009`, so every range has a URL of its own: a browser's cache
+ * then holds each range for a later visit and has them in flight side by side.
+ * With it requests go through the cache and six connections are open, unless
+ * `cache` or `connections` say otherwise. The server has to ignore the
+ * parameter, and a signed URL does not survive it.
  */
 /** Bytes read ahead of the footer when it must be fetched separately, for the page index just before it. */
 const FOOTER_MARGIN = 64 * 1024
@@ -57,17 +64,30 @@ export const httpSource = async (
   {
     tail = 64 * 1024,
     signal,
-    cache = 'no-store',
-    connections = cache === 'no-store' ? HOST_CONNECTIONS : 1,
-  }: { tail?: number; signal?: AbortSignal; cache?: RequestCache; connections?: number } = {},
+    rangeParam,
+    cache = rangeParam === undefined ? 'no-store' : 'default',
+    connections = cache === 'no-store' || rangeParam !== undefined ? HOST_CONNECTIONS : 1,
+  }: {
+    tail?: number
+    signal?: AbortSignal
+    cache?: RequestCache
+    connections?: number
+    rangeParam?: string
+  } = {},
 ): Promise<RangeSource> => {
   if (!urls.length) throw new Error('at least one URL is required')
   if (!Number.isInteger(connections) || connections < 1)
     throw new Error('connections must be a whole number, 1 or more')
+  if (rangeParam !== undefined && !rangeParam) throw new Error('rangeParam must name a parameter')
   const mode: { cache?: RequestCache } = cache === 'default' ? {} : { cache }
+  // the URL a request for bytes `start` up to `end` is sent to
+  const at = (url: string, start: number, end: number) =>
+    rangeParam === undefined
+      ? url
+      : `${url}${url.includes('?') ? '&' : '?'}${encodeURIComponent(rangeParam)}=${start}-${end - 1}`
   // A fixed leading range opens indexed files in one request. Unindexed files
   // use Content-Range for their size, then continue through the normal footer.
-  const opening = fetch(urls[0], {
+  const opening = fetch(at(urls[0], 0, 16384), {
     headers: { Range: 'bytes=0-16383' },
     ...mode,
     signal,
@@ -107,7 +127,7 @@ export const httpSource = async (
   // probe the tail, read the footer's length from the file's last 8 bytes, and fetch exactly
   // what the footer still needs, so opening reads the footer and little else
   const get = async (start: number, end: number) => {
-    const response = await fetch(urls[0], {
+    const response = await fetch(at(urls[0], start, end), {
       headers: { Range: `bytes=${start}-${end - 1}` },
       ...mode,
       signal,
@@ -151,7 +171,7 @@ export const httpSource = async (
     const attempt = (async () => {
       let response: Response
       try {
-        response = await fetch(urls[0], {
+        response = await fetch(at(urls[0], byteLength - 8, byteLength), {
           headers: { Range: `bytes=${byteLength - 8}-${byteLength - 1}` },
           ...mode,
         })
@@ -194,7 +214,7 @@ export const httpSource = async (
         return tailBuffer.slice(start - tailStart, end - tailStart)
       const url = urls[next++ % urls.length]
       const read = async () => {
-        const response = await fetch(url, {
+        const response = await fetch(at(url, start, end), {
           headers: { Range: `bytes=${start}-${end - 1}` },
           ...mode,
           signal,

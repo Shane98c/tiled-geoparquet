@@ -228,7 +228,8 @@ competitive request counts and transfer sizes, not a general speed ranking.
   browser's HTTP cache, which answers the range requests of one URL one at a
   time, and six connections opened as the file opens, the reader's defaults
   ([Requests](docs/usage.md#requests)); a view opened again then reads from
-  the network where the cache would answer from disk. Switching drawn tiles
+  the network where the cache would answer from disk, unless `rangeParam`
+  gives each range a URL of its own, which keeps both. Switching drawn tiles
   to an attribute fetches its pages, never their geometry: six zoom 13 tiles
   took 4 requests, 154 KB and 0.26 s at 100 ms per request. Boundary copies
   pack every attribute, so a geometry-only tile reads their values too, up

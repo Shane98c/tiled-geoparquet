@@ -23,7 +23,7 @@ let geometryDecodes = 0,
   projectionJobs = 0
 const readers = new Map<string, Promise<TileReader>>()
 let workerCount = 2
-let sourceOptions: { connections?: number; cache?: RequestCache } = {}
+let sourceOptions: { connections?: number; cache?: RequestCache; rangeParam?: string } = {}
 let pool: Promise<TilePool | undefined> | undefined
 let helpers: TilePool | undefined
 let started = false
@@ -86,8 +86,10 @@ const getReader = (url: string): Promise<TileReader> => {
   if (!reader) {
     // Batch neighbouring tile messages and directory completions across microtasks.
     // Cancelled slices are removed before this short window dispatches its ranges.
-    const cached = (sourceOptions.cache ?? 'no-store') !== 'no-store'
-    reader = httpSource(cached ? s3Mirrors(url) : [url], sourceOptions).then((file) =>
+    // through the cache, hostnames stand in for the URLs a range parameter gives
+    const mirrored =
+      sourceOptions.rangeParam === undefined && (sourceOptions.cache ?? 'no-store') !== 'no-store'
+    reader = httpSource(mirrored ? s3Mirrors(url) : [url], sourceOptions).then((file) =>
       openReader(coalescing(timed(file), { windowMs: 1 })),
     )
     readers.set(url, reader)
@@ -158,7 +160,11 @@ scope.addEventListener('message', (event: MessageEvent<WorkerRequest | CpuReques
       } satisfies WorkerResponse)
     } else {
       workerCount = request.workers
-      sourceOptions = { connections: request.connections, cache: request.cache }
+      sourceOptions = {
+        connections: request.connections,
+        cache: request.cache,
+        rangeParam: request.rangeParam,
+      }
       scope.postMessage({ id: request.id, ok: true, configured: true } satisfies WorkerResponse)
     }
     return

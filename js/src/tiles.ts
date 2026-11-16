@@ -71,7 +71,14 @@ export type WorkerRequest =
   | { id: number; type: 'stats' }
   | { id: number; type: 'open'; url: string }
   | { id: number; type: 'cancel' }
-  | { id: number; type: 'configure'; workers: number; connections?: number; cache?: RequestCache }
+  | {
+      id: number
+      type: 'configure'
+      workers: number
+      connections?: number
+      cache?: RequestCache
+      rangeParam?: string
+    }
 export type WorkerResponse =
   | { id: number; ok: true; configured: true }
   | { id: number; ok: true; data: ArrayBuffer }
@@ -101,16 +108,23 @@ export const setWorkerCount = (count: number): void => {
   if (worker) throw new Error('Set worker count before opening a source')
   workerCount = count
 }
-let sourceOptions: { connections?: number; cache?: RequestCache } = {}
+let sourceOptions: { connections?: number; cache?: RequestCache; rangeParam?: string } = {}
 /** Set how files are requested before prefetch, readMetadata, or
  * registerProtocol. `connections`, 1–6, is how many connections to each host
  * a file opens with: one-byte requests sent beside its first read open them,
  * which spares the first tiles' parallel requests a handshake each on
  * HTTP/1.1, and one sends none. `cache` is the cache mode of every request:
  * `no-store` sends a tile's requests side by side, where Chrome's HTTP cache
- * answers the range requests of one URL one at a time.
+ * answers the range requests of one URL one at a time. `rangeParam` names a
+ * query parameter that carries each request's range, so every range has a URL
+ * of its own, which the cache holds for a later visit and has in flight beside
+ * the others; requests then go through the cache unless `cache` names a mode.
  */
-export const setSourceOptions = (options: { connections?: number; cache?: RequestCache }): void => {
+export const setSourceOptions = (options: {
+  connections?: number
+  cache?: RequestCache
+  rangeParam?: string
+}): void => {
   const { connections } = options
   if (
     connections !== undefined &&

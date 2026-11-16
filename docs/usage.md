@@ -614,9 +614,10 @@ see [Attributes](#attributes).
 
 A tile's requests go out together. S3 and most object stores answer over
 HTTP/1.1, one request to a connection, and a browser allows a host six
-connections. Whether the requests then run side by side rests on two options
-of `httpSource`, which `setSourceOptions({ cache, connections })` sets for
-the tiles entry point before a file opens:
+connections. Whether the requests then run side by side, and whether a later
+visit finds them in the browser's cache, rests on three options of
+`httpSource`, which `setSourceOptions({ cache, connections, rangeParam })`
+sets for the tiles entry point before a file opens:
 
 - `cache`, the cache mode of every request, is `no-store`. Chrome's HTTP
   cache has one request of a URL in flight at a time, so range requests to
@@ -630,6 +631,17 @@ the tiles entry point before a file opens:
   file is: five one-byte requests sent beside the file's first read open the
   others, so the first tiles' requests wait on no handshake. One sends none,
   and it is one through the cache.
+- `rangeParam`, unset, names a query parameter that carries each request's
+  range, as in `?range=20000-20009`. Every range then has a URL of its own,
+  so the cache has them in flight side by side and holds each for a later
+  visit: requests go through the cache, with six connections open. On the
+  Japan buildings in Chrome from R2, a first 1280 by 800 view styled by three
+  attributes took 1.19 to 1.52 s with it and 1.24 to 1.54 s past the cache,
+  and the same view opened again 0.10 to 0.14 s and 1.08 to 1.27 s. The
+  server has to ignore the parameter, as R2 and S3 do, and a signed URL does
+  not survive one. A CDN that keys its cache on the query string stores each
+  range apart, and a later visit finds in the browser's cache the ranges it
+  asks for again byte for byte.
 
 First views of the US buildings styled by two attributes, in Chrome from S3,
 took 1.21 to 2.31 s through the cache on one URL, 0.99 to 1.57 s through it
