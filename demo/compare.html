@@ -59,6 +59,31 @@
       }
       .hud small.absent {
         color: #b00;
+        font-weight: 600;
+      }
+      .absent-banner {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        width: max-content;
+        max-width: min(80%, 440px);
+        padding: 14px 18px;
+        border: 2px solid #b00;
+        border-radius: 8px;
+        background: #fff;
+        box-shadow: 0 2px 14px rgba(0, 0, 0, 0.35);
+        text-align: center;
+        pointer-events: none;
+      }
+      .absent-banner[hidden] {
+        display: none;
+      }
+      .absent-banner b {
+        display: block;
+        margin-bottom: 4px;
+        color: #b00;
+        font-size: 17px;
       }
       #bar {
         position: absolute;
@@ -226,6 +251,9 @@
         center: (params.get('center') ?? '139.76,35.68').split(',').map(Number),
         zoom: Number(params.get('zoom') ?? 12),
       }
+      // the fill and outline of a pane whose tiles lack the styled column
+      const FAINT = '#dedbd4'
+      const FAINT_OUTLINE = '#cbc7bf'
       const paint = {
         'fill-color': '#d0421b',
         'fill-opacity': 0.5,
@@ -575,7 +603,10 @@
         pane.mapDiv.className = 'map'
         pane.hud = document.createElement('div')
         pane.hud.className = 'hud'
-        div.append(pane.mapDiv, pane.hud)
+        pane.banner = document.createElement('div')
+        pane.banner.className = 'absent-banner'
+        pane.banner.hidden = true
+        div.append(pane.mapDiv, pane.hud, pane.banner)
         container.append(div)
       }
       const maps = []
@@ -644,13 +675,27 @@
 
       window.maps = maps.map((m) => m.map)
 
+      // Whether a pane's tiles lack the styled column: it then draws its features faint.
+      const lacks = (pane) =>
+        selectedStyle !== 'geometry' &&
+        pane.fields !== undefined &&
+        !pane.fields.includes(selectedStyle)
       function paintStyle() {
         for (const { map, pane } of maps) {
           if (pane.geometryOnly || pane.refetching) continue
+          pane.faint = lacks(pane)
           for (const layer of pane.layers) {
-            const property = layer.type === 'circle' ? 'circle-color' : 'fill-color'
-            layer.paint[property] = color()
-            if (map.getLayer(layer.id)) map.setPaintProperty(layer.id, property, color())
+            const colours =
+              layer.type === 'circle'
+                ? { 'circle-color': pane.faint ? FAINT : color() }
+                : {
+                    'fill-color': pane.faint ? FAINT : color(),
+                    'fill-outline-color': pane.faint ? FAINT_OUTLINE : paint['fill-outline-color'],
+                  }
+            for (const [property, value] of Object.entries(colours)) {
+              layer.paint[property] = value
+              if (map.getLayer(layer.id)) map.setPaintProperty(layer.id, property, value)
+            }
           }
         }
         showLegend()
@@ -852,16 +897,24 @@
         if (!pane.fields) return []
         return pane.fields.includes(name)
           ? [[`${name}: carried in every tile, styled or not`]]
-          : [
-              [
-                `No ${name} in these tiles: they were cut with ${pane.fields.join(', ') || 'no attributes'}`,
-                'absent',
-              ],
-            ]
+          : [[`No ${name} in these tiles`, 'absent']]
       }
       const show = async () => {
         const stats = await current()
+        let repaint = false
         for (const { hud, pane } of maps) {
+          const absent = lacks(pane)
+          repaint ||= absent !== Boolean(pane.faint)
+          pane.banner.hidden = !absent
+          if (absent)
+            pane.banner.replaceChildren(
+              Object.assign(document.createElement('b'), {
+                textContent: `No ${selectedStyle} in this ${pane.title} archive`,
+              }),
+              document.createTextNode(
+                `Its tiles were cut with ${pane.fields.join(', ') || 'no attributes'}. Styling by another column means cutting the tiles again.`,
+              ),
+            )
           const { requests, bytes } = tally(stats, pane.keys)
           const children = [
             Object.assign(document.createElement('b'), { textContent: pane.title }),
@@ -880,6 +933,7 @@
           ]
           hud.replaceChildren(...children)
         }
+        if (repaint) paintStyle()
         document.getElementById('zoom').textContent = maps.length
           ? ` zoom ${maps[0].map.getZoom().toFixed(1)}`
           : ''
