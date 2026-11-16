@@ -4,7 +4,8 @@ The public comparison is at <https://geoparquet-lod-compare.pages.dev/>.
 It serves the Tiled GeoParquet build from the
 [Japan evaluation](japan-evaluation.md), whose thinning budgets are calibrated
 against PMTiles feature counts, beside the matching PMTiles archive. The
-[four-reader comparison](comparison.md) is measured on these hosted files.
+[five-reader comparison](comparison.md) is measured on these hosted files and
+on the baked-PMTiles file hosted beside them, which has no pane on the page.
 
 The page defaults to Tokyo at zoom 11, geometry styling, and no basemap. Both
 readers request data directly from the same R2 public host with no simulated
@@ -28,6 +29,11 @@ fresh conversion with the released COGP writer 2.2.2 (`cogp-rs-v2.2.2`, commit
 `44f29be34d303fbb1febb154413a5aa7aa568a91`). The conversion uses
 `--webmerc-minzoom 10` and otherwise the release's defaults.
 
+The baked-PMTiles file of the five-reader comparison was built from the same
+source by `benchmarks/baked-pmtiles/build.py`, which runs the scripts of
+[gsueur/geoparquet-pmtiles](https://github.com/gsueur/geoparquet-pmtiles) at
+commit `b8e4734` and bakes in the PMTiles archive hosted here.
+
 Esri uses its original Japan SOP file and the reference MapLibre reader from
 upstream commit `10ff683874db8b2d99c0f03b98354b5ea5f8199c`. Its ten implementation
 files match the upstream Git blob hashes; only the dataset-list type is reduced
@@ -40,21 +46,24 @@ and ready status are shown explicitly; initial timing waits for data rendering.
 Objects live under `geoparquet-lod/releases/<tag>/` in the
 `live-classify-data` bucket. The tag is the commit whose recipe produced the
 object: `9fc50d5` built the GeoParquet file with
-`benchmarks/write-japan-tippecanoe.py`; the PMTiles and COGP archives were
-converted at `6c3a4f9`, and the Esri SOP file, uploaded at that release, is
-Esri's original.
+`benchmarks/write-japan-tippecanoe.py`; `d51954c` built the baked-PMTiles
+file with `benchmarks/baked-pmtiles/build.py`; the PMTiles and COGP archives
+were converted at `6c3a4f9`, and the Esri SOP file, uploaded at that release,
+is Esri's original.
 
-| Dataset    | Release   |         Bytes | MD5                                |
-| ---------- | --------- | ------------: | ---------------------------------- |
-| GeoParquet | `9fc50d5` | 6,317,435,821 | `5f96ff2f7538eb4c9417fad81d619501` |
-| PMTiles    | `6c3a4f9` | 1,297,122,745 | `0b733b7511dda51102c1b58a4983706b` |
-| COGP 2.2.2 | `6c3a4f9` | 9,081,139,765 | `f9a986b09224256534b530ed80dd245a` |
-| Esri SOP   | `6c3a4f9` | 6,177,950,661 | `6224bdf08e1915e367baa61ee566f650` |
+| Dataset       | Release   |         Bytes | MD5                                |
+| ------------- | --------- | ------------: | ---------------------------------- |
+| GeoParquet    | `9fc50d5` | 6,317,435,821 | `5f96ff2f7538eb4c9417fad81d619501` |
+| PMTiles       | `6c3a4f9` | 1,297,122,745 | `0b733b7511dda51102c1b58a4983706b` |
+| COGP 2.2.2    | `6c3a4f9` | 9,081,139,765 | `f9a986b09224256534b530ed80dd245a` |
+| Esri SOP      | `6c3a4f9` | 6,177,950,661 | `6224bdf08e1915e367baa61ee566f650` |
+| Baked PMTiles | `d51954c` | 6,337,852,318 | `08388a4ba5add01de04cf4bcb8cd9477` |
 
 - [GeoParquet](https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/9fc50d5/japan_buildings.parquet)
 - [PMTiles](https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/6c3a4f9/japan_buildings.pmtiles)
 - [Released COGP](https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/6c3a4f9/japan_buildings.cogp-2.2.2.parquet)
 - [Esri SOP](https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/6c3a4f9/japan_buildings.sop.parquet)
+- [Baked PMTiles](https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/d51954c/japan_buildings.baked.parquet)
 - [Deployment manifest](https://geoparquet-lod-compare.pages.dev/release.json)
 
 ## Interpreting the comparison

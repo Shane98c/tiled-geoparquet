@@ -30,8 +30,8 @@ take extra space, but there is no separate archive of pre-encoded MVT tiles.
 The intended use is a static dataset that people need to both explore and query.
 If map delivery is the only requirement, PMTiles is the simpler choice. Several
 other GeoParquet overview designs exist: COGP, Esri's Spatially Optimized
-Parquet, tylertoo's overviews, and the GeoParquet LOD extension draft
-(PR 299). The [specification](spec/SPEC.md#relation-to-other-proposals)
+Parquet, tylertoo's overviews, GeoParquet with baked PMTiles, and the
+GeoParquet LOD extension draft (PR 299). The [specification](spec/SPEC.md#relation-to-other-proposals)
 describes how this layout differs from each;
 [prior work and attribution](THIRD_PARTY.md) lists what it builds on.
 
@@ -156,32 +156,38 @@ configuration.
 
 ## What we have measured
 
-Four readers against the hosted Japan archives, all derived from the same
+Five readers against the hosted Japan archives, all derived from the same
 53,742,978 Overture building footprints: this layout, released COGP 2.2.2,
-Esri's Spatially Optimized Parquet with its reference reader, and, as the
-map-delivery reference, PMTiles written by tippecanoe. Each cell is a cold
+Esri's Spatially Optimized Parquet with its reference reader, GeoParquet with
+baked PMTiles with its reader, and, as the map-delivery reference, PMTiles
+written by tippecanoe. Each cell is a cold
 read on a fresh reader after one open, geometry only, served from the same
 public bucket. Bytes are decimal.
 
-| Tile                  | Tiled GeoParquet             | COGP 2.2.2                  | Esri SOP                    | PMTiles                      |
-| --------------------- | ---------------------------- | --------------------------- | --------------------------- | ---------------------------- |
-| open                  | 16 KB, 6 req                 | 1.50 MB, 3 req              | 2.62 MB, 3 req              | 16 KB, 1 req                 |
-| z8 metro, Tokyo       | 0.56 MB, 2 req, 93,801 feat. | 0.12 MB, 8 req, 1,152 feat. | 26.65 MB, 1,048 req, 28,000 | 0.50 MB, 2 req, 95,774 feat. |
-| z11 city, Tokyo       | 0.26 MB, 2 req, 23,371       | 0.25 MB, 17 req, 860        | 5.39 MB, 143 req, 177,679   | 0.31 MB, 2 req, 24,373       |
-| z13 downtown, Shibuya | 0.30 MB, 2 req, 28,630       | 0.68 MB, 42 req, 2,739      | 2.61 MB, 92 req, 51,996     | 0.35 MB, 2 req, 28,908       |
-| z13 suburbs, Chiba    | 0.05 MB, 2 req, 4,689        | 0.44 MB, 34 req, 454        | 1.30 MB, 55 req, 6,841      | 0.06 MB, 2 req, 4,929        |
-| z15 street, Tokyo     | 0.01 MB, 2 req, 206          | 0.86 MB, 82 req, 213        | 1.30 MB, 62 req, 229        | 0.03 MB, 2 req, 1,441        |
-| z15 street, Osaka     | 0.03 MB, 2 req, 1,261        | 0.80 MB, 80 req, 1,287      | 1.01 MB, 57 req, 1,362      | 0.11 MB, 2 req, 6,523        |
+| Tile                  | Tiled GeoParquet             | COGP 2.2.2                  | Esri SOP                    | PMTiles                      | Baked PMTiles                |
+| --------------------- | ---------------------------- | --------------------------- | --------------------------- | ---------------------------- | ---------------------------- |
+| open                  | 16 KB, 6 req                 | 1.50 MB, 3 req              | 2.62 MB, 3 req              | 16 KB, 1 req                 | 16.46 MB, 4 req              |
+| z8 metro, Tokyo       | 0.56 MB, 2 req, 93,801 feat. | 0.12 MB, 8 req, 1,152 feat. | 26.65 MB, 1,048 req, 28,000 | 0.50 MB, 2 req, 95,774 feat. | 0.50 MB, 2 req, 95,774 feat. |
+| z11 city, Tokyo       | 0.26 MB, 2 req, 23,371       | 0.25 MB, 17 req, 860        | 5.39 MB, 143 req, 177,679   | 0.31 MB, 2 req, 24,373       | 0.31 MB, 2 req, 24,373       |
+| z13 downtown, Shibuya | 0.30 MB, 2 req, 28,630       | 0.68 MB, 42 req, 2,739      | 2.61 MB, 92 req, 51,996     | 0.35 MB, 2 req, 28,908       | 0.35 MB, 2 req, 28,908       |
+| z13 suburbs, Chiba    | 0.05 MB, 2 req, 4,689        | 0.44 MB, 34 req, 454        | 1.30 MB, 55 req, 6,841      | 0.06 MB, 2 req, 4,929        | 0.06 MB, 2 req, 4,929        |
+| z15 street, Tokyo     | 0.01 MB, 2 req, 206          | 0.86 MB, 82 req, 213        | 1.30 MB, 62 req, 229        | 0.03 MB, 2 req, 1,441        | 0.19 MB, 10 req, 378         |
+| z15 street, Osaka     | 0.03 MB, 2 req, 1,261        | 0.80 MB, 80 req, 1,287      | 1.01 MB, 57 req, 1,362      | 0.11 MB, 2 req, 6,523        | 0.29 MB, 10 req, 1,593       |
 
 This layout opens with one request for its 16 KB index and five one-byte
-requests that open the connections its tiles are then read over. The four
+requests that open the connections its tiles are then read over. The five
 files do not agree on what a tile should contain, so bytes only mean something
 next to the feature counts. COGP's conversion keeps very few features
 at coarse levels; PMTiles stops at z14 and serves the overzoomed parent at z15;
-Esri's reader returns every feature in the extent, simplified. This layout's
+Esri's reader returns every feature in the extent, simplified. Baked PMTiles
+carries the PMTiles file's tiles through z13 and builds tiles from the Parquet
+rows from z14, for which its page reads the Parquet footer at load. This layout's
 thinning budgets were calibrated against PMTiles feature counts, as the
 [Japan evaluation](docs/japan-evaluation.md) describes, so the two agree within
-a few percent where both serve native tiles. [The comparison page](docs/comparison.md)
+a few percent where both serve native tiles. PMTiles tiles carry `class`,
+`height` and `subtype`; styled by `height` and `class`, this layout's z8 tile
+reads 0.60 MB and its z11 tile 0.28 MB
+([styled tiles](docs/comparison.md#styled-tiles)). [The comparison page](docs/comparison.md)
 has definitions, provenance, and reproduction steps.
 
 These are single-tile reads on one dataset from one network; they show

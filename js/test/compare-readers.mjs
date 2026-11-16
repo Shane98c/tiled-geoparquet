@@ -4,7 +4,8 @@
 // japan_buildings.{lod6.parquet,cogp.parquet,pmtiles,sop.parquet,baked.parquet} under BASE
 // (default http://localhost:8099/), and the Esri reader bundled for Node first. COGP names
 // another COGP file to measure, such as the one behind COGP's own demo, LOD another file in
-// this layout and BAKED another baked file:
+// this layout and BAKED another baked file; PROPERTIES=height,class has this layout's tiles
+// hold those attributes, where the other readers' tiles hold what their files give them:
 //   npx esbuild vendor/esri-sop/index.ts --bundle --platform=node --format=esm --outfile=test/esri-node.mjs
 //   node test/compare-readers.mjs
 // The baked reader is bundled from a clone of gsueur/geoparquet-pmtiles after `npm install` there:
@@ -35,6 +36,7 @@ const cogpFile = process.env.COGP ?? base + 'japan_buildings.cogp.parquet'
 const lodFile = process.env.LOD ?? base + 'japan_buildings.lod15.parquet'
 const pmFile = process.env.PMTILES ?? 'japan_buildings_z0.pmtiles'
 const bakedFile = process.env.BAKED ?? base + 'japan_buildings.baked.parquet'
+const properties = (process.env.PROPERTIES ?? '').split(',').filter(Boolean)
 // SKIP=cogp,esri,baked leaves those readers out, e.g. against a bucket holding only the other two files
 const skip = new Set((process.env.SKIP ?? '').split(',').filter(Boolean))
 const stats = {}
@@ -175,19 +177,19 @@ for (const [z, lon, lat, label] of tiles) {
   const [x, y] = xy(z, lon, lat)
   const bbox = tileBounds(z, x, y)
   const row = []
-  // ours: fresh reader, geometry only
+  // ours: fresh reader, geometry and the attributes PROPERTIES names
   {
     const key = lodFile
     const r = await lodOpen()
     await new Promise((resolve) => setTimeout(resolve, 1500))
     const a = snap(key)
     const t0 = performance.now()
-    const mvt = await renderTile(r, z, x, y, { properties: [] })
+    const mvt = await renderTile(r, z, x, y, { properties })
     const ms = Math.round(performance.now() - t0)
     const cold = delta(a, snap(key))
     // the neighbouring tile on the same reader: what a tile costs once the indexes are read
     const b = snap(key)
-    await renderTile(r, z, x + 1, y, { properties: [] })
+    await renderTile(r, z, x + 1, y, { properties })
     const warm = delta(b, snap(key))
     row.push(
       fmt(
