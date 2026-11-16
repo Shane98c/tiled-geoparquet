@@ -57,6 +57,9 @@
         display: block;
         color: #666;
       }
+      .hud small.absent {
+        color: #b00;
+      }
       #bar {
         position: absolute;
         bottom: 8px;
@@ -488,14 +491,35 @@
           stats: async () => ({ [cogpUrl]: await getCogpStats(cogpUrl) }),
         })
       }
-      if (enabled('pmtiles'))
-        panes.push({
+      if (enabled('pmtiles')) {
+        const pane = {
           title: 'PMTiles',
           keys: [pmtilesUrl],
           tile: (u) => u.startsWith('pmtiles://'),
           sources: { shapes: { type: 'vector', url: 'pmtiles://' + pmtilesUrl } },
           layers: [fill('shapes', pmtilesLayer)],
-        })
+        }
+        panes.push(pane)
+        // The attributes the archive's tiles hold, from its metadata, read apart from the
+        // tallied fetches: the pane says so when a style names one they lack.
+        const untallied = {
+          getKey: () => pmtilesUrl,
+          getBytes: async (offset, length, signal) => {
+            const response = await fetched(pmtilesUrl, {
+              signal,
+              headers: { Range: `bytes=${offset}-${offset + length - 1}` },
+            })
+            return { data: await response.arrayBuffer() }
+          },
+        }
+        new pmtiles.PMTiles(untallied)
+          .getMetadata()
+          .then((metadata) => {
+            const layer = metadata.vector_layers?.find((l) => l.id === pmtilesLayer)
+            if (layer?.fields) pane.fields = Object.keys(layer.fields)
+          })
+          .catch(() => {})
+      }
       if (enabled('esri')) {
         const { MapLibreParquetLayer } = await import('./dist/esri.js')
         const esriPane = {
@@ -758,7 +782,7 @@
           reload()
         }
         document.getElementById('notes').textContent +=
-          ' Delay applies equally to all data files; no bandwidth cap. Fresh load clears reader caches. Subtype is stored in PMTiles and fetched from source rows in GeoParquet.'
+          ' Delay applies equally to all data files; no bandwidth cap. Fresh load clears reader caches.'
       }
 
       // keep the views together
@@ -823,6 +847,14 @@
                 ? hud.dataset.status
                 : `${features(pane).toLocaleString()} features delivered (cumulative)`,
             }),
+            ...(selectedStyle !== 'geometry' && pane.fields && !pane.fields.includes(selectedStyle)
+              ? [
+                  Object.assign(document.createElement('small'), {
+                    className: 'absent',
+                    textContent: `No ${selectedStyle} in these tiles: they were cut with ${pane.fields.join(', ') || 'no attributes'}`,
+                  }),
+                ]
+              : []),
             Object.assign(document.createElement('small'), {
               textContent: `First map idle: ${pane.firstIdle === undefined ? 'loading…' : Math.round(pane.firstIdle) + ' ms'} · Last view/style: ${pane.pendingSince !== undefined ? 'loading…' : Math.round(pane.lastIdle ?? 0) + ' ms'}`,
             }),
