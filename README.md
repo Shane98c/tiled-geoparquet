@@ -9,8 +9,9 @@ GeoParquet tools query the original columns; the map uses a custom reader.
 That reader also maps any WKB GeoParquet without overviews straight from its
 rows, which suits files of a few MB ([plain GeoParquet](docs/usage.md#plain-geoparquet)).
 
-Format draft 0.2.0. The format can still change, and the Python and JavaScript
-packages are not published to registries yet.
+Format draft 0.2.0. The format can still change. The Python and JavaScript
+packages take the format's version, so 0.2.x reads and writes format 0.2; they
+are not published to registries yet.
 
 [Live comparison](https://tiled-geoparquet.pages.dev/) ·
 [Format specification](spec/SPEC.md) ·

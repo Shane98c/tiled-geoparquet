@@ -200,7 +200,8 @@ Under the `geo` key, a `lod_columns` object:
 | `lods`              | object   | LOD name to `{zooms, geometry_type, scale, offset, placeholder}`; `scale` and `offset` are `[x, y]` pairs in EPSG:3857 metres, `placeholder` the width in grid cells of the square drawn for a shape too small for the grid                                   |
 | `attribute_columns` | object   | `{column, lods}`: the name of the attribute column struct and the LODs that hold the attributes in it, in declared order, see Layout 5; present exactly when there are attributes                                                                             |
 
-All fields but `attribute_columns` are required; readers MUST ignore fields they do not know. Every
+All fields but `attribute_columns` are required; readers MUST ignore fields they do not know, so an
+optional field or member, such as an attribute's `summary`, can be added without a change of `version`. Every
 zoom in `zooms` MUST appear in exactly one LOD and lie in `0..key.depth`, so
 each tile is one interval of keys (Layout 1); `zooms` MUST be contiguous,
 and `scale` and `offset` MUST be finite. Every row whose primary geometry

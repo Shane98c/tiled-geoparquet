@@ -4,12 +4,24 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tiled-geoparquet"
-version = "0.1.0"
+version = "0.2.0"
 description = "Write and validate Tiled GeoParquet files: GeoParquet with per-zoom overview columns and a spatial page index"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 dependencies = ["duckdb>=1.5", "pyarrow>=23", "numpy>=2", "shapely>=2.1", "click>=8"]
+keywords = ["geoparquet", "parquet", "vector tiles", "geospatial"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: GIS",
+]
+
+[project.urls]
+Homepage = "https://github.com/Shane98c/tiled-geoparquet"
+Documentation = "https://github.com/Shane98c/tiled-geoparquet/blob/main/docs/usage.md"
+Specification = "https://github.com/Shane98c/tiled-geoparquet/blob/main/spec/SPEC.md"
+Issues = "https://github.com/Shane98c/tiled-geoparquet/issues"
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.12"]
@@ -19,6 +31,9 @@ tiled-geoparquet = "tiled_geoparquet.cli:cli"
 
 [tool.hatch.build.targets.wheel]
 packages = ["python/tiled_geoparquet"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/python", "/tests", "/README.md", "/LICENSE", "/THIRD_PARTY.md"]
 
 [tool.ruff]
 line-length = 100

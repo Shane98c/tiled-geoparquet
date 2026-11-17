@@ -1,7 +1,21 @@
 {
   "name": "tiled-geoparquet",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Read Tiled GeoParquet files and serve them as Mapbox Vector Tiles",
+  "keywords": [
+    "geoparquet",
+    "parquet",
+    "maplibre",
+    "vector-tiles",
+    "geospatial"
+  ],
+  "homepage": "https://github.com/Shane98c/tiled-geoparquet#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Shane98c/tiled-geoparquet.git",
+    "directory": "js"
+  },
+  "bugs": "https://github.com/Shane98c/tiled-geoparquet/issues",
   "type": "module",
   "license": "MIT",
   "main": "./dist/index.js",

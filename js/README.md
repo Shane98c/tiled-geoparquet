@@ -1,6 +1,6 @@
 # Tiled GeoParquet JavaScript reader
 
-Experimental draft 0.1.0. Reads the Tiled GeoParquet layout and spatial page
+Experimental, for format draft 0.2.0. Reads the Tiled GeoParquet layout and spatial page
 index emitted by the writer; generates Mapbox Vector Tiles for any map library. Not yet published to
 npm. See the repository root README, `spec/`, and `docs/usage.md` for format
 status, construction, limitations, and measurements.
