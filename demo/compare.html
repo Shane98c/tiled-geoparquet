@@ -558,23 +558,50 @@
       // at once: a pane's map is running by the time its data is ready to be added.
       const requested = performance.now()
       const opening = enabled('lod') ? readMetadata(fileUrl) : undefined
+      // the panes shown, in the order they are laid out, with their titles
+      const TITLES = {
+        lod: 'Tiled GeoParquet',
+        cogp: 'COGP · released reader 2.1.4',
+        pmtiles: 'PMTiles',
+        esri: 'Esri SOP · reference reader (geometry)',
+      }
+      const shown = Object.keys(TITLES).filter(enabled)
+      // The strip takes its full height first, so no map changes size as it fills: a map
+      // that shrinks cancels the tiles it asked for past its new edge.
+      document.getElementById('ledger-title').textContent = 'Downloaded since the page loaded'
+      document.getElementById('structure').hidden = !enabled('lod')
+      document.getElementById('ledger-rows').replaceChildren(
+        ...shown.map((id) => {
+          const row = document.createElement('div')
+          row.className = 'ledger-row'
+          for (const [className, text] of [
+            ['who', TITLES[id]],
+            ['bar', ''],
+            ['what', '\u00a0'],
+            ['time', 'Loading…'],
+            ['aside', ''],
+          ])
+            row.append(
+              Object.assign(document.createElement('div'), { className, textContent: text }),
+            )
+          return row
+        }),
+      )
       const container = document.getElementById('panes')
-      const made = available
-        .filter(([id]) => enabled(id))
-        .map(() => {
-          const div = document.createElement('div')
-          div.className = 'pane'
-          const mapDiv = document.createElement('div')
-          mapDiv.className = 'map'
-          const hud = document.createElement('div')
-          hud.className = 'hud'
-          const banner = document.createElement('div')
-          banner.className = 'absent-banner'
-          banner.hidden = true
-          div.append(mapDiv, hud, banner)
-          container.append(div)
-          return { mapDiv, hud, banner }
-        })
+      const made = shown.map(() => {
+        const div = document.createElement('div')
+        div.className = 'pane'
+        const mapDiv = document.createElement('div')
+        mapDiv.className = 'map'
+        const hud = document.createElement('div')
+        hud.className = 'hud'
+        const banner = document.createElement('div')
+        banner.className = 'absent-banner'
+        banner.hidden = true
+        div.append(mapDiv, hud, banner)
+        container.append(div)
+        return { mapDiv, hud, banner }
+      })
       container.classList.toggle('multiple', made.length === 4)
       if (!made.length) container.textContent = 'Select at least one reader and apply.'
       for (const pane of made) {
@@ -828,7 +855,7 @@
       const panes = []
       if (enabled('lod'))
         panes.push({
-          title: 'Tiled GeoParquet',
+          title: TITLES.lod,
           keys: [fileUrl],
           lodUrl: fileUrl,
           requested,
@@ -855,7 +882,7 @@
           maxzoom: 22,
         })
         panes.push({
-          title: 'COGP · released reader 2.1.4',
+          title: TITLES.cogp,
           cogpSource,
           keys: [cogpUrl],
           sources: {
@@ -867,7 +894,7 @@
       }
       if (enabled('pmtiles')) {
         const pane = {
-          title: 'PMTiles',
+          title: TITLES.pmtiles,
           keys: [pmtilesUrl],
           sources: { shapes: { type: 'vector', url: 'pmtiles://' + pmtilesUrl } },
           layers: [fill('shapes', pmtilesLayer)],
@@ -896,7 +923,7 @@
       if (enabled('esri')) {
         const { MapLibreParquetLayer } = await import('./dist/esri.js')
         const esriPane = {
-          title: 'Esri SOP · reference reader (geometry)',
+          title: TITLES.esri,
           geometryOnly: true,
           ready: false,
           keys: [esriUrl],
@@ -937,6 +964,7 @@
       }
 
       if (panes.length !== made.length) throw new Error('a pane has no map')
+      for (const pane of panes) pane.tilesFor = selectedStyle
       const maps = []
       for (const [i, pane] of panes.entries()) {
         const { map } = Object.assign(pane, made[i])
@@ -1130,9 +1158,14 @@
           pane.restyling = true
           // MapLibre parses the tiles it holds again, without fetching the new ones, when a
           // paint change follows setUrl or setTiles in the same task, and when either finds
-          // a tile still loading. So a pane whose tiles change is painted at its map's next idle,
-          // and a style chosen before then has its tiles asked for at that idle.
-          if (!pane.refetching) pane.refetching = retile(map, pane)
+          // a tile still loading. So a pane whose tiles change is painted at its map's next
+          // idle, and a style chosen while its tiles are arriving, for a move or for an
+          // earlier style, has its tiles asked for at that idle.
+          if (!pane.refetching) {
+            const arriving = !map.loaded() || !map.areTilesLoaded() || map.isMoving()
+            pane.refetching =
+              arriving && (pane.lodUrl || pane.cogpSource) ? true : retile(map, pane)
+          }
           // a pane waiting for its tiles shows the colour of no value meanwhile where
           // that needs no parse of the tiles it holds: one flat colour giving way to another
           if (pane.refetching)
@@ -1280,12 +1313,12 @@
           chip.classList.toggle('on', chip.dataset.name === name)
       }
       const structured = maps.find(({ pane }) => pane.lodUrl && metadata?.lod)
+      document.getElementById('structure').hidden = !structured
       if (structured) {
         const { lod } = metadata
         const others = metadata.columns.filter(
           (name) => !stored.has(name) && name !== lod.key?.column,
         )
-        document.getElementById('structure').hidden = false
         document.getElementById('structure-table').textContent =
           `One row per feature, with its geometry and the ${others.length + stored.size} columns listed below`
         chips('structure-levels', Object.keys(lod.lods), (name) => {
