@@ -21,7 +21,7 @@ all derived from the same 53,742,978 Japan building footprints:
 
 Each reader opens once; every tile is then read on a fresh reader, geometry
 only where the reader can leave attributes out ([Styled tiles](#styled-tiles)),
-over the public internet from the same R2 bucket. Bytes are response
+over the public internet from the same S3 bucket. Bytes are response
 bodies in decimal megabytes; "next tile" is the tile one column east on the
 same reader. Elapsed times are not reported because one run from one laptop
 is not a CDN benchmark.
@@ -135,7 +135,7 @@ git -C /tmp/geoparquet-pmtiles checkout b8e4734
 npm --prefix /tmp/geoparquet-pmtiles install
 npx esbuild /tmp/geoparquet-pmtiles/web/baked.js --bundle --platform=node --format=esm --outfile=test/baked-node.mjs
 npx esbuild /tmp/geoparquet-pmtiles/web/src/detail-worker.js --bundle --format=esm --outfile=test/baked-worker-node.mjs
-R=https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/
+R=https://carbonplan-share.s3.us-west-2.amazonaws.com/tiled-geoparquet/releases/
 BASE=${R}6c3a4f9/ LOD=${R}5503c5a/japan_buildings.parquet \
   COGP=${R}6c3a4f9/japan_buildings.cogp-2.2.2.parquet \
   BAKED=${R}d51954c/japan_buildings.baked.parquet \

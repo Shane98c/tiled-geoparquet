@@ -479,13 +479,24 @@ this layout is in which rows a coarse view reads and how it finds them.
   on PR 305 suggested storing the level in a column with statistics for exactly
   that page-level granularity; nullable LOD columns with an index over their
   pages are one answer to it, and the [spatial index](SPATIAL-INDEX.md) could
-  be offered to COGP as an optional access profile.
+  be offered to COGP as an optional access profile. Two open issues on COGP
+  ask for more state per row: an optional level column, with a WKB overview
+  encoding, for engines that do not read `geo.lod`
+  ([81](https://github.com/Kanahiro/cloud-optimized-geoparquet/issues/81)),
+  and rows that stand for several merged features at coarse levels, which
+  storing each row once at one level excludes
+  ([82](https://github.com/Kanahiro/cloud-optimized-geoparquet/issues/82)).
 - **tylertoo** ([geoparquet-io/tylertoo](https://github.com/geoparquet-io/tylertoo))
   writes overviews as rows with a `level` column and simplified WKB, declared
   in `geo:overviews` metadata, either once per level or partitioned. Its
-  maintainers have decided to converge that output on COGP, which makes COGP
-  the layout most other tooling will produce. The question this repository
-  asks is whether the page-level access path is worth adding to it.
+  planned overview specification
+  ([issue 840](https://github.com/geoparquet-io/tylertoo/issues/840)) is one
+  layout modelled on COGP's, under its own specification: each feature once
+  in row-group prefixes, with a struct column that has one nullable child per
+  level, WKB first, where an empty child means the row draws nothing at that
+  level. That plan and this layout both record what a row draws at each level
+  in nullable columns of the table. What this layout adds is an index over
+  those columns' pages, which a reader uses without the footer.
 - **GeoParquet with baked PMTiles** ([gsueur/geoparquet-pmtiles](https://github.com/gsueur/geoparquet-pmtiles))
   places a PMTiles archive between the last data byte and the footer of a
   GeoParquet 2.0 file and names its byte range in the footer's key-value

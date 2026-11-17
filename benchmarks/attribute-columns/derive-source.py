@@ -21,7 +21,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 LOD_KEY = 'lod_columns'
-# Cloudflare refuses urllib's default User-Agent
+# some hosts refuse urllib's default User-Agent
 USER_AGENT = 'tiled-geoparquet-benchmark'
 
 
