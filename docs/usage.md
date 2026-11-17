@@ -434,28 +434,40 @@ default) caps DuckDB.
 
 ```js
 import * as maplibregl from 'maplibre-gl'
-import { registerProtocol, vectorSource, prefetch, readRow } from 'tiled-geoparquet/tiles'
+import { registerProtocol, sourceUrl, prefetch, readRow } from 'tiled-geoparquet/tiles'
 
 const url = 'https://example.com/buildings.lod.parquet'
-prefetch(url) // optional: opens the file in the worker before the map exists
+prefetch(url) // optional: starts opening the file before the map exists
 registerProtocol(maplibregl)
 
-map.addSource('buildings', await vectorSource({ url, layer: 'buildings', properties: ['risk'] }))
+map.addSource('buildings', {
+  type: 'vector',
+  url: sourceUrl({ url, layer: 'buildings', properties: ['risk'] }),
+})
 map.addLayer({ id: 'fill', type: 'fill', source: 'buildings', 'source-layer': 'buildings' })
 
 // the MVT feature id is the file row; read any source columns for it
 const row = await readRow(url, feature.id, ['name', 'risk'])
 ```
 
-`vectorSource(config, { maxzoom })` opens the file and returns a MapLibre
-vector source, `{ type: 'vector', tiles: [tileUrl(config)], minzoom, maxzoom,
-bounds }`, with limits from the file's metadata. `properties` in the config
+`sourceUrl(config, { maxzoom })` names the file as a source by URL, as a
+PMTiles archive is named. MapLibre asks the registered protocol for the source
+when it is added, and that request opens the file. Nothing is awaited, the
+source can sit in the map's style, and the file opens while the map starts.
+The protocol answers with the file's limits, `{ tiles: [tileUrl(config)],
+minzoom, maxzoom, bounds }`, from its metadata.
+`prefetch(url)`, called before the map is made, starts the open earlier still.
+On the Japan buildings read from R2 in Chrome, a first view of Tokyo at zoom
+11 took 1.41 s with the source named by URL and 1.28 s with `prefetch` ahead
+of it, against 1.51 s for a page that awaited the file's limits before it made
+its map. `await vectorSource(config, { maxzoom })` returns the same source as
+an object, for a page that needs those limits itself. `properties` in the config
 names the attributes and source columns its tiles hold. Without it they hold
 geometry only, so a style on an attribute names it there. `bounds` is the data's
 extent, so the map requests no tile outside it. `maxzoom` is the finest LOD
 zoom: past it the map overzooms that LOD's tiles, as it does a PMTiles
 archive, and requests nothing more. Pass a higher `maxzoom`, as in
-`vectorSource(config, { maxzoom: 18 })`, when shapes must be exact further in:
+`sourceUrl(config, { maxzoom: 18 })`, when shapes must be exact further in:
 tiles from the finest LOD zoom up to it draw the primary geometry, a cold one
 reading 230 to 650 KB in up to five requests on the US buildings file, where
 a finest-LOD tile reads 30 to 45 KB in two ([Geometry](#geometry)). A source made from `tileUrl`
@@ -467,12 +479,14 @@ than the tile's grid drop out as it zooms further out. A `minzoom` on the
 source's layers stops those reads.
 
 A map already drawn changes what it styles by without the file changing: give
-the source the tile URL of a config naming the new columns,
-`map.getSource('buildings').setTiles([tileUrl({ ...config, properties: ['height'] })])`,
-and the reader fetches those columns for the tiles in view, keeping the
-geometry it has decoded. Change the layers' paint once the map is next idle:
-when a paint change follows `setTiles` in the same task, MapLibre 6.18 parses
-the tiles it holds again and does not fetch the new ones.
+the source the URL of a config naming the new columns,
+`map.getSource('buildings').setUrl(sourceUrl({ ...config, properties: ['height'] }))`,
+or `setTiles([tileUrl({ ...config, properties: ['height'] })])` on a source
+made from `vectorSource`. The reader fetches those columns for the tiles in
+view, keeping the geometry it has decoded. Change the layers' paint once the
+map is next idle: when a paint change follows `setUrl` or `setTiles` in the
+same task, MapLibre 6.18 parses the tiles it holds again and does not fetch
+the new ones.
 
 You can take the colour stops from the file. `readMetadata(url)` returns each
 attribute's `summary` ([Attributes](#attributes)). A ramp built on a number's
@@ -699,8 +713,8 @@ sets for the tiles entry point before a file opens:
   so the cache has them in flight side by side and holds each for a later
   visit: requests go through the cache. On the
   Japan buildings in Chrome from R2, first views at zooms 8, 11 and 13 styled
-  by `class` took 1.19 to 1.78 s with it and 1.12 to 1.66 s past the cache,
-  and the same views opened again took 0.18 to 0.58 s and 0.90 to 2.29 s. The
+  by `class` took 1.08 to 1.90 s with it and 1.11 to 1.66 s past the cache,
+  and the same views opened again took 0.35 to 0.67 s and 1.00 to 1.61 s. The
   server has to ignore the parameter, as R2 and S3 do, and a signed URL does
   not survive one. A CDN that keys its cache on the query string stores each
   range apart, and a later visit finds in the browser's cache the ranges it

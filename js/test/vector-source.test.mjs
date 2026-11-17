@@ -24,7 +24,7 @@ globalThis.Worker = class {
   }
   terminate() {}
 }
-const { tileUrl, vectorSource } = await import('../dist/tiles.js')
+const { registerProtocol, sourceUrl, tileUrl, vectorSource } = await import('../dist/tiles.js')
 
 // the finest LOD's grid is a quarter of a 512 px tile's pixel at its zoom
 const cell = (zoom) => (2 * Math.PI * 6378137) / (512 * 2 ** zoom) / 4
@@ -71,6 +71,33 @@ assert.equal((await vectorSource(config, { maxzoom: 8 })).maxzoom, 8)
 for (const maxzoom of [-1, 2.5, 31, NaN, '12'])
   await assert.rejects(vectorSource(config, { maxzoom }), /maxzoom must be an integer from 0 to 30/)
 
+// A source named by URL is answered by the protocol with what vectorSource gives, less
+// its type, which the map's own source object holds.
+{
+  let scheme, answer
+  registerProtocol({
+    addProtocol(name, action) {
+      scheme = name
+      answer = action
+    },
+  })
+  assert.equal(scheme, 'lod')
+  const { type, ...described } = source
+  assert.equal(type, 'vector')
+  const named = await answer({ url: sourceUrl(config), type: 'json' }, new AbortController())
+  assert.deepEqual(named, { data: described })
+  const deeper = await answer({ url: sourceUrl(config, { maxzoom: 16 }) }, new AbortController())
+  assert.equal(deeper.data.maxzoom, 16)
+  assert.deepEqual(deeper.data.tiles, [tileUrl(config)])
+  await assert.rejects(
+    answer({ url: sourceUrl(config, { maxzoom: 99 }) }, new AbortController()),
+    /maxzoom must be an integer from 0 to 30/,
+  )
+  await assert.rejects(
+    answer({ url: sourceUrl({ url: 'missing' }) }, new AbortController()),
+    /cannot open missing/,
+  )
+}
 const plain = await vectorSource({ url: 'plain' })
 assert.equal(plain.minzoom, 0)
 assert.equal(plain.maxzoom, 22, 'without LODs every zoom draws exact geometry')

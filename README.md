@@ -135,10 +135,13 @@ only fetch tile URLs, such as desktop GIS, read them from
 MapLibre app, after creating the map and loading its style:
 
 ```js
-import { registerProtocol, vectorSource } from 'tiled-geoparquet/tiles'
+import { registerProtocol, sourceUrl } from 'tiled-geoparquet/tiles'
 
 registerProtocol(maplibregl)
-map.addSource('buildings', await vectorSource({ url, layer: 'buildings', properties: ['height'] }))
+map.addSource('buildings', {
+  type: 'vector',
+  url: sourceUrl({ url, layer: 'buildings', properties: ['height'] }),
+})
 map.addLayer({
   id: 'buildings',
   type: 'fill',
@@ -147,9 +150,10 @@ map.addLayer({
 })
 ```
 
-`vectorSource` reads the file's bounds and zoom range into the source. The
+MapLibre asks for the source as it is added, which opens the file and gives
+the source its bounds and zoom range. The
 map overzooms the finest overview past its zoom, as it does a PMTiles
-archive; `vectorSource(config, { maxzoom: 18 })` draws exact geometry from
+archive; `sourceUrl(config, { maxzoom: 18 })` draws exact geometry from
 there to z18, at 230 to 650 KB a cold tile on 155.6 million US buildings
 against 30 to 45 KB at the finest overview zoom
 ([guide](docs/usage.md#in-a-maplibre-app)).

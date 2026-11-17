@@ -99,7 +99,8 @@ of its own and none waits on another. The PMTiles library sends all its ranges
 to one URL, as it does on any page.
 
 The time for a first view is measured from the request for the file until the
-map is idle. The table gives medians of five loads from R2 on 2026-11-16, for
+map is idle. The page makes its maps while the Tiled GeoParquet file
+opens, and adds each reader's source to a map that is already running. The table gives medians of five loads from R2 on 2026-11-16, for
 the two readers that the page shows by default. A new browser profile has an
 empty cache, so the cache-on columns show a first visit through the cache and
 not a reopened view. Each
@@ -109,20 +110,29 @@ views are centred on 139.76, 35.68 and the Shibuya view on 139.7, 35.66.
 
 | View        | Tiled GeoParquet, cache off | PMTiles, cache off | Tiled GeoParquet, cache on | PMTiles, cache on |
 | ----------- | --------------------------: | -----------------: | -------------------------: | ----------------: |
-| Tokyo z8    |                      1.53 s |             0.72 s |                     1.68 s |            1.25 s |
-| Tokyo z11   |                      1.59 s |             1.05 s |                     1.44 s |            2.38 s |
-| Shibuya z13 |                      1.46 s |             1.01 s |                     1.55 s |            2.50 s |
+| Tokyo z8    |                      1.11 s |             0.72 s |                     1.31 s |            1.05 s |
+| Tokyo z11   |                      1.20 s |             0.98 s |                     1.28 s |            2.42 s |
+| Shibuya z13 |                      1.57 s |             0.98 s |                     1.45 s |            2.77 s |
 
-With the cache on, PMTiles took 1.3 to 1.5 s longer at z11 and z13 than with
+With the cache on, PMTiles took 1.4 to 1.8 s longer at z11 and z13 than with
 it off. The cache is the only difference between those two columns: it answers
 the library's range requests to one URL one after another.
 
 R2 serves these files over HTTP/1.1, and Chrome opens at most six connections
 to one host, so readers loaded on the same page share those six. With the
 cache off and the two readers side by side in half-width panes, each reader's
-first view took 0.07 to 0.19 s longer than the same half-width pane loaded
+first view took 0.05 to 0.36 s longer than the same half-width pane loaded
 alone. With the cache off, PMTiles finished first in every view, both alone
 and together. To time one reader, load it alone.
+
+R2 answers a request for a larger file more slowly. The first byte of a range
+arrived about 0.15 s after the request for the 1.3 GB PMTiles archive, and
+0.21 to 0.25 s after it for the 6.4 GB Parquet files, at any offset in the
+file. A copy of the Parquet file uploaded in 2 parts answered as one uploaded
+in 96 did. Each reader takes three rounds of requests for a first view, so the
+Tiled GeoParquet times above include about 0.08 s more of the store's time in
+each round. Public files of 1.4 to 25 GB on S3 answered in 0.10 to 0.12 s
+whatever their size.
 
 The archives have different thinning and overzoom rules. The PMTiles
 tiles hold `class`, `height` and `subtype`, the attributes its tiler was

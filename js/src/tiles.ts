@@ -34,15 +34,15 @@ export const parseTileUrl = (
   return { config: decode(match[1]), z, x, y }
 }
 
-const encode = (config: SourceConfig): string => {
-  const bytes = new TextEncoder().encode(JSON.stringify(config))
+const encode = (value: unknown): string => {
+  const bytes = new TextEncoder().encode(JSON.stringify(value))
   let binary = ''
   for (let i = 0; i < bytes.length; i += 8192)
     binary += String.fromCharCode(...bytes.subarray(i, i + 8192))
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
-const decode = (token: string): SourceConfig => {
+const decode = <T = SourceConfig>(token: string): T => {
   const binary = atob(token.replace(/-/g, '+').replace(/_/g, '/'))
   return JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0))))
 }
@@ -276,6 +276,19 @@ export const vectorSource = async (
 })
 
 /**
+ * A URL that names the file as a MapLibre source, for a map with the protocol
+ * registered: `map.addSource(id, { type: 'vector', url: sourceUrl(config) })`,
+ * or the same object in the map's style. MapLibre asks the protocol for the
+ * source as it is added, which opens the file and answers with what
+ * `vectorSource(config, options)` gives, so nothing is awaited and the file
+ * opens while the map starts.
+ */
+export const sourceUrl = (config: SourceConfig, options: { maxzoom?: number } = {}): string =>
+  `${PROTOCOL}://source/${encode({ config, maxzoom: options.maxzoom })}`
+
+const SOURCE_URL = new RegExp(`^${PROTOCOL}://source/([A-Za-z0-9_-]+)$`)
+
+/**
  * The Mapbox Vector Tile for one expanded `tileUrl`, rendered in the worker.
  * Any map library that lets you supply a tile's bytes can call this from its
  * tile loader. An empty tile is an empty buffer.
@@ -293,12 +306,16 @@ export const registerProtocol = (maplibre: {
     action: (
       params: { url: string },
       controller: AbortController,
-    ) => Promise<{ data: ArrayBuffer }>,
+    ) => Promise<{ data: ArrayBuffer | Omit<VectorSource, 'type'> }>,
   ) => void
 }) => {
-  maplibre.addProtocol(PROTOCOL, async (params, controller) => ({
-    data: await fetchTile(params.url, controller.signal),
-  }))
+  maplibre.addProtocol(PROTOCOL, async (params, controller) => {
+    const source = SOURCE_URL.exec(params.url)
+    if (!source) return { data: await fetchTile(params.url, controller.signal) }
+    const { config, maxzoom } = decode<{ config: SourceConfig; maxzoom?: number }>(source[1])
+    const { type: _type, ...described } = await vectorSource(config, { maxzoom })
+    return { data: described }
+  })
 }
 
 export type { TileOptions }

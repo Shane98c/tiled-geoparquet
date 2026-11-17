@@ -463,7 +463,7 @@
       import {
         readMetadata,
         registerProtocol,
-        tileUrl,
+        sourceUrl,
         parseTileUrl,
         readCounts,
         readStats,
@@ -554,10 +554,53 @@
       // a tile reads from a column per zoom, then its other flat columns, which a tile
       // looks up in the table's rows. Names come from the file: they are set as text,
       // never as markup.
-      // how long the file takes to open, which its first view counts
-      const opening = performance.now()
-      const metadata = enabled('lod') ? await readMetadata(fileUrl) : undefined
-      const opened = performance.now() - opening
+      // The file opens while the maps are made, as it does in an app that asks for both
+      // at once: a pane's map is running by the time its data is ready to be added.
+      const requested = performance.now()
+      const opening = enabled('lod') ? readMetadata(fileUrl) : undefined
+      const container = document.getElementById('panes')
+      const made = available
+        .filter(([id]) => enabled(id))
+        .map(() => {
+          const div = document.createElement('div')
+          div.className = 'pane'
+          const mapDiv = document.createElement('div')
+          mapDiv.className = 'map'
+          const hud = document.createElement('div')
+          hud.className = 'hud'
+          const banner = document.createElement('div')
+          banner.className = 'absent-banner'
+          banner.hidden = true
+          div.append(mapDiv, hud, banner)
+          container.append(div)
+          return { mapDiv, hud, banner }
+        })
+      container.classList.toggle('multiple', made.length === 4)
+      if (!made.length) container.textContent = 'Select at least one reader and apply.'
+      for (const pane of made) {
+        pane.map = new maplibregl.Map({
+          container: pane.mapDiv,
+          style:
+            params.get('basemap') === '0'
+              ? {
+                  version: 8,
+                  sources: {},
+                  layers: [
+                    {
+                      id: 'background',
+                      type: 'background',
+                      paint: { 'background-color': '#f3f1ed' },
+                    },
+                  ],
+                }
+              : 'https://basemaps.cartocdn.com/gl/positron-nolabels-gl-style/style.json',
+          ...start,
+          attributionControl: false,
+        })
+        // at style.load rather than load, so the data panes do not wait for the basemap tiles
+        pane.styled = new Promise((resolve) => pane.map.once('style.load', resolve))
+      }
+      const metadata = await opening
       const styleSelect = document.getElementById('style')
       const stored = new Set(metadata?.lod?.attributes.map((a) => a.name))
       const hidden = (params.get('hide') ?? '').split(',').filter(Boolean)
@@ -769,20 +812,17 @@
           'circle-radius': ['interpolate', ['linear'], ['zoom'], 2, 1.5, 14, 3],
         },
       })
-      // past the file's finest LOD MapLibre overzooms, as it does PMTiles
-      const lodMaxZoom = metadata ? Math.max(...metadata.lod.zooms) : 22
+      // The file is a source by URL, as a PMTiles archive is: MapLibre asks the reader for
+      // its tiles, zoom range and bounds, and overzooms past its finest LOD.
       const lodSource = (u, options) => ({
         type: 'vector',
-        tiles: [
-          tileUrl({
-            url: u,
-            layer: 'shapes',
-            pointLayer: 'points',
-            properties: properties(),
-            ...options,
-          }),
-        ],
-        maxzoom: lodMaxZoom,
+        url: sourceUrl({
+          url: u,
+          layer: 'shapes',
+          pointLayer: 'points',
+          properties: properties(),
+          ...options,
+        }),
       })
 
       const panes = []
@@ -791,7 +831,7 @@
           title: 'Tiled GeoParquet',
           keys: [fileUrl],
           lodUrl: fileUrl,
-          opened,
+          requested,
           sources: { lod: lodSource(fileUrl) },
           layers: [fill('lod', 'shapes'), dots('lod', 'points')],
         })
@@ -896,50 +936,16 @@
         panes.push(esriPane)
       }
 
-      const container = document.getElementById('panes')
-      container.classList.toggle('multiple', panes.length === 4)
-      if (!panes.length) container.textContent = 'Select at least one reader and apply.'
-      for (const pane of panes) {
-        const div = document.createElement('div')
-        div.className = 'pane'
-        pane.mapDiv = document.createElement('div')
-        pane.mapDiv.className = 'map'
-        pane.hud = document.createElement('div')
-        pane.hud.className = 'hud'
-        pane.banner = document.createElement('div')
-        pane.banner.className = 'absent-banner'
-        pane.banner.hidden = true
-        div.append(pane.mapDiv, pane.hud, pane.banner)
-        container.append(div)
-      }
+      if (panes.length !== made.length) throw new Error('a pane has no map')
       const maps = []
-      for (const pane of panes) {
+      for (const [i, pane] of panes.entries()) {
+        const { map } = Object.assign(pane, made[i])
         const { hud } = pane
-        // a first view runs from the request for its file: the PMTiles pane asks for its
-        // header with its first tile, and this layout's file is open by now
-        pane.started = performance.now() - (pane.opened ?? 0)
+        // a first view runs from the request for its file: this layout's when the page
+        // began to open it, another pane's as its source is added here
+        pane.started = pane.requested ?? performance.now()
         pane.pendingSince = pane.started
-        const map = new maplibregl.Map({
-          container: pane.mapDiv,
-          style:
-            params.get('basemap') === '0'
-              ? {
-                  version: 8,
-                  sources: {},
-                  layers: [
-                    {
-                      id: 'background',
-                      type: 'background',
-                      paint: { 'background-color': '#f3f1ed' },
-                    },
-                  ],
-                }
-              : 'https://basemaps.cartocdn.com/gl/positron-nolabels-gl-style/style.json',
-          ...start,
-          attributionControl: false,
-        })
-        // on style.load rather than load, so the data panes do not wait for the basemap tiles
-        map.once('style.load', () => {
+        pane.styled.then(() => {
           for (const [id, source] of Object.entries(pane.sources)) map.addSource(id, source)
           for (const layer of pane.layers) map.addLayer(layer)
         })
@@ -1123,8 +1129,8 @@
           pane.pendingSince = performance.now()
           pane.restyling = true
           // MapLibre parses the tiles it holds again, without fetching the new ones, when a
-          // paint change follows setTiles in the same task, and when setTiles finds a tile
-          // still loading. So a pane whose tiles change is painted at its map's next idle,
+          // paint change follows setUrl or setTiles in the same task, and when either finds
+          // a tile still loading. So a pane whose tiles change is painted at its map's next idle,
           // and a style chosen before then has its tiles asked for at that idle.
           if (!pane.refetching) pane.refetching = retile(map, pane)
           // a pane waiting for its tiles shows the colour of no value meanwhile where
@@ -1152,7 +1158,7 @@
         let changed = false
         if (pane.lodUrl) {
           pane.sources.lod = lodSource(pane.lodUrl, pane.lodOptions)
-          changed = Boolean(map.getSource('lod')?.setTiles(pane.sources.lod.tiles)) || changed
+          changed = Boolean(map.getSource('lod')?.setUrl(pane.sources.lod.url)) || changed
         }
         if (pane.cogpSource) {
           pane.sources.cogp = pane.cogpSource()
