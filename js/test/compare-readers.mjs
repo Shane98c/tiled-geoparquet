@@ -1,6 +1,6 @@
 // Bytes and requests per tile for five readers of the same buildings, served from one place:
-// this layout, COGP (@cogp/reader), PMTiles, Esri's SOP reference reader and the reader of
-// GeoParquet with baked PMTiles. Expects
+// this layout, COGP (@cogp/reader), Esri's SOP reference reader, the reader of GeoParquet with
+// baked PMTiles, and PMTiles. Expects
 // japan_buildings.{lod6.parquet,cogp.parquet,pmtiles,sop.parquet,baked.parquet} under BASE
 // (default http://localhost:8099/), and the Esri reader bundled for Node first. COGP names
 // another COGP file to measure, such as the one behind COGP's own demo, LOD another file in
@@ -40,9 +40,21 @@ const properties = (process.env.PROPERTIES ?? '').split(',').filter(Boolean)
 // SKIP=cogp,esri,baked leaves those readers out, e.g. against a bucket holding only the other two files
 const skip = new Set((process.env.SKIP ?? '').split(',').filter(Boolean))
 const stats = {}
+// six requests in flight at most, as a browser sends them to one host: Node would open a
+// connection for each of the thousand requests one Esri tile makes
+let flying = 0
+const queued = []
+const slot = () =>
+  flying < 6 ? (flying++, Promise.resolve()) : new Promise((go) => queued.push(go))
+const release = () => {
+  const next = queued.shift()
+  if (next) next()
+  else flying--
+}
 const real = globalThis.fetch
 globalThis.fetch = async (input, init) => {
-  const r = await real(input, init)
+  await slot()
+  const r = await real(input, init).finally(release)
   const key = String(input instanceof Request ? input.url : input).split('?')[0]
   const e = (stats[key] ??= { requests: 0, bytes: 0 })
   e.requests++
@@ -151,9 +163,9 @@ const opens = {}
 for (const [name, fn] of [
   ['lod', lodOpen],
   ['cogp', cogpOpen],
-  ['pmtiles', pmOpen],
   ['esri', esriOpen],
   ['baked', bakedOpen],
+  ['pmtiles', pmOpen],
 ].filter(([name]) => !skip.has(name)))
   opens[name] = (
     await open(
@@ -172,7 +184,7 @@ for (const [name, fn] of [
 console.log('| reader | open |\n|---|---|')
 for (const [k, v] of Object.entries(opens)) console.log(`| ${k} | ${fmt(v)} |`)
 
-console.log('\n| tile | lod | cogp | pmtiles | esri | baked |\n|---|---|---|---|---|---|')
+console.log('\n| tile | lod | cogp | esri | baked | pmtiles |\n|---|---|---|---|---|---|')
 for (const [z, lon, lat, label] of tiles) {
   const [x, y] = xy(z, lon, lat)
   const bbox = tileBounds(z, x, y)
@@ -229,29 +241,6 @@ for (const [z, lon, lat, label] of tiles) {
       ),
     )
   }
-  // pmtiles: fresh archive handle; parent tile beyond maxzoom
-  {
-    const key = pmFile
-    const p = await pmOpen()
-    const a = snap(key)
-    const zz = Math.min(z, 14)
-    const [px, py] = xy(zz, lon, lat)
-    const t0 = performance.now()
-    const t = await p.getZxy(zz, px, py)
-    const ms = Math.round(performance.now() - t0)
-    const cold = delta(a, snap(key))
-    const b = snap(key)
-    await p.getZxy(zz, px + 1, py)
-    const warm = delta(b, snap(key))
-    row.push(
-      fmt(
-        cold,
-        (t
-          ? `, ${ms} ms, ${(t.data.byteLength / 1e3).toFixed(0)} KB tile, ${features(t.data)} features`
-          : ', empty') + `; next tile ${fmt(warm)}`,
-      ),
-    )
-  }
   // esri: fresh query, the reference reader's view query for the tile extent
   if (skip.has('esri')) row.push('skipped')
   else {
@@ -282,6 +271,29 @@ for (const [z, lon, lat, label] of tiles) {
     await bakedTile(r, z, x + 1, y)
     const warm = delta(b, snap(key))
     row.push(fmt(cold, `, ${n} features; next tile ${fmt(warm)}`))
+  }
+  // pmtiles: fresh archive handle; parent tile beyond maxzoom
+  {
+    const key = pmFile
+    const p = await pmOpen()
+    const a = snap(key)
+    const zz = Math.min(z, 14)
+    const [px, py] = xy(zz, lon, lat)
+    const t0 = performance.now()
+    const t = await p.getZxy(zz, px, py)
+    const ms = Math.round(performance.now() - t0)
+    const cold = delta(a, snap(key))
+    const b = snap(key)
+    await p.getZxy(zz, px + 1, py)
+    const warm = delta(b, snap(key))
+    row.push(
+      fmt(
+        cold,
+        (t
+          ? `, ${ms} ms, ${(t.data.byteLength / 1e3).toFixed(0)} KB tile, ${features(t.data)} features`
+          : ', empty') + `; next tile ${fmt(warm)}`,
+      ),
+    )
   }
   console.log(`| z${z} ${label} | ${row.join(' | ')} |`)
 }

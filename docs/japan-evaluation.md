@@ -70,8 +70,8 @@ encoding cost more than PMTiles' pre-cut tiles. These tile measurements do not
 establish equal whole-session performance across datasets or devices.
 
 The [hosted demo](hosted-comparison.md) serves this build; the
-[five-reader comparison](comparison.md) measures it beside COGP, PMTiles,
-Esri SOP and GeoParquet with baked PMTiles over the public internet.
+[five-reader comparison](comparison.md) measures it beside COGP, Esri SOP,
+GeoParquet with baked PMTiles and PMTiles over the public internet.
 
 ## Integrity and reproduction
 

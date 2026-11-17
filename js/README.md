@@ -1,13 +1,28 @@
-# Tiled GeoParquet JavaScript reader
+# tiled-geoparquet
 
-Experimental, for format draft 0.2.0. Reads the Tiled GeoParquet layout and spatial page
-index emitted by the writer; generates Mapbox Vector Tiles for any map library. Not yet published to
-npm. See the repository root README, `spec/`, and `docs/usage.md` for format
-status, construction, limitations, and measurements.
+[![CI](https://github.com/Shane98c/tiled-geoparquet/actions/workflows/ci.yml/badge.svg)](https://github.com/Shane98c/tiled-geoparquet/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-Build from this directory with `npm ci && npm run build`. Install the built
-package by local path. Use `tiled-geoparquet` for direct reads and
-`tiled-geoparquet/tiles` for worker-backed tiles:
+JavaScript reader for Tiled GeoParquet. Reads the Tiled GeoParquet layout and
+spatial page index emitted by the writer; generates Mapbox Vector Tiles for
+any map library. Experimental, for format draft 0.2.0. See the repository
+root README, `spec/`, and `docs/usage.md` for format status, construction,
+limitations, and measurements.
+
+## install
+
+Not yet published to npm. Build from this directory, then install the built
+package by local path.
+
+```sh
+npm ci
+npm run build
+```
+
+## usage
+
+Use `tiled-geoparquet` for direct reads and `tiled-geoparquet/tiles` for
+worker-backed tiles:
 
 ```js
 import { openReader, coalescing, httpSource, renderTile } from 'tiled-geoparquet'
@@ -20,16 +35,7 @@ A tile holds the attributes and source columns `properties` names. Without
 it, in `renderTile`, `vectorSource`, `tileUrl` and the tile server alike, a
 tile holds geometry only.
 
-`httpSource(urls, { cache, connections })` sends a tile's requests past the
-browser's HTTP cache, which answers the range requests of one URL one at a
-time, and opens six connections to the host as the file opens;
-`setSourceOptions` from the tiles entry point sets the same two. A server
-that opens the file for each request passes `cache: 'default'`. See
-[Requests](../docs/usage.md#requests).
-
-Serve immutable files with HTTP Range support and CORS exposing `Content-Range`.
-The tiles entry point requires the distributed `worker.js` and its imports to
-remain available to your bundler. Other dependencies remain external in `dist`.
+### in a map
 
 In a map, `vectorSource` from the tiles entry point is a MapLibre vector
 source with the file's bounds and zoom limits. Its `maxzoom` is the finest
@@ -42,6 +48,23 @@ import { registerProtocol, vectorSource } from 'tiled-geoparquet/tiles'
 registerProtocol(maplibregl)
 map.addSource('buildings', await vectorSource({ url, layer: 'buildings', properties: ['height'] }))
 ```
+
+### requests
+
+`httpSource(urls, { cache, connections })` sends a tile's requests past the
+browser's HTTP cache, which answers the range requests of one URL one at a
+time, and opens six connections to the host as the file opens;
+`setSourceOptions` from the tiles entry point sets the same two. A server
+that opens the file for each request passes `cache: 'default'`. See
+[Requests](../docs/usage.md#requests).
+
+### hosting
+
+Serve immutable files with HTTP Range support and CORS exposing `Content-Range`.
+The tiles entry point requires the distributed `worker.js` and its imports to
+remain available to your bundler. Other dependencies remain external in `dist`.
+
+### serving tiles
 
 For clients that fetch tile URLs themselves, the `tiled-geoparquet-serve`
 command serves a local path or an http(s) URL on loopback, as
@@ -73,11 +96,7 @@ empty layer, and a Cloudflare Worker must open the reader inside each
 request; [usage documentation](../docs/usage.md#serving-tiles-over-http) has
 the routes, statuses and options.
 
-Project code is MIT; the MVT encoder and geometry builder include code adapted
-from `@cogp/reader` with its MIT copyright notice retained in source and
-compiled output. See
-`src/COGP-LICENSE.txt`. The optional vendored Esri comparison reader is not
-included in this package.
+### feature batches
 
 Use `readFeatures(reader, { bbox, resolution, columns, geometry })` for a
 renderer-neutral batch with typed coordinate buffers, hierarchy offsets, source
@@ -88,9 +107,30 @@ The deck.gl example is `demo/deck/index.html` after `npm run demo:bundle`,
 served with Range support; it feeds `batchToGeoArrow` output to the GeoArrow
 deck.gl layers.
 
+### nested columns
+
 `readColumns` and query `columns` accept struct paths (`details.height`), list
 indexes (`floors[0].name`), and map keys (`tags.name`). Null/missing values become
 `null`. Struct scalars project only selected leaf pages; collections reconstruct
 all selected row-group pages before extracting elements. Flat scalars use the
 sparse page projection. See [usage documentation](../docs/usage.md) for
 path ambiguity, collection representation, validation scope and adapter limits.
+
+## license
+
+All the code in this package is
+[MIT](https://choosealicense.com/licenses/mit/)-licensed, but we request that
+you please provide attribution if reusing any of our digital content
+(graphics, logo, articles, etc.). The MVT encoder and geometry builder
+include code adapted from `@cogp/reader` with its MIT copyright notice
+retained in source and compiled output; see `src/COGP-LICENSE.txt`. The
+optional vendored Esri comparison reader is not included in this package.
+
+## about us
+
+CarbonPlan is a nonprofit organization that uses data and science for climate
+action. We aim to improve the transparency and scientific integrity of
+climate solutions with open data and tools. Find out more at
+[carbonplan.org](https://carbonplan.org/) or get in touch by
+[opening an issue](https://github.com/Shane98c/tiled-geoparquet/issues/new)
+or [sending us an email](mailto:hello@carbonplan.org).
