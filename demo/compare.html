@@ -465,6 +465,7 @@
         registerProtocol,
         sourceUrl,
         parseTileUrl,
+        PROTOCOL,
         readCounts,
         readStats,
         readWaiting,
@@ -1576,7 +1577,7 @@
       const diagnostics = async () => {
         const now = performance.now()
         const tile = (u) => {
-          if (!u.startsWith('lod://')) return u.slice(-48)
+          if (!u.startsWith(`${PROTOCOL}://`)) return u.slice(-48)
           const { config, z, x, y } = parseTileUrl(u)
           return `${z}/${x}/${y} ${(config.properties ?? []).join('+')}`
         }

@@ -10,7 +10,7 @@ import { sourceLimits, type SourceLimits } from './source-limits.js'
 import type { TileOptions } from './tile.js'
 import type { Bbox, LodMetadata } from './reader.js'
 
-export const PROTOCOL = 'lod'
+export const PROTOCOL = 'tiled-geoparquet'
 
 export interface SourceConfig {
   url: string
@@ -299,7 +299,7 @@ export const fetchTile = async (url: string, signal?: AbortSignal): Promise<Arra
   return 'data' in response ? response.data : new ArrayBuffer(0)
 }
 
-/** Register the `lod://` tile scheme once per MapLibre module instance. */
+/** Register the `tiled-geoparquet://` scheme once per MapLibre module instance. */
 export const registerProtocol = (maplibre: {
   addProtocol: (
     scheme: string,

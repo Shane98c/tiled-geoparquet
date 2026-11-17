@@ -81,7 +81,7 @@ for (const maxzoom of [-1, 2.5, 31, NaN, '12'])
       answer = action
     },
   })
-  assert.equal(scheme, 'lod')
+  assert.equal(scheme, 'tiled-geoparquet')
   const { type, ...described } = source
   assert.equal(type, 'vector')
   const named = await answer({ url: sourceUrl(config), type: 'json' }, new AbortController())
