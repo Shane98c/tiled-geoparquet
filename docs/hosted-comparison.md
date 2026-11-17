@@ -45,7 +45,7 @@ and ready status are shown explicitly; initial timing waits for data rendering.
 
 Objects live under `geoparquet-lod/releases/<tag>/` in the
 `live-classify-data` bucket. The tag is the commit whose recipe produced the
-object: `469acd1` built the GeoParquet file with
+object: `5503c5a` built the GeoParquet file with
 `benchmarks/write-japan-tippecanoe.py`; `d51954c` built the baked-PMTiles
 file with `benchmarks/baked-pmtiles/build.py`; the PMTiles and COGP archives
 were converted at `6c3a4f9`, and the Esri SOP file, uploaded at that release,
@@ -53,13 +53,13 @@ is Esri's original.
 
 | Dataset       | Release   |         Bytes | MD5                                |
 | ------------- | --------- | ------------: | ---------------------------------- |
-| GeoParquet    | `469acd1` | 6,418,172,157 | `8d9e9eb990e114e17f02cc5769999005` |
+| GeoParquet    | `5503c5a` | 6,418,176,583 | `c7dc8a0b139fddc8c795404fcc6775b7` |
 | PMTiles       | `6c3a4f9` | 1,297,122,745 | `0b733b7511dda51102c1b58a4983706b` |
 | COGP 2.2.2    | `6c3a4f9` | 9,081,139,765 | `f9a986b09224256534b530ed80dd245a` |
 | Esri SOP      | `6c3a4f9` | 6,177,950,661 | `6224bdf08e1915e367baa61ee566f650` |
 | Baked PMTiles | `d51954c` | 6,337,852,318 | `08388a4ba5add01de04cf4bcb8cd9477` |
 
-- [GeoParquet](https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/469acd1/japan_buildings.parquet)
+- [GeoParquet](https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/5503c5a/japan_buildings.parquet)
 - [PMTiles](https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/6c3a4f9/japan_buildings.pmtiles)
 - [Released COGP](https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/6c3a4f9/japan_buildings.cogp-2.2.2.parquet)
 - [Esri SOP](https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/6c3a4f9/japan_buildings.sop.parquet)
@@ -110,20 +110,20 @@ views are centred on 139.76, 35.68 and the Shibuya view on 139.7, 35.66.
 
 | View        | Tiled GeoParquet, cache off | PMTiles, cache off | Tiled GeoParquet, cache on | PMTiles, cache on |
 | ----------- | --------------------------: | -----------------: | -------------------------: | ----------------: |
-| Tokyo z8    |                      1.11 s |             0.72 s |                     1.31 s |            1.05 s |
-| Tokyo z11   |                      1.20 s |             0.98 s |                     1.28 s |            2.42 s |
-| Shibuya z13 |                      1.57 s |             0.98 s |                     1.45 s |            2.77 s |
+| Tokyo z8    |                      1.10 s |             0.77 s |                     0.99 s |            1.03 s |
+| Tokyo z11   |                      1.31 s |             0.92 s |                     1.29 s |            2.48 s |
+| Shibuya z13 |                      1.33 s |             0.93 s |                     1.40 s |            2.73 s |
 
-With the cache on, PMTiles took 1.4 to 1.8 s longer at z11 and z13 than with
+With the cache on, PMTiles took 1.6 to 1.8 s longer at z11 and z13 than with
 it off. The cache is the only difference between those two columns: it answers
 the library's range requests to one URL one after another.
 
 R2 serves these files over HTTP/1.1, and Chrome opens at most six connections
 to one host, so readers loaded on the same page share those six. With the
 cache off and the two readers side by side in half-width panes, each reader's
-first view took 0.05 to 0.36 s longer than the same half-width pane loaded
-alone. With the cache off, PMTiles finished first in every view, both alone
-and together. To time one reader, load it alone.
+first view took within 0.2 s of the same half-width pane loaded alone, and
+PMTiles finished first in every view, both alone and together. To time one
+reader, load it alone.
 
 R2 answers a request for a larger file more slowly. The first byte of a range
 arrived about 0.15 s after the request for the 1.3 GB PMTiles archive, and
@@ -151,11 +151,11 @@ From the repository root, bundle the reader and build a separate static folder:
 npm --prefix js run demo:bundle
 node demo/build-share.mjs \
   --out /private/tmp/geoparquet-lod-share \
-  --url https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/469acd1/japan_buildings.parquet \
+  --url https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/5503c5a/japan_buildings.parquet \
   --pmtiles https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/6c3a4f9/japan_buildings.pmtiles \
   --cogp https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/6c3a4f9/japan_buildings.cogp-2.2.2.parquet \
   --esri https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/6c3a4f9/japan_buildings.sop.parquet \
-  --release 469acd1 \
+  --release 5503c5a \
   --hide id \
   --style class \
   --domains demo/japan-domains.json

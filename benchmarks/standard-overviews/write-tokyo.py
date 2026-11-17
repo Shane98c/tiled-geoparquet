@@ -26,7 +26,7 @@ from tiled_geoparquet import chain, drop_smallest, tiny_polygons
 from tiled_geoparquet._layout import finalize_layout
 from tiled_geoparquet.writer import _write_unindexed
 
-JAPAN = 'https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/469acd1/japan_buildings.parquet'
+JAPAN = 'https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/5503c5a/japan_buildings.parquet'
 BOX = (139.39, 35.45, 140.10, 35.90)
 
 

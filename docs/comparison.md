@@ -136,7 +136,7 @@ npm --prefix /tmp/geoparquet-pmtiles install
 npx esbuild /tmp/geoparquet-pmtiles/web/baked.js --bundle --platform=node --format=esm --outfile=test/baked-node.mjs
 npx esbuild /tmp/geoparquet-pmtiles/web/src/detail-worker.js --bundle --format=esm --outfile=test/baked-worker-node.mjs
 R=https://pub-a9c45d804ff74bd19e8f9b7a52d9a90b.r2.dev/geoparquet-lod/releases/
-BASE=${R}6c3a4f9/ LOD=${R}469acd1/japan_buildings.parquet \
+BASE=${R}6c3a4f9/ LOD=${R}5503c5a/japan_buildings.parquet \
   COGP=${R}6c3a4f9/japan_buildings.cogp-2.2.2.parquet \
   BAKED=${R}d51954c/japan_buildings.baked.parquet \
   PMTILES=japan_buildings.pmtiles node test/compare-readers.mjs

@@ -713,8 +713,8 @@ sets for the tiles entry point before a file opens:
   so the cache has them in flight side by side and holds each for a later
   visit: requests go through the cache. On the
   Japan buildings in Chrome from R2, first views at zooms 8, 11 and 13 styled
-  by `class` took 1.08 to 1.90 s with it and 1.11 to 1.66 s past the cache,
-  and the same views opened again took 0.35 to 0.67 s and 1.00 to 1.61 s. The
+  by `class` took 1.14 to 2.25 s with it and 1.14 to 1.57 s past the cache,
+  and the same views opened again took 0.35 to 0.43 s and 0.94 to 1.38 s. The
   server has to ignore the parameter, as R2 and S3 do, and a signed URL does
   not survive one. A CDN that keys its cache on the query string stores each
   range apart, and a later visit finds in the browser's cache the ranges it
