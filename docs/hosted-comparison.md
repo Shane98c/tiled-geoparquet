@@ -1,6 +1,6 @@
 # Hosted comparison
 
-The public comparison is at <https://geoparquet-lod-compare.pages.dev/>.
+The public comparison is at <https://tiled-geoparquet.pages.dev/>.
 It serves the Tiled GeoParquet build from the
 [Japan evaluation](japan-evaluation.md), whose thinning budgets are calibrated
 against PMTiles feature counts, beside the matching PMTiles archive. The
@@ -11,7 +11,7 @@ The page defaults to Tokyo at zoom 11, coloured by `class`, with no basemap.
 Its readers request data directly from the same public S3 bucket with no simulated
 latency or bandwidth cap. The files use identical immutable cache settings.
 The page supports the same view and style controls as the local comparison.
-The [deck.gl example](https://geoparquet-lod-compare.pages.dev/deck/) is
+The [deck.gl example](https://tiled-geoparquet.pages.dev/deck/) is
 deployed beside it and opens the same GeoParquet file through the
 renderer-neutral batch API; pass `?url=` to point it at another file.
 
@@ -64,7 +64,7 @@ is Esri's original.
 - [Released COGP](https://carbonplan-share.s3.us-west-2.amazonaws.com/tiled-geoparquet/releases/6c3a4f9/japan_buildings.cogp-2.2.2.parquet)
 - [Esri SOP](https://carbonplan-share.s3.us-west-2.amazonaws.com/tiled-geoparquet/releases/6c3a4f9/japan_buildings.sop.parquet)
 - [Baked PMTiles](https://carbonplan-share.s3.us-west-2.amazonaws.com/tiled-geoparquet/releases/d51954c/japan_buildings.baked.parquet)
-- [Deployment manifest](https://geoparquet-lod-compare.pages.dev/release.json)
+- [Deployment manifest](https://tiled-geoparquet.pages.dev/release.json)
 
 ## Interpreting the comparison
 
@@ -199,7 +199,7 @@ node demo/build-share.mjs \
   --style class \
   --domains demo/japan-domains.json
 wrangler pages deploy /private/tmp/geoparquet-lod-share \
-  --project-name geoparquet-lod-compare --branch main
+  --project-name tiled-geoparquet --branch main
 ```
 
 The `--domains` option takes a JSON file of fixed colour scales.

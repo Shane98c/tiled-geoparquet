@@ -1031,7 +1031,7 @@ low-level wrapped values. The same logical paths work in `readFeatures`
 ### deck.gl example
 
 A second renderer is hosted at
-<https://geoparquet-lod-compare.pages.dev/deck/> and runnable locally at
+<https://tiled-geoparquet.pages.dev/deck/> and runnable locally at
 `http://localhost:8091/demo/deck/index.html?url=/buildings.lod.parquet` after
 `npm --prefix js run demo`. `demo/deck/main.js` bundles deck.gl 9.1 with the
 GeoArrow deck.gl layers under a `TileLayer`: each tile reads its extent as a

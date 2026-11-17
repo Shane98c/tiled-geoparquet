@@ -12,7 +12,7 @@ rows, which suits files of a few MB ([plain GeoParquet](docs/usage.md#plain-geop
 Format draft 0.2.0. The format can still change, and the Python and JavaScript
 packages are not published to registries yet.
 
-[Live comparison](https://geoparquet-lod-compare.pages.dev/) ·
+[Live comparison](https://tiled-geoparquet.pages.dev/) ·
 [Format specification](spec/SPEC.md) ·
 [Spatial index](spec/SPATIAL-INDEX.md) ·
 [Writer and reader guide](docs/usage.md) ·
@@ -42,7 +42,7 @@ describes how this layout differs from each;
 
 ## Try it
 
-The [hosted demo](https://geoparquet-lod-compare.pages.dev/) shows Tiled
+The [hosted demo](https://tiled-geoparquet.pages.dev/) shows Tiled
 GeoParquet and PMTiles built from the same Japan building source. COGP and Esri panes
 are optional: select their checkboxes and click **Apply readers**. Start over
 Tokyo, zoom out to see the overviews, then zoom into a neighbourhood. Pan the
@@ -160,7 +160,7 @@ against 30 to 45 KB at the finest overview zoom
 
 The reader also exposes whole-feature geometry batches with typed coordinate
 buffers, plus GeoJSON, GeoArrow IPC, and MVT adapters; the
-[deck.gl example](https://geoparquet-lod-compare.pages.dev/deck/) renders the
+[deck.gl example](https://tiled-geoparquet.pages.dev/deck/) renders the
 hosted Japan file outside MapLibre. See the [guide](docs/usage.md) for source
 attributes, nested fields, custom thinning, validation, and worker
 configuration.
