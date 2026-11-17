@@ -795,7 +795,10 @@ most common values. The colours are therefore known before the first tile
 arrives. For any other column, the page takes colours from the values in view,
 or, on a page built with `demo/build-share.mjs --domains`, from the colours
 file given to that option, which accepts the output of `demo/domains.py`. A `stops=name:0,10,40` query
-parameter sets the stops for a number and can be given once per column. In the Japan building fixtures the
+parameter sets the stops for a number and can be given once per column. With
+it a style also stands on a page that shows another archive alone, as in
+`panes=pmtiles&style=height&stops=height:2.4,4.1,6.9,8.4,17.9`, where the
+style menu has no file of this layout to list columns from. In the Japan building fixtures the
 GeoParquet file keeps 17 of its columns as attributes, the writer's default,
 among them `class`, `height` and `subtype`, the three the PMTiles archive
 holds in its tiles; `id` is read from the table's rows.

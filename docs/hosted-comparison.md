@@ -105,23 +105,25 @@ the two readers that the page shows by default. A new browser profile has an
 empty cache, so the cache-on columns show a first visit through the cache and
 not a reopened view. Each
 load used a new browser profile with one reader on the page, in headless
-Chrome at 1280 by 900 with software rendering, styled by `class`. The Tokyo
+Chrome at 1280 by 900 with software rendering, both readers styled by `height`
+with the same colour stops
+(`style=height&stops=height:2.4,4.1,6.9,8.4,17.9`). The Tokyo
 views are centred on 139.76, 35.68 and the Shibuya view on 139.7, 35.66.
 
 | View        | Tiled GeoParquet, cache off | PMTiles, cache off | Tiled GeoParquet, cache on | PMTiles, cache on |
 | ----------- | --------------------------: | -----------------: | -------------------------: | ----------------: |
-| Tokyo z8    |                      1.10 s |             0.77 s |                     0.99 s |            1.03 s |
-| Tokyo z11   |                      1.31 s |             0.92 s |                     1.29 s |            2.48 s |
-| Shibuya z13 |                      1.33 s |             0.93 s |                     1.40 s |            2.73 s |
+| Tokyo z8    |                      1.07 s |             0.78 s |                     1.17 s |            1.21 s |
+| Tokyo z11   |                      1.24 s |             0.88 s |                     1.26 s |            2.48 s |
+| Shibuya z13 |                      1.35 s |             0.94 s |                     1.77 s |            2.36 s |
 
-With the cache on, PMTiles took 1.6 to 1.8 s longer at z11 and z13 than with
+With the cache on, PMTiles took 1.4 to 1.6 s longer at z11 and z13 than with
 it off. The cache is the only difference between those two columns: it answers
 the library's range requests to one URL one after another.
 
 R2 serves these files over HTTP/1.1, and Chrome opens at most six connections
 to one host, so readers loaded on the same page share those six. With the
 cache off and the two readers side by side in half-width panes, each reader's
-first view took within 0.2 s of the same half-width pane loaded alone, and
+first view took within 0.25 s of the same half-width pane loaded alone, and
 PMTiles finished first in every view, both alone and together. To time one
 reader, load it alone.
 

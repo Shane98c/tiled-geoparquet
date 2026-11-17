@@ -555,9 +555,15 @@
       // looks up in the table's rows. Names come from the file: they are set as text,
       // never as markup.
       // The file opens while the maps are made, as it does in an app that asks for both
-      // at once: a pane's map is running by the time its data is ready to be added.
-      const requested = performance.now()
-      const opening = enabled('lod') ? readMetadata(fileUrl) : undefined
+      // at once: a pane's map is running by the time its data is ready to be added. The
+      // reader's worker is started first and has answered before the file is asked for,
+      // so a first view's time holds no download of code, as no other pane's does.
+      const started = enabled('lod') ? readStats() : undefined
+      let requested
+      const opening = started?.then(() => {
+        requested = performance.now()
+        return readMetadata(fileUrl)
+      })
       // the panes shown, in the order they are laid out, with their titles
       const TITLES = {
         lod: 'Tiled GeoParquet',
@@ -689,9 +695,6 @@
       let syncing = false
       // when a style's colours were last looked for among tiles still arriving
       let sampled = 0
-      if (![...styleSelect.options].some((option) => option.value === selectedStyle))
-        selectedStyle = 'geometry'
-      styleSelect.value = selectedStyle
       const properties = () => (selectedStyle === 'geometry' ? [] : [selectedStyle])
 
       // What each style colours by: stops for numbers, values for categories.
@@ -742,6 +745,13 @@
           domains[entry.slice(0, colon)] = { stops }
         else console.warn(`ignored ?stops=${entry}: expected name:ascending,numbers`)
       }
+      // A style the menu does not list stands where the page holds its colours, as for
+      // an archive shown without this layout's file; any other gives way to the shapes.
+      if (![...styleSelect.options].some((option) => option.value === selectedStyle)) {
+        if (domains[selectedStyle]) styleSelect.append(new Option(selectedStyle, selectedStyle))
+        else selectedStyle = 'geometry'
+      }
+      styleSelect.value = selectedStyle
       const rampColor = (i, count) =>
         RAMP[count > 1 ? Math.round((i * (RAMP.length - 1)) / (count - 1)) : 0]
       // names with no values among the features of the view on screen, fully loaded
