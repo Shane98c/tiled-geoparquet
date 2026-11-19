@@ -4,9 +4,10 @@ import { Deck, MapView } from '@deck.gl/core'
 import { TileLayer } from '@deck.gl/geo-layers'
 import {
   GeoArrowPathLayer,
-  GeoArrowPolygonLayer,
   GeoArrowScatterplotLayer,
-} from '@geoarrow/deck.gl-layers'
+  GeoArrowSolidPolygonLayer,
+  initEarcutPool,
+} from '@geoarrow/deck.gl-geoarrow'
 import { tableFromIPC } from 'apache-arrow'
 
 const status = document.querySelector('#status'),
@@ -14,6 +15,7 @@ const status = document.querySelector('#status'),
   params = new URLSearchParams(location.search)
 url.value = new URL(params.get('url') ?? url.value, location.href).href
 let reader,
+  earcutWorkerPool,
   generation = 0,
   state = { longitude: -105, latitude: 40, zoom: 10, pitch: 0, bearing: 0 }
 const map = new Deck({
@@ -31,31 +33,23 @@ const map = new Deck({
 // fill keeps that from showing as brighter overlaps.
 const fill = [52, 185, 163, 225],
   line = [113, 237, 209]
-// The GeoArrow layers read coordinates from the Arrow buffers directly; polygon
-// triangulation runs in a worker pool served from the bundle rather than a CDN.
-const earcutWorkerUrl = new URL('../dist/earcut-worker.min.js', import.meta.url).href
-function family(table) {
-  return table.schema.fields
+// The GeoArrow layers read coordinates from the Arrow buffers directly. One
+// pool of workers, started from the bundle's copy of the script, triangulates
+// the polygons of every tile.
+const startingEarcut = initEarcutPool(new URL('../dist/earcut-worker.min.js', import.meta.url), 4)
+function family(batch) {
+  return batch.schema.fields
     .map((f) => f.metadata.get('ARROW:extension:name'))
     .find((name) => name?.startsWith('geoarrow.'))
 }
-function featureLayer(id, table, zoom) {
-  const shared = { id, data: table, pickable: true, _validate: false }
-  const kind = family(table)
+function featureLayer(id, batch) {
+  const shared = { id, data: batch, pickable: true, _validate: false }
+  const kind = family(batch)
   if (kind === 'geoarrow.multipoint' || kind === 'geoarrow.point')
     return new GeoArrowScatterplotLayer({ ...shared, getFillColor: line, radiusMinPixels: 3 })
   if (kind === 'geoarrow.multilinestring' || kind === 'geoarrow.linestring')
     return new GeoArrowPathLayer({ ...shared, getColor: line, widthMinPixels: 1 })
-  return new GeoArrowPolygonLayer({
-    ...shared,
-    filled: true,
-    stroked: zoom >= 14, // placeholder squares at coarse zooms read as texture, not outlines
-    getFillColor: fill,
-    getLineColor: line,
-    lineWidthMinPixels: 1,
-    earcutWorkerUrl,
-    earcutWorkerPoolSize: 4,
-  })
+  return new GeoArrowSolidPolygonLayer({ ...shared, getFillColor: fill, earcutWorkerPool })
 }
 // One tile per LOD tile: deck's TileLayer caches loaded tiles and their GPU
 // buffers, cancels abandoned loads, and overzooms the finest level.
@@ -68,20 +62,18 @@ function tileLayer() {
     maxZoom: Math.max(...zooms),
     extent: reader.bounds,
     getTileData: async ({ index, bbox, signal }) => {
-      const batch = await readFeatures(reader, {
+      const features = await readFeatures(reader, {
         bbox: [bbox.west, bbox.south, bbox.east, bbox.north],
         resolution: 360 / (reader.lod.tile_size * 2 ** index.z),
         signal,
         geometry: 'overview',
         maxTiles: 16,
       })
-      return {
-        table: tableFromIPC(batchToGeoArrow(batch, { crs: 'OGC:CRS84' })),
-        rows: batch.rowIndex,
-      }
+      const [batch] = tableFromIPC(batchToGeoArrow(features, { crs: 'OGC:CRS84' })).batches
+      return { batch, rows: features.rowIndex }
     },
     renderSubLayers: ({ id, tile, data }) =>
-      data?.rows.length ? featureLayer(id, data.table, tile.index.z) : null,
+      data?.rows.length ? featureLayer(id, data.batch) : null,
     onViewportLoad: (tiles) => {
       const loaded = tiles.filter((t) => t.content)
       const features = loaded.reduce((n, t) => n + t.content.rows.length, 0)
@@ -96,6 +88,7 @@ async function open() {
   status.textContent = 'Opening…'
   try {
     reader = await openReader(await httpSource([url.value]))
+    earcutWorkerPool = await startingEarcut
     const [w, s, e, n] = reader.bounds
     // ?view=lon,lat,zoom opens at a place; otherwise fit the dataset extent.
     const view = (params.get('view') ?? '').split(',').map(Number)

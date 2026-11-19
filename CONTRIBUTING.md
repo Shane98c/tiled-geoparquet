@@ -40,8 +40,8 @@ For a local comparison with your own archives:
 npm --prefix js run demo:compare -- --lod /path/indexed.parquet --pmtiles /path/baseline.pmtiles
 ```
 
-Optional `--cogp` and `--esri` paths enable the other readers; the
-[reader guide](js/README.md#demo) describes the page. For a scripted
+`--pmtiles` is optional, and `--cogp` and `--esri` paths enable the other
+readers; the [reader guide](js/README.md#demo) describes the page. For a scripted
 five-reader measurement, see
 [the comparison page](docs/comparison.md#reproducing).
 
@@ -57,7 +57,7 @@ static folder:
 ```sh
 npm --prefix js run demo:bundle
 node demo/build-share.mjs \
-  --out /private/tmp/geoparquet-lod-share \
+  --out /private/tmp/tiled-geoparquet-share \
   --url https://carbonplan-share.s3.us-west-2.amazonaws.com/tiled-geoparquet/releases/5503c5a/japan_buildings.parquet \
   --pmtiles https://carbonplan-share.s3.us-west-2.amazonaws.com/tiled-geoparquet/releases/6c3a4f9/japan_buildings.pmtiles \
   --cogp https://carbonplan-share.s3.us-west-2.amazonaws.com/tiled-geoparquet/releases/6c3a4f9/japan_buildings.cogp-2.2.2.parquet \
@@ -66,7 +66,7 @@ node demo/build-share.mjs \
   --hide id \
   --style class \
   --domains demo/japan-domains.json
-wrangler pages deploy /private/tmp/geoparquet-lod-share \
+wrangler pages deploy /private/tmp/tiled-geoparquet-share \
   --project-name tiled-geoparquet --branch main
 ```
 

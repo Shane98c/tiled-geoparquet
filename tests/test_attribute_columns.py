@@ -1104,10 +1104,6 @@ def _write_root(path, raw, root):
     path.write_bytes(bytes(head) + raw[16384:])
 
 
-def _root_of(raw):
-    return json.loads(gzip.decompress(raw[16 : 16 + int.from_bytes(raw[12:16], 'little')]))
-
-
 def _patch_root(path, raw, root):
     """`raw` with the root `root`, the rest of the bootstrap as it was."""
     encoded = gzip.compress(json.dumps(root, separators=(',', ':')).encode(), mtime=0)

@@ -58,7 +58,7 @@ if (values.domains) {
 }
 await cp(new URL('./dist/', import.meta.url), resolve(out, 'dist'), { recursive: true })
 // The deck.gl example opens the hosted GeoParquet file unless ?url= overrides it.
-const deckDefault = 'value="/buildings.lod.parquet"'
+const deckDefault = 'value="/data/current.parquet"'
 let deck = await readFile(new URL('./deck/index.html', import.meta.url), 'utf8')
 if (deck.split(deckDefault).length !== 2) throw new Error('deck.gl example default has changed')
 deck = deck.replace(deckDefault, `value=${json(values.url)}`)

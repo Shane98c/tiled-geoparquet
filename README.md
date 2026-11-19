@@ -166,12 +166,12 @@ for a file without attributes) or a `columns=` list in PyArrow.
 With the reader built, run:
 
 ```sh
-npm --prefix js run demo
+npm --prefix js run demo:compare -- --lod /path/buildings.lod.parquet
 ```
 
-This serves the repository on port 8091 and opens the demo in your browser.
-The demo opens `buildings.lod.parquet` from the repository root. Click a
-building to inspect its source row. It loads MapLibre from a CDN. A tiny
+This serves the comparison page on port 8094 and prints its address. The
+page opens on the whole extent of the file and loads MapLibre from a CDN.
+`--pmtiles` adds a pane for a PMTiles archive of the same data. A tiny
 synthetic fixture for checking installation is available in the
 [contributor guide](CONTRIBUTING.md#development).
 

@@ -37,7 +37,7 @@ export const ENCODING = 'packed'
 export const PACK_VERSION = 3
 /** The spatial index profile version, which the footer's
  * `lod_spatial_index` and the index's root state. */
-export const INDEX_VERSION = 4
+const INDEX_VERSION = 4
 const MAX_MARGIN = 128
 
 /** Raise unless `version` is the spatial index version this reader reads. */
@@ -195,17 +195,14 @@ export class GeoParquetReader {
   /** Each decoded geometry page's row bounds, as xmin, ymin, xmax, ymax per
    * row, NaN where a row has no finite extent. */
   private readonly pageBounds = new WeakMap<DecodedPage, Float64Array>()
-  private readonly footer: ArrayBuffer | undefined
-  private digest: Promise<string> | undefined
   private readonly fields: AttributeField[]
   /** Whether the attribute columns hold their values on the leading rows of
    * their LOD's pages, as a file with the spatial index does. */
   private readonly leads: boolean
 
-  private constructor(file: RangeSource, metadata: FileMetaData, footer?: ArrayBuffer) {
+  private constructor(file: RangeSource, metadata: FileMetaData) {
     this.file = file
     this.metadata = metadata
-    this.footer = footer
     const index = metadata.key_value_metadata?.find((kv) => kv.key === 'lod_spatial_index')
     if (index) {
       let advertised: { version?: unknown } | undefined
@@ -294,8 +291,7 @@ export class GeoParquetReader {
     return bounds[0] <= bounds[2] ? bounds : [-180, -MAX_LATITUDE, 180, MAX_LATITUDE]
   }
 
-  /** A reader over metadata found elsewhere than the footer, such as an
-   * index's copy of some columns' metadata; it reads only those columns. */
+  /** A reader over metadata the caller supplies. */
   static fromMetadata(file: RangeSource, metadata: FileMetaData): GeoParquetReader {
     return new GeoParquetReader(file, metadata)
   }
@@ -313,25 +309,19 @@ export class GeoParquetReader {
       if (view.getUint32(footerBytes, true) === footerBytes) {
         const metadata = parquetMetadata(tail)
         signal?.throwIfAborted()
-        return new GeoParquetReader(file, metadata, tail.slice(0, footerBytes))
+        return new GeoParquetReader(file, metadata)
       }
     }
-    let footer: ArrayBuffer | undefined
-    const end = file.byteLength - 8
-    const capturing: RangeSource = {
+    const aborting: RangeSource = {
       byteLength: file.byteLength,
-      async slice(start, stop, sliceSignal) {
-        const buffer = await file.slice(start, stop, sliceSignal ?? signal)
-        if (stop === end && start < end) footer = buffer
-        return buffer
-      },
+      slice: (start, stop, sliceSignal) => file.slice(start, stop, sliceSignal ?? signal),
     }
-    // with an 8-byte initial fetch, the second slice is exactly the footer
-    const metadata = await parquetMetadataAsync(capturing as unknown as AsyncBuffer, {
+    // the 8-byte trailer, then exactly the footer
+    const metadata = await parquetMetadataAsync(aborting as unknown as AsyncBuffer, {
       initialFetchSize: 8,
     })
     signal?.throwIfAborted()
-    return new GeoParquetReader(file, metadata, footer)
+    return new GeoParquetReader(file, metadata)
   }
 
   /** The LOD whose zooms contain `zoom`, clamped to the coarsest or finest LOD. */
@@ -905,21 +895,6 @@ export class GeoParquetReader {
   ): Promise<Record<string, unknown>> {
     const values = await this.readColumns([rowIndex], columns, signal)
     return Object.fromEntries(columns.map((name) => [name, values[name][0]]))
-  }
-
-  /** Lowercase hex SHA-256 of the footer bytes read at open. */
-  footerDigest(): Promise<string> {
-    if (!this.digest) {
-      const footer = this.footer
-      if (!footer || footer.byteLength !== this.metadata.metadata_length)
-        return Promise.reject(new Error('footer bytes from open do not match metadata_length'))
-      this.digest = crypto.subtle
-        .digest('SHA-256', footer)
-        .then((hash) =>
-          Array.from(new Uint8Array(hash), (b) => b.toString(16).padStart(2, '0')).join(''),
-        )
-    }
-    return this.digest
   }
 
   /**

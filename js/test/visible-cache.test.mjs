@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { VisibleTileCache, decodedTileBytes, waitForTile } from '../dist/visible-cache.js'
+import { VisibleTileCache, decodedTileBytes } from '../dist/visible-cache.js'
 import { renderDecodedTile } from '../dist/tile.js'
 import { columnar } from './columnar.mjs'
 const tile = {
@@ -28,12 +28,8 @@ const second = cache.getOrLoad('a', () => {
 })
 await Promise.resolve()
 assert.equal(loads, 1)
-const controller = new AbortController(),
-  cancelled = waitForTile(pending, controller.signal)
-const rejection = assert.rejects(cancelled, { name: 'AbortError' })
-controller.abort()
-await rejection
 resolve(tile)
+assert.equal(await pending, tile)
 assert.equal(await second, tile)
 assert.equal(cache.bytes, size)
 await cache.getOrLoad('b', async () => tile)

@@ -6,8 +6,6 @@ node_modules/
 js/dist/
 *.parquet
 .DS_Store
-*.tiledir
-*.tiledir.v1
 js/test/esri-node.mjs
 js/test/baked-node.mjs
 js/test/baked-worker-node.mjs

@@ -10,8 +10,9 @@ the project environment. On macOS:
       QT_QPA_PLATFORM=offscreen $QGIS_CONTENTS/MacOS/python3.12 \
       benchmarks/standard-overviews/qgis-progressive.py tokyo.packed.parquet tokyo.prefix.parquet out.json
 
-write-tokyo.py builds the two files. The summary holds the median over runs of
-the render time and of the coverage at each listed second.
+write-tokyo.py builds the first file and says where the second came from.
+The summary holds the median over runs of the render time and of the coverage
+at each listed second.
 """
 
 import json

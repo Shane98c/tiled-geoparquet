@@ -97,6 +97,10 @@ In a CLI spec the built-ins are `drop[:rate]`, `size[:pixels]`,
 and `>` chains them (`chain`), as in `smallest:600000>tiny`, and `--where`
 restricts eligibility as `only` does.
 
+[`examples/places_points.py`](../examples/places_points.py) and
+[`examples/cluster_points.py`](../examples/cluster_points.py) are whole
+scripts for `importance` and `cluster` on point data.
+
 ### Writing your own
 
 Pass any function of that shape as `thinning=`, on its own or inside `chain`,

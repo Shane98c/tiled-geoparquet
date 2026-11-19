@@ -104,15 +104,3 @@ export function decodedTileBytes(tile: DecodedTile): number {
   }
   return bytes
 }
-
-export function waitForTile(
-  promise: Promise<DecodedTile>,
-  signal: AbortSignal,
-): Promise<DecodedTile> {
-  signal.throwIfAborted()
-  return new Promise((resolve, reject) => {
-    const abort = () => reject(new DOMException('Aborted', 'AbortError'))
-    signal.addEventListener('abort', abort, { once: true })
-    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort))
-  })
-}

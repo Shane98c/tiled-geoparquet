@@ -6,30 +6,6 @@
       "label": "Tokyo metro",
       "z": 8,
       "nativeZoom": 8,
-      "implementation": "prefix",
-      "opening": {
-        "bytes": 16384,
-        "requests": 1,
-        "ms": 11.231832999999995
-      },
-      "cold": {
-        "bytes": 731983,
-        "requests": 2,
-        "ms": 90.09562500000001,
-        "features": 115775,
-        "outputBytes": 2749379
-      },
-      "next": {
-        "bytes": 17831,
-        "requests": 1,
-        "ms": 2.610416000000015,
-        "features": 3003
-      }
-    },
-    {
-      "label": "Tokyo metro",
-      "z": 8,
-      "nativeZoom": 8,
       "implementation": "single",
       "opening": {
         "bytes": 16384,
@@ -72,30 +48,6 @@
         "requests": 1,
         "ms": 2.62120800000001,
         "features": 3198
-      }
-    },
-    {
-      "label": "Tokyo city",
-      "z": 11,
-      "nativeZoom": 11,
-      "implementation": "prefix",
-      "opening": {
-        "bytes": 16384,
-        "requests": 1,
-        "ms": 0.6503329999999892
-      },
-      "cold": {
-        "bytes": 359088,
-        "requests": 2,
-        "ms": 26.718666000000013,
-        "features": 28201,
-        "outputBytes": 717308
-      },
-      "next": {
-        "bytes": 187617,
-        "requests": 1,
-        "ms": 12.519832999999949,
-        "features": 15907
       }
     },
     {
@@ -150,30 +102,6 @@
       "label": "Tokyo district",
       "z": 12,
       "nativeZoom": 12,
-      "implementation": "prefix",
-      "opening": {
-        "bytes": 16384,
-        "requests": 1,
-        "ms": 0.7050839999999994
-      },
-      "cold": {
-        "bytes": 413987,
-        "requests": 2,
-        "ms": 31.114666999999997,
-        "features": 33000,
-        "outputBytes": 846754
-      },
-      "next": {
-        "bytes": 353150,
-        "requests": 1,
-        "ms": 24.316374999999994,
-        "features": 32762
-      }
-    },
-    {
-      "label": "Tokyo district",
-      "z": 12,
-      "nativeZoom": 12,
       "implementation": "single",
       "opening": {
         "bytes": 16384,
@@ -216,30 +144,6 @@
         "requests": 1,
         "ms": 2.4026250000000005,
         "features": 28691
-      }
-    },
-    {
-      "label": "Shibuya",
-      "z": 13,
-      "nativeZoom": 13,
-      "implementation": "prefix",
-      "opening": {
-        "bytes": 16384,
-        "requests": 1,
-        "ms": 0.41020800000001145
-      },
-      "cold": {
-        "bytes": 362689,
-        "requests": 2,
-        "ms": 25.251125000000002,
-        "features": 29834,
-        "outputBytes": 762789
-      },
-      "next": {
-        "bytes": 256360,
-        "requests": 1,
-        "ms": 17.237874999999974,
-        "features": 20954
       }
     },
     {
@@ -294,30 +198,6 @@
       "label": "Chiba",
       "z": 13,
       "nativeZoom": 13,
-      "implementation": "prefix",
-      "opening": {
-        "bytes": 16384,
-        "requests": 1,
-        "ms": 0.488083999999958
-      },
-      "cold": {
-        "bytes": 81433,
-        "requests": 2,
-        "ms": 12.254750000000058,
-        "features": 4955,
-        "outputBytes": 123255
-      },
-      "next": {
-        "bytes": 89529,
-        "requests": 1,
-        "ms": 9.665750000000003,
-        "features": 8953
-      }
-    },
-    {
-      "label": "Chiba",
-      "z": 13,
-      "nativeZoom": 13,
       "implementation": "single",
       "opening": {
         "bytes": 16384,
@@ -366,30 +246,6 @@
       "label": "Tokyo station",
       "z": 15,
       "nativeZoom": 15,
-      "implementation": "prefix",
-      "opening": {
-        "bytes": 16384,
-        "requests": 1,
-        "ms": 0.35458300000004783
-      },
-      "cold": {
-        "bytes": 38245,
-        "requests": 2,
-        "ms": 1.3052920000000086,
-        "features": 229,
-        "outputBytes": 7152
-      },
-      "next": {
-        "bytes": 24152,
-        "requests": 1,
-        "ms": 1.718040999999971,
-        "features": 1595
-      }
-    },
-    {
-      "label": "Tokyo station",
-      "z": 15,
-      "nativeZoom": 15,
       "implementation": "single",
       "opening": {
         "bytes": 16384,
@@ -432,30 +288,6 @@
         "requests": 1,
         "ms": 0.9038749999999993,
         "features": 8985
-      }
-    },
-    {
-      "label": "Osaka",
-      "z": 15,
-      "nativeZoom": 15,
-      "implementation": "prefix",
-      "opening": {
-        "bytes": 16384,
-        "requests": 1,
-        "ms": 0.3177500000000464
-      },
-      "cold": {
-        "bytes": 66291,
-        "requests": 2,
-        "ms": 2.234958000000006,
-        "features": 1357,
-        "outputBytes": 37052
-      },
-      "next": {
-        "bytes": 42254,
-        "requests": 1,
-        "ms": 2.4936669999999594,
-        "features": 2397
       }
     },
     {
@@ -512,31 +344,6 @@
       "label": "Tokyo metro",
       "z": 8,
       "nativeZoom": 8,
-      "implementation": "prefix",
-      "run": 0,
-      "opening": {
-        "bytes": 16384,
-        "requests": 1,
-        "ms": 11.231832999999995
-      },
-      "cold": {
-        "bytes": 731983,
-        "requests": 2,
-        "ms": 90.09562500000001,
-        "features": 115775,
-        "outputBytes": 2749379
-      },
-      "next": {
-        "bytes": 17831,
-        "requests": 1,
-        "ms": 2.610416000000015,
-        "features": 3003
-      }
-    },
-    {
-      "label": "Tokyo metro",
-      "z": 8,
-      "nativeZoom": 8,
       "implementation": "single",
       "run": 0,
       "opening": {
@@ -581,31 +388,6 @@
         "requests": 1,
         "ms": 2.62120800000001,
         "features": 3198
-      }
-    },
-    {
-      "label": "Tokyo city",
-      "z": 11,
-      "nativeZoom": 11,
-      "implementation": "prefix",
-      "run": 0,
-      "opening": {
-        "bytes": 16384,
-        "requests": 1,
-        "ms": 0.6503329999999892
-      },
-      "cold": {
-        "bytes": 359088,
-        "requests": 2,
-        "ms": 26.718666000000013,
-        "features": 28201,
-        "outputBytes": 717308
-      },
-      "next": {
-        "bytes": 187617,
-        "requests": 1,
-        "ms": 12.519832999999949,
-        "features": 15907
       }
     },
     {
@@ -662,31 +444,6 @@
       "label": "Tokyo district",
       "z": 12,
       "nativeZoom": 12,
-      "implementation": "prefix",
-      "run": 0,
-      "opening": {
-        "bytes": 16384,
-        "requests": 1,
-        "ms": 0.7050839999999994
-      },
-      "cold": {
-        "bytes": 413987,
-        "requests": 2,
-        "ms": 31.114666999999997,
-        "features": 33000,
-        "outputBytes": 846754
-      },
-      "next": {
-        "bytes": 353150,
-        "requests": 1,
-        "ms": 24.316374999999994,
-        "features": 32762
-      }
-    },
-    {
-      "label": "Tokyo district",
-      "z": 12,
-      "nativeZoom": 12,
       "implementation": "single",
       "run": 0,
       "opening": {
@@ -731,31 +488,6 @@
         "requests": 1,
         "ms": 2.4026250000000005,
         "features": 28691
-      }
-    },
-    {
-      "label": "Shibuya",
-      "z": 13,
-      "nativeZoom": 13,
-      "implementation": "prefix",
-      "run": 0,
-      "opening": {
-        "bytes": 16384,
-        "requests": 1,
-        "ms": 0.41020800000001145
-      },
-      "cold": {
-        "bytes": 362689,
-        "requests": 2,
-        "ms": 25.251125000000002,
-        "features": 29834,
-        "outputBytes": 762789
-      },
-      "next": {
-        "bytes": 256360,
-        "requests": 1,
-        "ms": 17.237874999999974,
-        "features": 20954
       }
     },
     {
@@ -812,31 +544,6 @@
       "label": "Chiba",
       "z": 13,
       "nativeZoom": 13,
-      "implementation": "prefix",
-      "run": 0,
-      "opening": {
-        "bytes": 16384,
-        "requests": 1,
-        "ms": 0.488083999999958
-      },
-      "cold": {
-        "bytes": 81433,
-        "requests": 2,
-        "ms": 12.254750000000058,
-        "features": 4955,
-        "outputBytes": 123255
-      },
-      "next": {
-        "bytes": 89529,
-        "requests": 1,
-        "ms": 9.665750000000003,
-        "features": 8953
-      }
-    },
-    {
-      "label": "Chiba",
-      "z": 13,
-      "nativeZoom": 13,
       "implementation": "single",
       "run": 0,
       "opening": {
@@ -887,31 +594,6 @@
       "label": "Tokyo station",
       "z": 15,
       "nativeZoom": 15,
-      "implementation": "prefix",
-      "run": 0,
-      "opening": {
-        "bytes": 16384,
-        "requests": 1,
-        "ms": 0.35458300000004783
-      },
-      "cold": {
-        "bytes": 38245,
-        "requests": 2,
-        "ms": 1.3052920000000086,
-        "features": 229,
-        "outputBytes": 7152
-      },
-      "next": {
-        "bytes": 24152,
-        "requests": 1,
-        "ms": 1.718040999999971,
-        "features": 1595
-      }
-    },
-    {
-      "label": "Tokyo station",
-      "z": 15,
-      "nativeZoom": 15,
       "implementation": "single",
       "run": 0,
       "opening": {
@@ -956,31 +638,6 @@
         "requests": 1,
         "ms": 0.9038749999999993,
         "features": 8985
-      }
-    },
-    {
-      "label": "Osaka",
-      "z": 15,
-      "nativeZoom": 15,
-      "implementation": "prefix",
-      "run": 0,
-      "opening": {
-        "bytes": 16384,
-        "requests": 1,
-        "ms": 0.3177500000000464
-      },
-      "cold": {
-        "bytes": 66291,
-        "requests": 2,
-        "ms": 2.234958000000006,
-        "features": 1357,
-        "outputBytes": 37052
-      },
-      "next": {
-        "bytes": 42254,
-        "requests": 1,
-        "ms": 2.4936669999999594,
-        "features": 2397
       }
     },
     {

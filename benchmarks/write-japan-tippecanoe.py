@@ -1,7 +1,7 @@
-"""Test closer PMTiles display density while retaining all Japan analysis rows.
+"""Build the Japan release file: every analysis row, with display density near PMTiles'.
 
-Budgets are scaled from the matched XYZ tile feature counts in dropping/demo-density.json.
-Only z8, z11 and z12 change; the preserved demo and library defaults do not.
+The z8, z11 and z12 budgets are scaled from the matched XYZ tile feature counts
+in dropping/demo-density.json; the other zooms take fixed budgets.
 """
 
 import argparse
@@ -41,7 +41,7 @@ if __name__ == '__main__':
     def budget(zoom):
         return budgets.get(zoom, 1_300_000 if zoom <= 8 else 850_000)
 
-    log(f'Experimental estimated-byte budgets: {budgets}')
+    log(f'Estimated-byte budgets: {budgets}')
     write(
         args.src,
         args.out,

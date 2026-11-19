@@ -1,8 +1,8 @@
 // Local comparison server: expose only the demo and explicitly supplied files.
-// npm --prefix js run demo:compare -- --lod /path/file.parquet --pmtiles /path/file.pmtiles
+// npm --prefix js run demo:compare -- --lod /path/file.parquet [--pmtiles /path/file.pmtiles]
 import { createServer } from 'node:http'
 import { createReadStream } from 'node:fs'
-import { stat } from 'node:fs/promises'
+import { open, stat } from 'node:fs/promises'
 import { resolve, extname, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
@@ -14,16 +14,16 @@ const { values } = parseArgs({
     pmtiles: { type: 'string' },
     cogp: { type: 'string' },
     esri: { type: 'string' },
+    center: { type: 'string' },
+    zoom: { type: 'string' },
     port: { type: 'string', default: '8094' },
   },
 })
-if (!values.lod || !values.pmtiles)
-  throw new Error('Supply --lod /path/file.parquet --pmtiles /path/file.pmtiles [--port 8094]')
+if (!values.lod)
+  throw new Error('Supply --lod /path/file.parquet [--pmtiles /path/file.pmtiles] [--port 8094]')
 const root = fileURLToPath(new URL('.', import.meta.url))
-const files = new Map([
-  ['/data/current.parquet', resolve(values.lod)],
-  ['/data/baseline.pmtiles', resolve(values.pmtiles)],
-])
+const files = new Map([['/data/current.parquet', resolve(values.lod)]])
+if (values.pmtiles) files.set('/data/baseline.pmtiles', resolve(values.pmtiles))
 if (values.cogp) files.set('/data/baseline.cogp.parquet', resolve(values.cogp))
 if (values.esri) files.set('/data/baseline.sop.parquet', resolve(values.esri))
 for (const path of files.values()) {
@@ -31,16 +31,41 @@ for (const path of files.values()) {
 }
 const port = Number(values.port)
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid port')
+/** The centre and zoom that show the whole file, from its bounds. */
+async function wholeFile(path) {
+  const { openReader } = await import('./dist/index.js')
+  const file = await open(path)
+  try {
+    const byteLength = (await file.stat()).size
+    const reader = await openReader({
+      byteLength,
+      async slice(start, end = byteLength) {
+        const bytes = new Uint8Array(end - start)
+        await file.read(bytes, 0, bytes.length, start)
+        return bytes.buffer
+      },
+    })
+    const [west, south, east, north] = reader.bounds
+    const zoom = Math.log2(360 / Math.max(east - west, north - south, 1e-6))
+    return {
+      center: `${((west + east) / 2).toFixed(5)},${((south + north) / 2).toFixed(5)}`,
+      zoom: Math.min(16, Math.max(0, zoom)).toFixed(2),
+    }
+  } finally {
+    await file.close()
+  }
+}
+const view = values.center && values.zoom ? {} : await wholeFile(files.get('/data/current.parquet'))
 const params = new URLSearchParams({
   url: '/data/current.parquet',
-  pmtiles: '/data/baseline.pmtiles',
-  center: '139.76,35.68',
-  zoom: '11',
+  center: values.center ?? view.center,
+  zoom: values.zoom ?? view.zoom,
   basemap: '0',
   demoServer: '1',
   latency: '50',
   panes: 'lod,pmtiles',
 })
+if (values.pmtiles) params.set('pmtiles', '/data/baseline.pmtiles')
 if (values.cogp) params.set('cogp', '/data/baseline.cogp.parquet')
 if (values.esri) params.set('esri', '/data/baseline.sop.parquet')
 const comparePath = '/demo/compare.html?' + params

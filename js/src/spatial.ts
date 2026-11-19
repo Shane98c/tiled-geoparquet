@@ -29,7 +29,7 @@ import {
 import { float32Outward, wkbBounds } from './wkb.js'
 import { MAX_LATITUDE } from './web-mercator.js'
 
-export const BOOTSTRAP_BYTES = 16384
+const BOOTSTRAP_BYTES = 16384
 const MAGIC = 'LODIDX01'
 const MAX_LEVEL = 32
 /** An attribute slot's length and attribute, each a u32
@@ -487,7 +487,7 @@ function slotPlace(entries: Shard[], shard: Shard, tree: number): SlotPlace {
   }
 }
 
-export function hasSpatialIndex(bytes: ArrayBuffer): boolean {
+function hasSpatialIndex(bytes: ArrayBuffer): boolean {
   return bytes.byteLength >= 16 && new TextDecoder().decode(new Uint8Array(bytes, 4, 8)) === MAGIC
 }
 

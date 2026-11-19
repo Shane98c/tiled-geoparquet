@@ -355,12 +355,17 @@ columns. The indexed file holds a page's attribute values on the page's leading
 rows, and all 340,809,878 of them compare equal in order.
 
 Recorded measurements and integrity checks are in
-[`benchmarks/dropping/`](../benchmarks/dropping/). `demo-density*.json` profile
-the uncalibrated baseline build the budgets were calibrated from against PMTiles
-and `calibrated-density*.json` this build, each on the calibration and
-held-out tile sets. `ranges.json` holds cold single-tile reads of local
-copies at z8, z11 and z12, where `prefix` labels the baseline build, `single`
-this build's GeoParquet file and `pmtiles` the archive.
+[`benchmarks/dropping/`](../benchmarks/dropping/). `calibrated-density*.json`
+profile this build against PMTiles on the calibration and held-out tile sets,
+written by [`js/test/dropping-profile.mjs`](../js/test/dropping-profile.mjs).
+`demo-density.json` is the profile of an uncalibrated build that the recipe
+scales its budgets from. `analysis-check.json` is the output of
+[`benchmarks/check-analysis.py`](../benchmarks/check-analysis.py), the
+source-to-output checksum, and
+[`benchmarks/check-table.py`](../benchmarks/check-table.py) compares the
+writer output with the indexed output. `ranges.json` holds cold single-tile
+reads of local copies at z8, z11 and z12, where `single` labels this build's
+GeoParquet file and `pmtiles` the archive.
 
 ## Files
 

@@ -326,22 +326,16 @@ map keys, out-of-range list indexes and null ancestors return `null`.
 ## demo
 
 ```sh
-npm run demo
+npm run demo:compare -- --lod /path/buildings.lod.parquet
 ```
 
-That bundles the reader, serves the repository at `http://localhost:8091`,
-and opens `demo/index.html`, a MapLibre page that reads
-`buildings.lod.parquet` from the repository root and shows which LOD each
-zoom is drawing. Pass `?url=` for another file, and click a feature to read
-its row.
+That bundles the reader and serves `demo/compare.html` at
+`http://127.0.0.1:8094`, opened on the whole extent of the file. `--center
+lon,lat` and `--zoom` set another view. `--pmtiles /path/buildings.pmtiles`
+adds a pane that reads a PMTiles archive of the same data, and `--cogp` and
+`--esri` add the other readers.
 
-To compare with a local PMTiles archive:
-
-```sh
-npm run demo:compare -- --lod /path/buildings.lod.parquet --pmtiles /path/buildings.pmtiles
-```
-
-That page is the one hosted at <https://tiled-geoparquet.pages.dev/>, and
+The page is the one hosted at <https://tiled-geoparquet.pages.dev/>, and
 [the comparison](../docs/comparison.md#the-hosted-page) explains its
 counters. Its query parameters:
 
@@ -351,9 +345,8 @@ counters. Its query parameters:
 - `basemap=1` adds a basemap.
 
 A deck.gl example is hosted at <https://tiled-geoparquet.pages.dev/deck/> and
-runs locally at
-`http://localhost:8091/demo/deck/index.html?url=/buildings.lod.parquet` after
-`npm run demo`. It feeds `batchToGeoArrow` output to the GeoArrow deck.gl
+runs locally at `http://127.0.0.1:8094/demo/deck/index.html` after
+`npm run demo:compare`, where it opens the `--lod` file. It feeds `batchToGeoArrow` output to the GeoArrow deck.gl
 layers.
 
 ## license

@@ -21,7 +21,7 @@ That license does not replace dependency licenses or dataset terms.
 - The implementation also depends on DuckDB, PyArrow, NumPy, Shapely, click,
   hyparquet, hyparquet-compressors, lineclip, and zstddec. Dependency manifests and lock
   files record the actual versions. MapLibre, PMTiles, deck.gl,
-  @geoarrow/deck.gl-layers, and apache-arrow power the demo.
+  @geoarrow/deck.gl-geoarrow, and apache-arrow power the demo.
 
 ## Vendored Esri comparison reader
 

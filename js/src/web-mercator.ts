@@ -1,6 +1,6 @@
 /** LOD coordinates are EPSG:3857 metres; source geometry is longitude/latitude. */
 export const LOD_CRS: 'EPSG:3857' = 'EPSG:3857'
-export const EARTH_RADIUS = 6378137
+const EARTH_RADIUS = 6378137
 export const HALF_WORLD = Math.PI * EARTH_RADIUS
 export const MAX_LATITUDE = 85.0511287798066
 
