@@ -49,7 +49,12 @@ function featureLayer(id, batch) {
     return new GeoArrowScatterplotLayer({ ...shared, getFillColor: line, radiusMinPixels: 3 })
   if (kind === 'geoarrow.multilinestring' || kind === 'geoarrow.linestring')
     return new GeoArrowPathLayer({ ...shared, getColor: line, widthMinPixels: 1 })
-  return new GeoArrowSolidPolygonLayer({ ...shared, getFillColor: fill, earcutWorkerPool })
+  return new GeoArrowSolidPolygonLayer({
+    ...shared,
+    getFillColor: fill,
+    earcutWorkerPool,
+    earcutWorkerUrl: null, // the layer fetches its default script even when given a pool
+  })
 }
 // One tile per LOD tile: deck's TileLayer caches loaded tiles and their GPU
 // buffers, cancels abandoned loads, and overzooms the finest level.
