@@ -51,16 +51,17 @@ map.addSource('buildings', await vectorSource({ url, layer: 'buildings', propert
 
 ### requests
 
-`httpSource(urls, { cache, connections })` sends a tile's requests past the
-browser's HTTP cache, which answers the range requests of one URL one at a
-time, and opens six connections to the host as the file opens;
-`setSourceOptions` from the tiles entry point sets the same two. A server
-that opens the file for each request passes `cache: 'default'`. See
+`httpSource(urls, { cache, rangeParam })` sends a tile's requests past the
+browser's HTTP cache by default, since the cache answers the range requests
+of one URL one at a time. `rangeParam` names a query parameter that gives
+each range a URL of its own, which keeps the cache; `setSourceOptions` from
+the tiles entry point sets the same two. A server that opens the file for
+each request passes `cache: 'default'`. See
 [Requests](../docs/usage.md#requests).
 
 ### hosting
 
-Serve immutable files with HTTP Range support and CORS exposing `Content-Range`.
+Serve immutable files with HTTP Range support and CORS.
 The tiles entry point requires the distributed `worker.js` and its imports to
 remain available to your bundler. Other dependencies remain external in `dist`.
 

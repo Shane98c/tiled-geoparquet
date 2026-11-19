@@ -63,9 +63,9 @@ coarser than where the dataset's whole extent spans about a pixel, the base
 zoom a rate-based thinning counts from is where the median feature spans a
 pixel, and the finest zoom is where the median vertex spacing spans four
 pixels, at most 15. The writer logs the guess and records which zooms actually keep every
-row; pass `zooms=` or `complete_from=` to override. Zooms run from 0 to 24,
-the depth of the Hilbert key, so every tile is one interval of keys; the
-writer refuses others before it starts.
+row; pass `zooms=` or `complete_from=` to override. Zooms are consecutive and
+run from 0 to 24, the depth of the Hilbert key, so every tile is one interval
+of keys; the writer refuses others before it starts.
 
 ### Attributes
 
@@ -88,7 +88,7 @@ leaves out the geometry and covering columns, and `row` and `geometry`, which
 `attributes=()` (`--attributes none`) keeps none, and a list keeps the
 columns it names, as names or `(name, Arrow type)` pairs. On the Denver
 buildings below `'auto'` keeps `height` and `class` and leaves out the string
-`id`. A string with at most 256 distinct values is held as an index into the
+`id`. A string with 1 to 256 distinct values is held as an index into the
 `values` the metadata lists.
 
 The metadata also has a `summary` for each attribute, computed over the rows
@@ -106,7 +106,7 @@ Every summary is in the `lod_columns` metadata in the file's footer. A reader
 also gets a copy in its first request, so a map can choose a colour ramp or a
 legend before it requests a tile. That first request reads a fixed 16 KiB
 block at the start of the file, which also contains the top of the index. In
-the Japan buildings file of the [hosted comparison](hosted-comparison.md), the
+the Japan buildings file of the [comparison](comparison.md#files), the
 17 summaries take about 700 of the 8,000 bytes used in that block. The writer
 limits the summaries in the block to 4 KiB and leaves out the largest ones if
 they would take more. Summaries can push part of the index out of the block,
@@ -142,65 +142,19 @@ source columns named there. A request that names none, to `renderTile`, the
 worker behind `vectorSource` and `tileUrl`, or `tiled-geoparquet-serve`, gets
 geometry only, so a map names the attributes it styles by.
 
-On 1,753,860 Denver buildings written with
-`chain(drop_smallest(850_000), tiny_polygons())`, a cold tile on a fresh
-reader and the next tile east on the same reader, read through the spatial
-index (requests / KB; rounds are two cold and one next except where given in
-brackets). `columns` keeps `height`; `auto`, the default, keeps `height` and
-`class`, and reads a tile styled by `height`, or by nothing, as `columns`
-does, within 0.2%; `none` keeps no attribute and reads `height` from its
-source column:
-
-| zoom | tile               |   columns: geometry |   columns: `height` |       auto: `class` |              none: `height` |
-| ---- | ------------------ | ------------------: | ------------------: | ------------------: | --------------------------: |
-| 8    | metro, Denver      |   2 / 259 · 1 / 3.7 |   3 / 388 · 1 / 3.7 |   3 / 284 · 1 / 3.7 |      4 / 2253 (3) · 1 / 3.7 |
-| 11   | city, Denver       |   2 / 119 · 1 / 216 |   3 / 145 · 2 / 274 |   3 / 126 · 2 / 224 |   8 / 318 (3) · 8 / 502 (2) |
-| 12   | city, Denver       |   2 / 245 · 1 / 265 |   3 / 291 · 2 / 332 |   3 / 256 · 2 / 270 |   9 / 426 (3) · 6 / 424 (2) |
-| 13   | downtown           |   2 / 109 · 1 / 186 |   3 / 125 · 2 / 208 |   3 / 119 · 2 / 193 |   7 / 162 (3) · 7 / 214 (2) |
-| 13   | suburbs, Montbello |   2 / 138 · 1 / 166 |   3 / 159 · 2 / 188 |   3 / 148 · 2 / 173 |   7 / 197 (3) · 5 / 198 (2) |
-| 14   | downtown           |     2 / 48 · 1 / 74 |     4 / 55 · 2 / 82 |     4 / 51 · 2 / 76 |     6 / 73 (3) · 3 / 77 (2) |
-| 15   | street, downtown   | 2 / 11.7 · 1 / 15.0 | 4 / 14.7 · 2 / 16.9 | 4 / 14.2 · 2 / 15.5 | 6 / 28.5 (3) · 2 / 18.1 (2) |
-| 15   | street, Highland   |   2 / 36 · 1 / 19.4 |     4 / 44 · 2 / 21 |   4 / 40 · 2 / 19.9 |     5 / 60 (3) · 2 / 35 (2) |
-
-A tile styled by an attribute reads, beside its overview leaf and pages, the
-leaf's slot holding the attribute leaf that lists the attribute's pages, and
-the pages beside its own, in the rounds a geometry-only tile takes: one more
-request cold at zooms 8 to 13, two more at zooms 14 and 15, and one more for
-the next tile. Styled by `height`, a cold tile reads 14 to 50% more bytes
-than with geometry only, the most at zoom 8, where a tile shows 60,105
-features. At the zooms showing every row the first styled tile under an
-overview leaf reads that leaf's attribute slot, a length per overview page,
-about 2 KB at zoom 15, which is most of the 3 KB the small downtown tile
-adds there.
-
-Styled by `class`, which only `auto` keeps, a tile reads in two rounds what
-`columns` reads from the source column in three, with one to four fewer
-requests and 11 to 67% fewer bytes cold; on a reader that has styled another
-tile by it, `auto` takes two requests in one round where `columns` takes
-three to six in two. A style switch to an attribute fetches its pages over
-the tiles already drawn, never their geometry: in the session below,
-restyling six drawn zoom 13 tiles by `height` took 4 requests and 154 KB in
-two rounds, 0.26 s at 100 ms per request.
-
-The leaves under one level-one directory node lie back to back, followed by
-a block of slots: per attribute, one per leaf. A reader finds a leaf's slot
-for an attribute from the level-one node locating the leaf, so it fetches the
-slot in the leaf's request round, whatever the number of attributes, and a
-geometry-only read finds the leaves where it would in a file without
-attributes. A slot is a 16-byte header, naming the attribute leaf's length,
-the attribute and the leaf, plus the length of the largest attribute leaf of
-its directory, so a styled tile reads that many bytes per attribute and leaf,
-the slots of consecutive leaves in one range. Each time a tile needs an
-attribute leaf, the reader also fetches the attribute's leaves beside the
-other overview leaves it holds, so zooming back out over held leaves costs no
-extra round.
-
-An overview page none of whose rows has a value of an attribute has no page
-of it: its attribute leaf lists it with length 0, a styled tile fetches
-nothing for it and gives its own features there a null, and a tile whose
-overview pages all lack a value requests no page of the attribute. In the
-attribute column, each run of such overview pages in a row group shares one
-page of nulls, so an attribute valued on few rows costs few page headers.
+A tile styled by an attribute reads the attribute's entry in the directory
+and its pages beside the tile's geometry, in the request rounds the geometry
+takes. On 1.75 million Denver buildings a cold tile styled by `height` takes
+one more request than with geometry only at zooms 8 to 13 and two more at
+zooms 14 and 15, and reads 14 to 50% more bytes; from zoom 11 the next tile
+takes one more request. A style switch fetches the new attribute's pages for
+the tiles already drawn, never their geometry. Boundary copies pack every
+attribute, so a geometry-only tile reads their values too: at most 1.3% more
+bytes with two attributes, and 5 to 12% more at zooms 12 to 15 with eight.
+Where a source has many cheap columns and styles use few, name those in
+`attributes`.
+[What attribute columns cost](design-alternatives.md#what-attribute-columns-cost)
+has the measurements.
 
 In a file with the spatial index, an attribute column holds the values of
 the rows an overview page shows on that page's leading rows, in their order,
@@ -215,53 +169,17 @@ value with a row it does not describe and reports no error. A row's
 attribute is in the source column of the same name, which holds every row's
 on its own row.
 
-Replaying a 14-step session with 100 ms per request, `auto` took 2.10 s, and
-2.20 s with six connections per host, in 31 requests and 5.26 MB; `columns`,
-which reads `class` from its source column, took 2.29 s and 2.56 s in 49
-requests and 5.56 MB, and PMTiles 0.66 s and 0.96 s in 41 requests and
-8.09 MB.
-
-On 155,597,622 US buildings read from S3, with eight float attributes kept
-as half floats, a cold 1280 by 800 view styled by two of them took 3
-requests at zoom 4, 11 at zoom 7, 15 at zoom 11 and 8 to 11 at zooms 13 and
-14, in two rounds, reading 1.52 MB at zoom 4, 0.58 MB at zoom 7 and 3.89 MB
-at zoom 11, against 2 to 5 requests and 0.85, 0.36 and 3.12 MB with geometry
-only. The file is 24.4 GB.
-
-Decoding and encoding a warm tile styled by `height` takes 0.1 to 3.5 ms
-more than with geometry only from zoom 11, and 20.0 ms against 11.7 ms for
-the 60,105 features of the zoom 8 tile; `class` as an attribute takes 30 to
-84% less than reading it from the source column. A decoded tile holds arrays
-only for the attributes it has read, and geometry-only tiles of `columns`
-and `auto` decode within 0.1 ms of `none` ones from zoom 11 and within
-0.5 ms at zoom 8. The files are 253.2 MB `columns`, 254.8 MB `auto` and
-243.7 MB `none`. `height` takes 9.0 MB of attribute columns and 0.5 MB in
-boundary copies, since every LOD, those showing every row too, holds its own
-column of each attribute.
-
-Boundary copies pack the attributes, so a geometry-only tile still reads
-their values: at most 1.3% more bytes with `height` and `class` than with no
-attributes. With six more numeric columns, eight attributes in all
-(364.4 MB against 271.5 MB with none), a geometry-only tile takes the
-requests and rounds of the file without attributes but reads 2% more bytes
-at zoom 11 and 5 to 12% more at zooms 12 to 15, and a styled tile takes the
-requests and rounds it takes with two attributes. Where a source has many
-cheap columns and styles use few, name those in `attributes`.
-
 Columns that are not attributes, such as strings with more than 256
 distinct values, can be read with `readRow`, batched with `readColumns`, or
 named in a tile's `properties`. The spatial index gives every flat source
 column a directory of its pages by row, so a tile styled by one fetches that
 column's pages for its own rows alongside its geometry pages, then the pages
-holding its boundary copies' rows once it is decoded. In the table above,
-`none` styled by `height` from its source column takes 5 or 6 requests in 3
-rounds cold at zooms 14 and 15, where the attribute takes 4 in 2, and the
-next tile over 2 or 3 requests in 2 rounds, where the attribute takes 2 in 1.
-At sparse zooms the source pages also hold rows thinning dropped, so such a
-tile fetches more bytes: 318 KB against 145 KB at zoom 11, and 2,253 KB
-against 388 KB at zoom 8.
-Nested columns read the footer first. Thinning functions can read any source
-column via `columns=` without keeping it as an attribute.
+holding its boundary copies' rows once it is decoded. That takes one more
+request round than an attribute and, at zooms where thinning drops most
+rows, up to 5.8 times the bytes on the Denver buildings. Nested columns read
+the footer first. Thinning functions can read any source column via
+`columns=` without keeping it as an attribute.
+
 Integer attributes are packed as int64 on boundary copies, so the writer
 refuses a uint64 attribute value above 2^63 - 1, on any row, with an error
 naming the column and the value. The JS reader decodes them as JavaScript
@@ -577,15 +495,16 @@ asset to deploy. zstd pages decode with WebAssembly, embedded in the bundle as a
 `script-src` and `data:` in `connect-src`, or pages decode in JavaScript, about
 three times slower.
 
-The server must answer HTTP range requests with CORS and expose
-`Content-Range`, which a suitably configured object store can do. `tileUrl`
+The server must answer HTTP range requests with CORS, which a suitably
+configured object store can do. `tileUrl`
 also takes `pointLayer` for point datasets. Opening probes the first 16 KiB for
 the spatial index. Indexed files need only that request, and no tile, exact
 geometry included, reads their footer. A row read of a flat column fetches a
 leaf of that column's row directory, once per reader, and the page holding the
 row; a nested column opens the footer in one more request, and files without
-the index read a 64 KiB tail and any missing footer bytes. A HEAD is needed only when CORS hides
-`Content-Range`.
+the index read a 64 KiB tail and any missing footer bytes. An indexed file's
+root gives its size; a file without the index is sized from `Content-Range`,
+or by a HEAD when CORS hides that header.
 
 ### Serving tiles over HTTP
 
@@ -681,7 +600,10 @@ each directory kind, and retains up to 64 decoded tiles within an estimated 32 M
 style change on a loaded view reuses decoded geometry and only fetches and
 decodes the new attribute: a source column's pages by row, or a column
 attribute's pages over the tile's own rows and, the first time, the attribute
-leaf listing them; the CPU workers decode those pages as they decode tiles. A
+leaf listing them; the CPU workers decode those pages as they decode tiles.
+Each time a tile needs an attribute leaf, the reader also fetches the
+attribute's leaves beside the other overview leaves it holds, so zooming back
+out over held leaves costs no extra round. A
 file with LODs and no spatial index, read through its footer, reads a column
 attribute's own values by row once a tile is decoded, a further request round. Neighbouring tiles share pending fetches. When the last consumer of a
 pending fetch or decode leaves, that work is cancelled; completed cache entries
@@ -772,106 +694,53 @@ npm --prefix js run demo:compare -- --lod /path/current.parquet --pmtiles /path/
 
 Open the printed localhost URL. The server supports range reads without copying
 the files, binds to loopback, and adds the same selectable 0/50/100 ms delay to
-each data request. It does not simulate a bandwidth cap. A strip under the
-synchronized panes shows, for each reader, the response-body bytes and
-requests since the page loaded or since its counters were reset, what the last
-move added, and how long its pane took to draw. The strip divides the Tiled
-GeoParquet reader's bytes into the index, the shapes, each attribute column,
-and each column looked up in the table. `readCounts()` returns that breakdown
-for each file, along with the transfers that `readStats()` returns; both are
-exported from the tiles entry point. The byte counts are not wire-transfer
-measurements. A move downloads only what the page does not already have, so
-compare the totals, which cover the same path for every reader. The first view
-after a load can also be compared on its own, because every reader starts it
-with nothing held.
-The default blank background keeps basemap loading out of the
-timings; add `basemap=1` for a basemap. Map idle includes rendering and is not
-a precise first-paint measurement. The style menu lists the GeoParquet file's
+each data request. It does not simulate a bandwidth cap. The page is the one
+hosted at <https://tiled-geoparquet.pages.dev/>, and
+[the comparison](comparison.md#the-hosted-page) explains its counters, its
+**Fresh load** and **Reset counters** buttons and its cache checkbox.
+`readCounts()` returns the strip's breakdown of the Tiled GeoParquet reader's
+bytes for each file, along with the transfers that `readStats()` returns; both
+are exported from the tiles entry point.
+
+The default blank background keeps basemap loading out of the timings; add
+`basemap=1` for a basemap. Map idle includes rendering and is not a precise
+first-paint measurement. The style menu lists the GeoParquet file's
 attributes and its other source columns, except any named in a `hide=` query
-parameter, such as `hide=id`. `style=class` sets the style that the page opens with. The
-page colours an attribute from the summary in the file's metadata
+parameter, such as `hide=id`. `style=class` sets the style that the page opens
+with. The page colours an attribute from the summary in the file's metadata
 ([Attributes](#attributes)): a number by its quantiles, and a string by its
 most common values. The colours are therefore known before the first tile
 arrives. For any other column, the page takes colours from the values in view,
 or, on a page built with `demo/build-share.mjs --domains`, from the colours
-file given to that option, which accepts the output of `demo/domains.py`. A `stops=name:0,10,40` query
-parameter sets the stops for a number and can be given once per column. With
-it a style also stands on a page that shows another archive alone, as in
+file given to that option, which accepts the output of `demo/domains.py`. A
+`stops=name:0,10,40` query parameter sets the stops for a number and can be
+given once per column. With it a style also stands on a page that shows
+another archive alone, as in
 `panes=pmtiles&style=height&stops=height:2.4,4.1,6.9,8.4,17.9`, where the
-style menu has no file of this layout to list columns from. In the Japan building fixtures the
-GeoParquet file keeps 17 of its columns as attributes, the writer's default,
-among them `class`, `height` and `subtype`, the three the PMTiles archive
-holds in its tiles; `id` is read from the table's rows.
-
-Use **Fresh load** to recreate readers at the current location and style;
-**Reset counters** keeps caches warm. Browser HTTP caches can survive Fresh
-load. Pan away and return, then switch between geometry, height, and subtype to
-feel navigation and attribute reuse. The files have different thinning and
-overzoom rules, so compare visual coverage as well as speed. GeoParquet retains
-whole overview features and original source rows; this PMTiles archive stops at
-z14 and overzooms beyond it. **Copy diagnostics** reports what the page, the
-map and the reader's worker are waiting on, for a view that does not finish
-loading.
+style menu has no file of this layout to list columns from. **Copy
+diagnostics** reports what the page, the map and the reader's worker are
+waiting on, for a view that does not finish loading.
 
 ### Validation
 
 `tiled-geoparquet validate file.parquet` checks the layout metadata, the
-spatial index version in the footer and in the index root, the bbox
-covering's schema and declaration, required page indexes, and up to 2,000 rows
-of the first row group: their overview values decode, and each one's covering
-is its geometry's bounds rounded outward to float32, null exactly where the
-geometry has no finite bounds. Use `--sample-rows N` to change that quick
-sample. Use `tiled-geoparquet validate file.parquet --full` (Python:
-`validate(path, full=True)`) to decode every overview value in every row group,
-including boundary copies. Full mode checks every row's covering the same
-way, that the covering and the Hilbert key are null on the same rows, that
-polygon rings store
-at least three vertices (the closing one is implicit), that grid coordinates fit
-int32 and copies' attribute values their declared types, packed byte consumption, copy
-source ids and tile tags, finite transforms,
-standard page ranges, and the complete spatial directory against the footer and
-source keys: metadata, codecs, v1 PLAIN overview page headers, page membership
-and order, row spans, cell bounds, fences, and branch bounds. The primary
-directory is checked against the geometry's page index and covering, one row
-group at a time: its leaves hold every cell of its zoom once, each listing
-every page with a row whose box reaches the leaf's tiles, cut into the same
-runs wherever it is listed; each run's box is the union of its rows' covering
-boxes and holds a row with an extent. The row directories list exactly the flat
-columns whose pages decode on their own, with codecs and schema matching the
-footer, and each lists every page of its column once, in row order, with the
-byte range and rows of its offset index, under branches whose rows match the
-nodes they locate. Every indexed page is a data page, not dictionary encoded,
-of the rows its index says, its header counting a value or a null for each.
-Attributes are checked in both modes against the metadata: the attribute
-columns' struct holds a column of the declared type per attribute for
-exactly the LODs `attribute_columns` lists, each source column can give the
-declared type, and an attribute column holds values only for rows its LOD
-shows, on the leading rows of their overview pages in a file with the
-spatial index, value indexes within the attribute's `values`. Full mode also
-checks that every LOD holds the attributes, that the root gives an attribute
-slot size per directory exactly when there are attributes, that the leaves
-under each level-one node of every LOD and of the primary directory lie back
-to back followed by a slot per attribute and leaf, each holding a length
-within the slot, the attribute's position, the leaf's offset, zero padding and an attribute
-leaf, the one of each LOD leaf listing the attribute pages beside its pages
-and the one of each primary leaf the source pages over its runs' rows, that
-each directory's slots are 16 bytes longer than its largest attribute leaf
-and no directory node overlaps a slot block, and
-that attribute pages are cut where their LOD's pages are, but for one page
-per run of overview pages without a value, read from the attribute column,
-that an attribute leaf lists length 0 exactly beside those overview pages,
-and that attribute pages
-are v1 PLAIN pages, or BYTE_STREAM_SPLIT ones in a FLOAT or DOUBLE column, in
-the root's attribute codec. Files
-without a
-spatial directory get the packed-value and offset-index
-checks. This is a layout and reader contract check; it does not
-prove polygon topology or compare simplification accuracy with primary WKB. Full
-mode reads the complete data, holds one LOD column of one row group at a time,
+attributes against it, the bbox covering, the page indexes, and up to 2,000
+rows of the first row group, whose overview values must decode and whose
+coverings must be their geometries' bounds. `--sample-rows N` changes that
+sample. `tiled-geoparquet validate file.parquet --full` (Python:
+`validate(path, full=True)`) decodes every overview value in every row group,
+boundary copies included, checks every row's covering and key, and checks the
+complete spatial index against the footer. The specification lists every
+check, for [the table](../spec/SPEC.md#validation) and for
+[the spatial index](../spec/SPATIAL-INDEX.md#validation).
+
+This is a layout and reader contract check; it does not prove polygon
+topology or compare simplification accuracy with primary WKB. Full mode reads
+the complete data. It holds one LOD column of one row group at a time,
 decoding it two megabytes of packed values at a time, parses the geometry
-65,536 rows at a time, and holds one row group's covering and keys at a time,
-checking the spatial directory, held in memory, against those keys. The returned
-`mode` and `checked_non_null` describe the work performed.
+65,536 rows at a time, and holds one row group's covering and keys at a time
+beside the spatial directory. The returned `mode` and `checked_non_null`
+describe the work performed.
 
 ### Tile sizes
 
@@ -909,7 +778,7 @@ A tile's bytes are the pages the reader fetches for it: every page of the
 zoom's LOD whose cells meet the tile's key interval, counted whole, boundary
 copies included. The directory nodes that locate those pages are not counted,
 nor are source columns read for columns that are not attributes. In a
-file with attributes a second line per zoom gives, for each, the median
+file with attributes the `write()` log adds a line per zoom that has tiles giving, for each, the median
 bytes of its pages over a tile's own rows, which a tile styled by it fetches
 beside these, none for an overview page without a value; `tile_sizes`
 returns them under `attributes`, with the maximum. A tile is listed when the directory has a keyed row inside it.
@@ -1033,7 +902,7 @@ low-level wrapped values. The same logical paths work in `readFeatures`
 A second renderer is hosted at
 <https://tiled-geoparquet.pages.dev/deck/> and runnable locally at
 `http://localhost:8091/demo/deck/index.html?url=/buildings.lod.parquet` after
-`npm --prefix js run demo`. `demo/deck/main.js` bundles deck.gl 9.1 with the
+`npm --prefix js run demo`. `demo/deck/main.js` bundles deck.gl with the
 GeoArrow deck.gl layers under a `TileLayer`: each tile reads its extent as a
 `readFeatures` batch at the tile's zoom, converts it to a GeoArrow table, and
 renders through `GeoArrowPolygonLayer` (or the path and scatterplot layers

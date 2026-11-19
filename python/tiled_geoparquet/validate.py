@@ -17,11 +17,15 @@ import shapely
 from ._tile_sizes import _root, tile_sizes
 from .encoding import (
     ENCODING,
+    INDEX_KEY_DEPTH,
     INT32,
     MAX_ATTRIBUTES,
+    ORDER,
     PACK_VERSION,
     SUMMARY_QUANTILES,
+    TILE_SIZE,
     check_index_version,
+    check_zooms,
     column_type,
     is_attribute_type,
     is_compatible_version,
@@ -44,6 +48,9 @@ from .writer import LOD_KEY, LOD_VERSION
 BOUNDS = ('xmin', 'ymin', 'xmax', 'ymax')
 # rows of covering and primary geometry parsed at a time
 COVERING_BATCH_ROWS = 65_536
+
+# the key order has reached its null keys, which every keyed row precedes
+NULL_KEYS = float('inf')
 
 
 class ValidationError(Exception):
@@ -70,11 +77,12 @@ def validate(path: str | Path, sample_rows: int = 2000, *, full: bool = False) -
     lod = geo.get(LOD_KEY)
     if not lod:
         raise ValidationError(f'no geo.{LOD_KEY} metadata')
-    if not is_compatible_version(lod.get('version', '')):
-        raise ValidationError(f'version {lod.get("version")} is not compatible with {LOD_VERSION}')
+    version = lod.get('version')
+    if not isinstance(version, str) or not is_compatible_version(version):
+        raise ValidationError(f'version {version} is not compatible with {LOD_VERSION}')
     if lod.get('encoding') != ENCODING:
         raise ValidationError(f'geometry encoding {lod.get("encoding")!r} is not {ENCODING}')
-    if lod.get('pack_version') != PACK_VERSION:
+    if type(lod.get('pack_version')) is not int or lod['pack_version'] != PACK_VERSION:
         raise ValidationError(f'pack_version {lod.get("pack_version")!r} is not {PACK_VERSION}')
     try:
         indexed = check_index_version(f)
@@ -93,7 +101,10 @@ def validate(path: str | Path, sample_rows: int = 2000, *, full: bool = False) -
         )
     if md.num_row_groups == 0 or md.num_rows == 0:
         raise ValidationError('empty file: an empty dataset has no overviews')
-    column = lod.get('column', 'lod')
+    _check_declared(lod)
+    if indexed:
+        _check_root_copy(path, lod)
+    column = lod.get('column')
     names = f.schema_arrow.names
     if column not in names:
         raise ValidationError(f'LOD column {column} missing')
@@ -118,9 +129,20 @@ def validate(path: str | Path, sample_rows: int = 2000, *, full: bool = False) -
     key_column = key.get('column') if isinstance(key, dict) else None
     if key_column not in names:
         raise ValidationError(f'key column {key_column} missing')
-    lods = lod.get('lods') or {}
-    if not lods:
+    key_field = f.schema_arrow.field(key_column)
+    if not (pa.types.is_int64(key_field.type) and key_field.nullable):
+        raise ValidationError(f'key column {key_column} must be a nullable int64 column')
+    lods = lod.get('lods')
+    if not isinstance(lods, dict) or not lods:
         raise ValidationError('no lods declared')
+    try:
+        check_zooms(lod)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    if indexed and key['depth'] > INDEX_KEY_DEPTH:
+        raise ValidationError(
+            f'key depth {key["depth"]} is past {INDEX_KEY_DEPTH}, the most the spatial index holds'
+        )
     struct = f.schema_arrow.field(column)
     if struct.nullable:
         raise ValidationError(f'{column} must be a required struct')
@@ -141,17 +163,23 @@ def validate(path: str | Path, sample_rows: int = 2000, *, full: bool = False) -
             if not (
                 isinstance(v, list)
                 and len(v) == 2
-                and all(isinstance(x, (int, float)) and math.isfinite(x) for x in v)
+                and all(
+                    isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+                    for x in v
+                )
             ):
                 raise ValidationError(f'lod {name}: {key} must be an [x, y] pair')
         if min(child['scale']) <= 0:
             raise ValidationError(f'lod {name}: scale must be positive')
         placeholder = child.get('placeholder')
         if not (
-            isinstance(placeholder, (int, float)) and math.isfinite(placeholder) and placeholder > 0
+            isinstance(placeholder, (int, float))
+            and not isinstance(placeholder, bool)
+            and math.isfinite(placeholder)
+            and placeholder > 0
         ):
             raise ValidationError(f'lod {name}: placeholder must be a positive width in grid cells')
-    _check_attributes(lod.get('attributes', []), f.metadata.num_rows)
+    _check_attributes(lod['attributes'], f.metadata.num_rows)
     columns = _check_attribute_columns(f.schema_arrow, lod)
     paths = [f.schema.column(i).path for i in range(len(f.schema))]
     shared = sorted(path for path in set(paths) if paths.count(path) > 1)
@@ -163,7 +191,7 @@ def validate(path: str | Path, sample_rows: int = 2000, *, full: bool = False) -
         rg = md.row_group(g)
         for i in range(rg.num_columns):
             c = rg.column(i)
-            if c.path_in_schema.startswith('bbox.'):
+            if c.path_in_schema.startswith('bbox.') or c.path_in_schema == key_column:
                 if not c.is_stats_set:
                     raise ValidationError(f'row group {g}: {c.path_in_schema} has no statistics')
                 if not c.has_column_index:
@@ -179,9 +207,11 @@ def validate(path: str | Path, sample_rows: int = 2000, *, full: bool = False) -
     checked = dict.fromkeys(lods, 0)
     groups = range(md.num_row_groups) if full else range(1)
     wide = [a['name'] for a in lod.get('attributes', []) if a['type'] == 'uint64']
+    finest = next(name for name, child in lods.items() if lod['zooms'][-1] in child['zooms'])
+    last_key = -1
     for group in groups:
         if full:
-            _check_key_covering(f, group, key_column)
+            keyed, last_key = _check_key_covering(f, group, key_column, last_key)
             _check_coverings(f, geometry, group)
         # an LOD without an attribute column of its own shows the source column's values
         for name in wide:
@@ -212,6 +242,18 @@ def validate(path: str | Path, sample_rows: int = 2000, *, full: bool = False) -
                 raise ValidationError(
                     f'row group {group}, row {exc.row}, lod {name}: invalid packed row: {exc}'
                 ) from exc
+            if full:
+                stray = np.flatnonzero(shown & ~keyed)
+                if len(stray):
+                    raise ValidationError(
+                        f'row group {group}, row {stray[0]}, lod {name}: '
+                        'a row without finite bounds is shown'
+                    )
+                missing = np.flatnonzero(keyed & ~shown) if name == finest else ()
+                if len(missing):
+                    raise ValidationError(
+                        f'row group {group}, row {missing[0]}: not shown at the finest LOD {name}'
+                    )
             if name in column_lods:
                 bounds = pages(group, f'{column}.{name}') if pages else None
                 _check_column_values(f, group, lod, name, columns, shown, bounds)
@@ -247,7 +289,7 @@ def _check_attribute_columns(schema: pa.Schema, lod: dict) -> list[str]:
     columns = lod.get('attributes', [])
     spec = lod.get('attribute_columns')
     if not columns:
-        if spec is not None:
+        if 'attribute_columns' in lod:
             raise ValidationError('attribute_columns without an attribute')
         return []
     if not isinstance(spec, dict) or not isinstance(spec.get('column'), str):
@@ -400,7 +442,7 @@ def _check_attributes(attributes, rows: int | None = None) -> None:
                 'or string type'
             )
         values = a.get('values')
-        if values is not None and (
+        if 'values' in a and (
             not (pa.types.is_string(t) or pa.types.is_large_string(t))
             or not isinstance(values, list)
             or not all(isinstance(v, str) for v in values)
@@ -564,12 +606,29 @@ def _outward(bounds: np.ndarray) -> np.ndarray:
     return np.where(past, np.nextafter(rounded, outward), rounded)
 
 
-def _check_key_covering(parquet: pq.ParquetFile, group: int, key_column: str) -> None:
+def _check_declared(lod: dict) -> None:
+    """The required fields of `lod_columns` that locate nothing in the file."""
+    if lod.get('order') != ORDER:
+        raise ValidationError(f'order {lod.get("order")!r} is not {ORDER}')
+    size = lod.get('tile_size')
+    if type(size) is not int or size != TILE_SIZE:
+        raise ValidationError(f'tile_size {size!r} is not {TILE_SIZE}')
+    if not isinstance(lod.get('thinning'), dict):
+        raise ValidationError('thinning must be an object describing the rule')
+    if not isinstance(lod.get('attributes'), list):
+        raise ValidationError('attributes must be a list, empty without attributes')
+
+
+def _check_key_covering(parquet: pq.ParquetFile, group: int, key_column: str, last_key: int):
     """Raise unless, in row group `group`, the covering and the Hilbert key
-    are null on the same rows: those whose geometry has no finite bounds."""
+    are null on the same rows, those whose geometry has no finite bounds, and
+    the keys ascend from `last_key`, the greatest of the row groups before,
+    with the null keys after them. Returns which rows have a key, and the
+    greatest key so far."""
     table = parquet.read_row_group(group, columns=['bbox', key_column])
-    covered = table.column('bbox').is_valid().to_numpy()
-    keyed = table.column(key_column).is_valid().to_numpy()
+    covered = table.column('bbox').is_valid().to_numpy(zero_copy_only=False)
+    keys = table.column(key_column).combine_chunks()
+    keyed = keys.is_valid().to_numpy(zero_copy_only=False)
     wrong = np.flatnonzero(covered != keyed)
     if len(wrong):
         row = wrong[0]
@@ -578,6 +637,17 @@ def _check_key_covering(parquet: pq.ParquetFile, group: int, key_column: str) ->
         else:
             message = 'bbox covering on a row with a null Hilbert key'
         raise ValidationError(f'row group {group}, row {row}: {message}')
+    count = int(keyed.sum())
+    if not keyed[:count].all() or (last_key == NULL_KEYS and count):
+        row = int(np.flatnonzero(keyed)[-1]) if last_key != NULL_KEYS else 0
+        raise ValidationError(f'row group {group}, row {row}: a Hilbert key after a null key')
+    values = keys.drop_null().to_numpy()
+    if count and (values[0] < last_key or (np.diff(values) < 0).any()):
+        row = 0 if values[0] < last_key else int(np.flatnonzero(np.diff(values) < 0)[0]) + 1
+        raise ValidationError(f'row group {group}, row {row}: Hilbert keys do not ascend')
+    if count < len(keyed):
+        return keyed, NULL_KEYS
+    return keyed, int(values[-1]) if count else last_key
 
 
 def _check_root_version(path) -> None:
@@ -589,6 +659,17 @@ def _check_root_version(path) -> None:
                 raise ValueError('spatial index advertised but bootstrap magic missing')
     except Exception as exc:
         raise ValidationError(f'spatial index: {exc}') from exc
+
+
+def _check_root_copy(path, lod: dict) -> None:
+    """Raise unless the index root holds a copy of the footer's LOD metadata,
+    which a map reads in the footer's place."""
+    from ._validate_index import _copies
+
+    with open(path, 'rb') as source:
+        root = _root(source)
+    if not _copies(root.get('lod'), lod):
+        raise ValidationError('spatial index: spatial root metadata disagrees with footer')
 
 
 def _check_spatial_index(path, parquet, lod):

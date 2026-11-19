@@ -17,6 +17,13 @@ import pyarrow as pa
 LOD_VERSION = '0.2.0'
 ENCODING = 'packed'
 PACK_VERSION = 3
+ORDER = 'hilbert_webmercator'
+# the pixels of a tile that zooms, margins and placeholder sizes are counted in
+TILE_SIZE = 512
+# a copy's tile tag holds x * 2^zoom + y in 48 bits
+MAX_ZOOM = 24
+# keys of a deeper curve are not exact JavaScript integers
+INDEX_KEY_DEPTH = 26
 # the spatial index profile version, which the footer's `lod_spatial_index` and the root state
 INDEX_VERSION = 4
 # a copy's presence bitmap is one 64-bit varint, a bit per attribute
@@ -48,6 +55,39 @@ def check_format(lod: dict) -> None:
             f'lod_columns encoding {lod.get("encoding")}/{lod.get("pack_version")} is not '
             f'{ENCODING}/{PACK_VERSION}'
         )
+
+
+def _run(zooms) -> bool:
+    """Whether `zooms` is a non-empty list of consecutive ascending integers."""
+    return (
+        isinstance(zooms, list)
+        and bool(zooms)
+        and all(type(z) is int for z in zooms)
+        and zooms == list(range(zooms[0], zooms[0] + len(zooms)))
+    )
+
+
+def check_zooms(lod: dict) -> None:
+    """Raise ValueError unless `lod`, a file's `lod_columns` metadata, serves a
+    contiguous run of zooms within the key's depth and MAX_ZOOM, each zoom in
+    exactly one LOD."""
+    key, lods = lod.get('key'), lod.get('lods')
+    depth = key.get('depth') if isinstance(key, dict) else None
+    if type(depth) is not int or depth < 0:
+        raise ValueError(f'key depth {depth!r} is not a non-negative integer')
+    if not isinstance(lods, dict) or not all(isinstance(c, dict) for c in lods.values()):
+        raise ValueError('lods must map each LOD name to an object')
+    finest = min(depth, MAX_ZOOM)
+    zooms = lod.get('zooms')
+    if not (_run(zooms) and zooms[0] >= 0 and zooms[-1] <= finest):
+        raise ValueError(f'zooms must be contiguous and ascending within 0..{finest}')
+    served = []
+    for name, child in lods.items():
+        if not _run(child.get('zooms')):
+            raise ValueError(f'lod {name}: zooms must be contiguous and ascending')
+        served += child['zooms']
+    if sorted(served) != zooms:
+        raise ValueError('every zoom in zooms must be in exactly one LOD')
 
 
 def check_index_version(parquet) -> bool:

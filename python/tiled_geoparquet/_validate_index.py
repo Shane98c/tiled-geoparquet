@@ -44,6 +44,12 @@ from .unpack import shown_rows
 SPLIT_TYPES = (4, 5)
 
 
+def _same(a, b) -> bool:
+    """Whether two JSON values are the same value of the same type: `1`, `1.0`
+    and `true` differ, as they do to a reader."""
+    return json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
+
+
 def _copies(held, lod) -> bool:
     """Whether a root's `held` is a copy of the footer's LOD metadata `lod`:
     the same, but for the attribute summaries it leaves out."""
@@ -51,10 +57,10 @@ def _copies(held, lod) -> bool:
         return False
     mine, declared = held['attributes'], lod['attributes']
     return (
-        {**held, 'attributes': None} == {**lod, 'attributes': None}
+        _same({**held, 'attributes': None}, {**lod, 'attributes': None})
         and len(mine) == len(declared)
         and all(
-            a == b or a == {k: v for k, v in b.items() if k != 'summary'}
+            _same(a, b) or _same(a, {k: v for k, v in b.items() if k != 'summary'})
             for a, b in zip(mine, declared, strict=True)
         )
     )

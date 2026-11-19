@@ -25,14 +25,15 @@ packages take the format's version, so 0.2.x reads and writes format 0.2.
 ## demo
 
 See the [demo](https://tiled-geoparquet.pages.dev/), which shows Tiled
-GeoParquet and PMTiles built from the same Japan building source. COGP and
-Esri panes are optional: select their checkboxes and click **Apply readers**.
+GeoParquet and PMTiles built from the same Japan building source. Panes for
+two other GeoParquet overview formats, COGP and Esri's Spatially Optimized
+Parquet, are optional: select their checkboxes and click **Apply readers**.
 Start over Tokyo, zoom out to see the overviews, then zoom into a
 neighbourhood. Pan the maps together and compare the request and byte
-counters. The style menu lists every flat column of the table: switch from
+counters. The style menu lists the source's flat columns except `id`: switch from
 geometry to any of them to exercise more than geometry delivery. The browser
 reads ranges from the hosted files; nothing needs downloading. See the
-[hosted comparison notes](docs/hosted-comparison.md) for what the counters
+[comparison](docs/comparison.md#the-hosted-page) for what the counters
 measure and where the files come from. Code for the demo is in the `/demo`
 folder.
 
@@ -43,6 +44,21 @@ for queries and new styles. This project explores whether one file can do both
 with competitive map access. The original geometry appears once in the source
 column. Display geometry, per-zoom attribute values, and tile-boundary copies
 take extra space, but there is no separate archive of pre-encoded MVT tiles.
+
+![Layout of a Tiled GeoParquet file: a table with source and overview columns, and the byte ranges a map reads for one tile](docs/layout.svg)
+
+The figure draws the file as a table and as bytes. The row count and column
+sizes are those of the Japan buildings file used in
+[measurements](#measurements); which rows are filled and how wide the byte
+segments are is schematic. It shows the simplest read of an overview tile
+from a newly opened file, in three numbered steps: the first 16 KB of the
+file, which hold the index root and are read once; a leaf of the spatial
+directory, the file's own index of its pages; and the tile's pages in the
+overview columns. A tile that spans several leaves reads each of them, and a
+leaf the reader already holds costs no request. A map style that uses an
+attribute kept in the overviews also reads that attribute's entry in the
+directory and its pages. DuckDB and PyArrow open the file through its Parquet
+footer. The tile read uses neither the footer nor Parquet's page indexes.
 
 A map over the file can style by any column of the table without the file
 being rebuilt. The writer keeps each cheap column per zoom, which a styled
@@ -63,8 +79,8 @@ Input is GeoParquet with WKB geometry in longitude/latitude (OGC:CRS84 or
 EPSG:4326 in x/y order), one geometry family per file. The overviews are
 stored in Web Mercator metres.
 
-Host the final file at an immutable URL with HTTP Range support and CORS
-exposing `Content-Range`. A generic Parquet rewrite loses the spatial access
+Host the final file at an immutable URL with HTTP Range support and CORS. A
+generic Parquet rewrite loses the spatial access
 path; rebuild from the source GeoParquet instead.
 
 ## install
@@ -131,14 +147,18 @@ duckdb.sql("""
 """).show()
 ```
 
-This query counts source features, not the thinned overviews.
+The table has one row per source feature, so this counts the original
+buildings.
 
-Analysis reads the source columns and nothing else. The `lod` and
-`lod_attributes` columns are tile payloads for the map reader: leave them out
-of every query. `lod` is packed binary. `lod_attributes` looks like ordinary
-typed values, but in an indexed file each value sits on a leading row of its
-page and not on the row it describes, so a query that reads it pairs values
-with the wrong rows and reports no error.
+The file has more columns for the map reader, which hold the overview tiles:
+`lod` (level of detail), and `lod_attributes` when the file keeps attributes.
+`lod` is packed binary geometry, and `lod_attributes` holds attribute values
+for each zoom level. Its fields are named like the source columns, but in a
+file made by `write()` the values are grouped at the start of each page and
+not placed on the rows they describe ([Attributes](docs/usage.md#attributes)). A
+query has no use for either column, so name the columns it needs, or drop
+them with `SELECT * EXCLUDE (lod, lod_attributes)` in DuckDB (`EXCLUDE (lod)`
+for a file without attributes) or a `columns=` list in PyArrow.
 
 ### view it locally
 
@@ -222,10 +242,10 @@ something next to the feature counts. COGP's conversion keeps very few
 features at coarse levels; Esri's reader returns every feature in the extent,
 simplified; PMTiles stops at z14 and serves the overzoomed parent at z15.
 Baked PMTiles carries the PMTiles file's tiles through z13 and builds tiles
-from the Parquet rows from z14. For those its page reads the file's Parquet
-footer when it loads, which is 16.37 MB of its 16.46 MB open. This layout's
-thinning budgets were calibrated against PMTiles feature counts, as the
-[Japan evaluation](docs/japan-evaluation.md) describes, so the two agree
+from the Parquet rows from z14. To build them its page reads the file's
+Parquet footer when it loads, which is 16.37 MB of its 16.46 MB open. This layout's
+thinning budgets were calibrated against PMTiles feature counts
+([the build](docs/comparison.md#the-tiled-geoparquet-build)), so the two agree
 within a few percent where both serve native tiles. Its attributes are
 columns of their own, which a tile reads in further requests when a style
 names them. When its tiles are read geometry only, each one in the table
@@ -276,25 +296,21 @@ request counts and transfer sizes, not a general speed ranking.
   column as a column per zoom level, which a tile reads only when it names
   the attribute. On 1.75 million Denver buildings, a cold tile styled by
   `height` takes one or two more requests than with geometry only, in the
-  same two rounds, and reads 14 to 50% more bytes; the next tile takes one
-  more request. On 155.6 million US buildings read from S3 in Chrome, a first
-  view styled by two half-float attributes took 3 to 15 requests in two
-  rounds, against 2 to 5 requests with geometry only. By default a tile's
-  requests are sent past the browser's HTTP cache, which answers the range
-  requests of one URL one at a time
-  ([Requests](docs/usage.md#requests)); a view opened again then reads from
-  the network where the cache would answer from disk, unless `rangeParam`
-  gives each range a URL of its own, which keeps both. Switching drawn tiles
-  to an attribute fetches its pages, never their geometry: six zoom 13 tiles
-  took 4 requests, 154 KB and 0.26 s at 100 ms per request. Boundary copies
-  pack every attribute, so a geometry-only tile reads their values too, up
-  to 1.3% more bytes with two attributes and 12% more with eight. Columns
-  not kept this way, such as strings with more than 256 distinct values,
-  integer ids and nested fields, are read from the source column on demand,
-  at one more request round and, at zooms where thinning drops most rows, up
-  to 5.8 times the bytes; nested fields read the footer first.
-  [Design alternatives](docs/design-alternatives.md#where-an-attribute-sits)
-  records packing attributes into every overview row instead.
+  same two rounds, and reads 14 to 50% more bytes. Columns not kept this
+  way, such as strings with more than 256 distinct values, integer ids and
+  nested fields, are read from the source column on demand, at one more
+  request round and, at zooms where thinning drops most rows, up to 5.8
+  times the bytes.
+  [What attribute columns cost](docs/design-alternatives.md#what-attribute-columns-cost)
+  has the measurements, and
+  [where an attribute sits](docs/design-alternatives.md#where-an-attribute-sits)
+  the layouts they were chosen over.
+- **Requests go past the browser's HTTP cache.** That cache answers the
+  range requests of one URL one at a time, so by default a tile's requests
+  skip it, and a view opened again reads from the network where the cache
+  would answer from disk. The `rangeParam` option gives each range a URL of
+  its own, so the requests run side by side through the cache and a view
+  opened again reads from it ([Requests](docs/usage.md#requests)).
 - **Overviews are selective.** Thinning and quantization serve display; they
   are not an exact analytical summary. Whole-feature overview queries preserve
   thinning and use bbox overlap, not exact intersection. Use original geometry
@@ -313,18 +329,16 @@ request counts and transfer sizes, not a general speed ranking.
 - **Coverage and maturity.** Performance work focuses on buildings. Points and
   lines have correctness fixtures, but large overlapping polygons, antimeridian
   behaviour, unthinnable data, and broader CRS needs require further evaluation.
-  Full validation checks overview payloads and index consistency, but does not
-  prove polygon topology, source-data equality, or finest-LOD completeness.
+  Full validation checks overview payloads, index consistency and that the
+  finest overview shows every row, but does not prove polygon topology or
+  source-data equality.
 
 ## contributing
 
-Useful contributions are independent reader implementations, reproducible
-comparisons on other datasets and devices, adversarial geometry fixtures, and
-ways to simplify the layout or integrate its access ideas into the other
-overview proposals. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, tests,
-and what to include in performance reports. The [logical format](spec/SPEC.md)
-and [physical index profile](spec/SPATIAL-INDEX.md) are separate design
-surfaces for discussion.
+Issues, questions and pull requests are welcome. The format is an
+experimental draft, so feedback on the design is as useful as code, for
+example a dataset where it does poorly or an idea for making the layout
+simpler. [CONTRIBUTING.md](CONTRIBUTING.md) has setup and test instructions.
 
 ## thanks
 

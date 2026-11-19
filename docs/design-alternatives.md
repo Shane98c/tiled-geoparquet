@@ -5,6 +5,8 @@ Japan building dataset or a Tokyo subset of it. Each was built with the same
 writer and read with the same reader as the design it was compared against, so
 the numbers isolate one choice. They were measured on the reader revision of
 the time and show direction, not current values.
+[What attribute columns cost](#what-attribute-columns-cost) is the exception:
+it measures the layout the writer makes.
 
 ## Coarse prefix versus one order
 
@@ -28,7 +30,7 @@ the two files of this comparison, recorded under `prefix` in
 
 Feature counts are identical. The prefix saves bytes at the coarse zoom it
 serves alone, costs one extra request per tile at city zooms and two at
-street zooms, and doubles the requests of every neighbouring tile.
+street zooms, and doubles the requests of each neighbouring tile from z11.
 
 The benefit to readers that do not know the format is measured in QGIS 4.2
 (GDAL 3.12), rendering each file headlessly with a parallel render job and
@@ -68,6 +70,92 @@ the cold Tokyo city viewport from 256 to 209 ms with two CPU workers, or 195 ms
 with four, and a cached repeat from 125 to 69 ms. Two workers are the default
 because a third and fourth each cost a decoder and projection cache in memory;
 devices reporting at most two cores render serially.
+
+## What attribute columns cost
+
+Three files of 1,753,860 Denver buildings were written with
+`chain(drop_smallest(850_000), tiny_polygons())` and differ in their
+`attributes=` setting. `columns` keeps `height`. `auto`, the default, keeps
+`height` and `class`, and reads a tile styled by `height`, or by nothing, as
+`columns` does, within 0.2%. `none` keeps no attribute and reads `height`
+from its source column. Each cell gives a cold tile on a fresh reader and
+then the next tile east on the same reader, read through the spatial index,
+as requests / KB; rounds are two cold and one next except where given in
+brackets:
+
+| zoom | tile               |   columns: geometry |   columns: `height` |       auto: `class` |              none: `height` |
+| ---- | ------------------ | ------------------: | ------------------: | ------------------: | --------------------------: |
+| 8    | metro, Denver      |   2 / 259 · 1 / 3.7 |   3 / 388 · 1 / 3.7 |   3 / 284 · 1 / 3.7 |      4 / 2253 (3) · 1 / 3.7 |
+| 11   | city, Denver       |   2 / 119 · 1 / 216 |   3 / 145 · 2 / 274 |   3 / 126 · 2 / 224 |   8 / 318 (3) · 8 / 502 (2) |
+| 12   | city, Denver       |   2 / 245 · 1 / 265 |   3 / 291 · 2 / 332 |   3 / 256 · 2 / 270 |   9 / 426 (3) · 6 / 424 (2) |
+| 13   | downtown           |   2 / 109 · 1 / 186 |   3 / 125 · 2 / 208 |   3 / 119 · 2 / 193 |   7 / 162 (3) · 7 / 214 (2) |
+| 13   | suburbs, Montbello |   2 / 138 · 1 / 166 |   3 / 159 · 2 / 188 |   3 / 148 · 2 / 173 |   7 / 197 (3) · 5 / 198 (2) |
+| 14   | downtown           |     2 / 48 · 1 / 74 |     4 / 55 · 2 / 82 |     4 / 51 · 2 / 76 |     6 / 73 (3) · 3 / 77 (2) |
+| 15   | street, downtown   | 2 / 11.7 · 1 / 15.0 | 4 / 14.7 · 2 / 16.9 | 4 / 14.2 · 2 / 15.5 | 6 / 28.5 (3) · 2 / 18.1 (2) |
+| 15   | street, Highland   |   2 / 36 · 1 / 19.4 |     4 / 44 · 2 / 21 |   4 / 40 · 2 / 19.9 |     5 / 60 (3) · 2 / 35 (2) |
+
+A tile styled by an attribute reads, beside its overview leaf and pages, the
+leaf's slot holding the attribute leaf that lists the attribute's pages, and
+the pages beside its own, in the rounds a geometry-only tile takes: one more
+request cold at zooms 8 to 13, two more at zooms 14 and 15, and one more for
+the next tile from zoom 11. Styled by `height`, a cold tile reads 14 to 50%
+more bytes than with geometry only, the most at zoom 8, where a tile shows
+60,105 features. At the zooms showing every row the first styled tile under an
+overview leaf reads that leaf's attribute slot, a length per overview page,
+about 2 KB at zoom 15, which is most of the 3 KB the small downtown tile
+adds there.
+
+Styled by `class`, which only `auto` keeps, a tile reads in two rounds what
+`columns` reads from the source column in three, with one to four fewer
+requests and 11 to 67% fewer bytes cold; on a reader that has styled another
+tile by it, `auto` takes two requests in one round where `columns` takes
+three to six in two. A style switch to an attribute fetches its pages over
+the tiles already drawn, never their geometry: in the session below,
+restyling six drawn zoom 13 tiles by `height` took 4 requests and 154 KB in
+two rounds, 0.26 s at 100 ms per request.
+
+A column that is not an attribute is read from its source column, by row.
+In the table, `none` styled by `height` from its source column takes 5 or 6
+requests in 3 rounds cold at zooms 14 and 15, where the attribute takes 4 in
+2, and the next tile over 2 or 3 requests in 2 rounds, where the attribute
+takes 2 in 1.
+At sparse zooms the source pages also hold rows thinning dropped, so such a
+tile fetches more bytes: 318 KB against 145 KB at zoom 11, and 2,253 KB
+against 388 KB at zoom 8.
+
+Replaying a 14-step session with 100 ms added to every request
+(`benchmarks/attribute-columns/` has the route and the scripts), `auto` took
+2.10 s, and
+2.20 s with six connections per host, in 31 requests and 5.26 MB; `columns`,
+which reads `class` from its source column, took 2.29 s and 2.56 s in 49
+requests and 5.56 MB, and PMTiles 0.66 s and 0.96 s in 41 requests and
+8.09 MB.
+
+On 155,597,622 US buildings read from S3, with eight float attributes kept
+as half floats, a cold 1280 by 800 view styled by two of them took 3
+requests at zoom 4, 11 at zoom 7, 15 at zoom 11 and 8 to 11 at zooms 13 and
+14, in two rounds, reading 1.52 MB at zoom 4, 0.58 MB at zoom 7 and 3.89 MB
+at zoom 11, against 2 to 5 requests and 0.85, 0.36 and 3.12 MB with geometry
+only. The file is 24.4 GB.
+
+Decoding and encoding a warm tile styled by `height` takes 0.1 to 3.5 ms
+more than with geometry only from zoom 11, and 20.0 ms against 11.7 ms for
+the 60,105 features of the zoom 8 tile; `class` as an attribute takes 30 to
+84% less than reading it from the source column. A decoded tile holds arrays
+only for the attributes it has read, and geometry-only tiles of `columns`
+and `auto` decode within 0.1 ms of `none` ones from zoom 11 and within
+0.5 ms at zoom 8. The files are 253.2 MB `columns`, 254.8 MB `auto` and
+243.7 MB `none`. `height` takes 9.0 MB of attribute columns and 0.5 MB in
+boundary copies, since every LOD, those showing every row too, holds its own
+column of each attribute.
+
+Boundary copies pack the attributes, so a geometry-only tile still reads
+their values: at most 1.3% more bytes with `height` and `class` than with no
+attributes. With six more numeric columns, eight attributes in all
+(364.4 MB against 271.5 MB with none), a geometry-only tile takes the
+requests and rounds of the file without attributes but reads 2% more bytes
+at zoom 11 and 5 to 12% more at zooms 12 to 15, and a styled tile takes the
+requests and rounds it takes with two attributes.
 
 ## Where an attribute sits
 
@@ -117,7 +205,7 @@ the source column. Against attribute columns:
 Packing stayed ahead where tiles already held are restyled, which it does
 with no request, and for a map styled by several attributes from its first
 view whose readers are on slow links. It made every tile pay for every packed
-attribute, so the writer keeps attributes in columns alone.
+attribute, so the writer keeps attributes in columns.
 
 **A LIST column per attribute.** Beside a geometry-only payload, each overview
 row holds a list with a slot for its own value and one per boundary copy it
@@ -150,12 +238,10 @@ Choices within the column layout were measured on the same buildings:
   requests and 23.6 KB for the same source without attributes. With a
   slot block after each level-one node's leaves, both take the same
   requests and bytes.
-
 - Listing the byte ranges of the attribute leaves in the level-one directory
   nodes, beside the leaves they locate, loads both in one round with no
-  separate directory,
-  but makes every node above the leaves grow by two numbers per attribute per
-  entry. On 53.7 million Japan buildings with 17 attributes that pushed the
+  separate directory, but makes every node above the leaves grow by two
+  numbers per attribute per entry. On 53.7 million Japan buildings with 17 attributes that pushed the
   level-one nodes out of the root, and every cold geometry-only zoom 15 tile
   read three requests in three rounds, 15.4 KB, against two in two, 10.7 KB,
   without the attributes.
@@ -189,11 +275,12 @@ Every complete LOD stores every feature again, so the writer pairs complete
 zooms: one LOD on the finer zoom's grid serves both. The Japan file serves z14
 and z15 from one z15-grid LOD and stops there. Past it the reader draws the
 primary geometry, and a map source whose `maxzoom` is 15 overzooms z15, as the
-hosted demo does.
-That grid has four cells per z15 pixel, so two per pixel at z16 and one at
-z17. A z16 LOD would add 1.11 GB, every feature again, for those views. Serving all complete zooms from one payload suits small files, and
-the writer does so below `single_lod_bytes`; larger files pair zooms because a
-cold read at the coarser zoom would read the finest grid's geometry.
+hosted demo does. That grid has four cells per z15 pixel, so two per pixel at
+z16 and one at z17. A z16 LOD would add 1.11 GB, every feature again, for
+those views. Serving all complete zooms from one payload suits small files,
+and the writer does so below `single_lod_bytes`; larger files pair zooms
+because a cold read at the coarser zoom would read the finest grid's
+geometry.
 
 ## Standard geometry encodings
 

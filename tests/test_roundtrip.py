@@ -929,11 +929,22 @@ def test_zooms_past_the_key_depth_are_refused_before_sorting(tmp_path):
     for zooms in ([KEY_DEPTH, KEY_DEPTH + 1], [-1, 0]):
         with pytest.raises(ValueError, match='Hilbert key depth'):
             write(source, tmp_path / 'deep.lod.parquet', zooms=zooms, log=print)
+    for zooms in ([8, 10], [9, 8], []):
+        with pytest.raises(ValueError, match='consecutive and ascending'):
+            write(source, tmp_path / 'deep.lod.parquet', zooms=zooms, log=print)
+    for zooms in ([True], [8.0], ['8']):
+        with pytest.raises(ValueError, match='zooms must be integers'):
+            write(source, tmp_path / 'deep.lod.parquet', zooms=zooms, log=print)
+    with pytest.raises(ValueError, match="'auto' or a list of zooms"):
+        write(source, tmp_path / 'deep.lod.parquet', zooms='8', log=print)
+    for pixels in (0, -1, float('nan'), True):
+        with pytest.raises(ValueError, match='placeholder_pixels must be a positive number'):
+            write(source, tmp_path / 'deep.lod.parquet', placeholder_pixels=pixels, log=print)
     assert list(tmp_path.iterdir()) == [source]
     out = write(
         source,
         tmp_path / 'deep.lod.parquet',
-        zooms=[KEY_DEPTH],
+        zooms=iter(np.array([KEY_DEPTH])),
         complete_from=KEY_DEPTH,
         workers=1,
         log=lambda *_: None,
@@ -942,6 +953,29 @@ def test_zooms_past_the_key_depth_are_refused_before_sorting(tmp_path):
     (blob,) = pq.read_table(out).column('lod').combine_chunks().field(f'f{KEY_DEPTH}').to_pylist()
     (copy,) = Unpacker(blob, 'MultiPolygon', []).row()['spill']
     assert copy['tile'] >> 48 == KEY_DEPTH
+
+
+@pytest.mark.parametrize(
+    'geometries, kind',
+    [
+        ([shapely.Point(-105, 39.7)], 'Point'),
+        ([shapely.LineString([(-105, 39.7), (-105, 39.7)])], 'LineString'),
+        ([shapely.Polygon([(-105, 39.7)] * 4), shapely.box(-105, 39.7, -104.9, 39.8)], 'Polygon'),
+    ],
+)
+def test_a_shape_of_no_extent_is_shown_at_the_finest_zoom(tmp_path, geometries, kind):
+    """One point gives the guessed zooms no extent, and a line of no length
+    or a polygon of no area has no centroid: each is still a row with finite
+    bounds, which the finest zoom shows."""
+    source = geoparquet(
+        tmp_path / 'flat.parquet',
+        pa.table({'geometry': pa.array(list(shapely.to_wkb(geometries)), pa.binary())}),
+        [kind],
+    )
+    out = write(source, tmp_path / 'flat.lod.parquet', workers=1, log=lambda *_: None)
+    validate(out, full=True)
+    lod = json.loads(pq.read_schema(out).metadata[b'geo'])['lod_columns']
+    assert len(read_overview(out, lod['zooms'][-1])) == len(geometries)
 
 
 @pytest.mark.parametrize('count', [DICTIONARY_MAX - 2, DICTIONARY_MAX - 1, DICTIONARY_MAX])

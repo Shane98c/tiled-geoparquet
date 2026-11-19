@@ -43,5 +43,5 @@ Esri's SOP example. The root software license does not license that data.
 Consult the [Overture attribution documentation](https://docs.overturemaps.org/attribution/)
 and the source records for dataset-specific attribution and terms. Benchmark
 archive versions, sizes, checksums, and links are in
-[the provenance record](docs/hosted-comparison.md). No large data files are included
+[the comparison](docs/comparison.md#files). No large data files are included
 in this source repository.

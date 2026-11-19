@@ -1,0 +1,156 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 612" width="800" height="612" role="img" aria-labelledby="t d">
+<title id="t">Layout of a Tiled GeoParquet file</title>
+<desc id="d">The file drawn as a table and as bytes. In the table, rows follow a Hilbert curve and the source columns hold every row. Each overview column serves one or more zooms. It holds packed geometry for the rows shown at those zooms. This example shows fewer rows at coarse zooms, and the finest overview shows every feature. The rows centred in one tile are one run at every zoom. To draw an overview tile, a map reads the first 16 KB of the file once, then a leaf of the spatial directory, then the pages that leaf lists.</desc>
+<style>
+  .bg { fill: #ffffff }
+  .ink { fill: #1b1e23 }
+  .dim { fill: #666b73 }
+  .on { fill: #1b1e23 }
+  .inv { fill: #ffffff }
+  .stroke { stroke: #1b1e23; fill: none }
+  .src { fill: #c7ccd4 }
+  .ovr { fill: #64b9c4 }
+  .att { fill: #64b9c4; fill-opacity: .42 }
+  .idx { fill: #bc85d9 }
+  .tile { fill: #ea9755 }
+  .tilebox { stroke: #ea9755; fill: none }
+  .null { stroke: #d5d8dd; fill: none }
+  .gap { stroke: #ffffff }
+  text { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; font-size: 12px }
+  .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px }
+  .h { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10.5px; letter-spacing: .09em }
+  .s { font-size: 11px }
+  .n { font-size: 11px; font-weight: 700 }
+  @media (prefers-color-scheme: dark) {
+    .bg { fill: #1b1e23 }
+    .ink { fill: #ebebec }
+    .dim { fill: #9ba1aa }
+    .inv { fill: #1b1e23 }
+    .stroke { stroke: #ebebec }
+    .src { fill: #50555e }
+    .null { stroke: #3a3d43 }
+    .gap { stroke: #1b1e23 }
+  }
+</style>
+<defs><marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 8 4 0 8z" class="ink"/></marker></defs>
+<rect class="bg" width="800" height="612" rx="6"/>
+<text class="h dim" x="24" y="30">THE TABLE</text>
+<text class="s dim" x="776" y="30" text-anchor="end">Japan buildings, 53.7 million rows</text>
+<path class="stroke" stroke-width="1" d="M128 77V72H420V77"/>
+<text class="ink" x="274" y="62" text-anchor="middle">source columns</text>
+<path class="stroke" stroke-width="1" d="M464 77V72H764V77"/>
+<text class="ink" x="614" y="62" text-anchor="middle">overview columns for the map</text>
+<text class="m ink" x="153" y="94" text-anchor="middle">id</text>
+<rect class="src" x="128" y="104" width="50" height="208"/>
+<text class="m ink" x="209" y="94" text-anchor="middle">class</text>
+<rect class="src" x="184" y="104" width="50" height="208"/>
+<text class="m ink" x="265" y="94" text-anchor="middle">height</text>
+<rect class="src" x="240" y="104" width="50" height="208"/>
+<text class="m ink" x="370" y="94" text-anchor="middle">geometry</text>
+<rect class="src" x="320" y="104" width="100" height="208"/>
+<text class="m dim" x="305" y="94" text-anchor="middle">&#8230;</text>
+<path class="gap" stroke-width="2" d="M126 118H422"/>
+<path class="gap" stroke-width="2" d="M126 133H422"/>
+<path class="gap" stroke-width="2" d="M126 148H422"/>
+<path class="gap" stroke-width="2" d="M126 163H422"/>
+<path class="gap" stroke-width="2" d="M126 178H422"/>
+<path class="gap" stroke-width="2" d="M126 193H422"/>
+<path class="gap" stroke-width="2" d="M126 208H422"/>
+<path class="gap" stroke-width="2" d="M126 223H422"/>
+<path class="gap" stroke-width="2" d="M126 238H422"/>
+<path class="gap" stroke-width="2" d="M126 253H422"/>
+<path class="gap" stroke-width="2" d="M126 268H422"/>
+<path class="gap" stroke-width="2" d="M126 283H422"/>
+<path class="gap" stroke-width="2" d="M126 298H422"/>
+<text class="m ink" x="504" y="94" text-anchor="middle">lod.f8</text>
+<rect class="null" x="464.5" y="104.5" width="79" height="207"/>
+<rect class="ovr" x="464" y="119" width="80" height="13"/>
+<rect class="ovr" x="464" y="194" width="80" height="13"/>
+<rect class="ovr" x="464" y="269" width="80" height="13"/>
+<text class="s ink" x="504" y="331" text-anchor="middle">zoom 8</text>
+<text class="m dim" x="504" y="346" text-anchor="middle">3 MB</text>
+<text class="m ink" x="614" y="94" text-anchor="middle">lod.f11</text>
+<rect class="null" x="574.5" y="104.5" width="79" height="207"/>
+<rect class="ovr" x="574" y="104" width="80" height="13"/>
+<rect class="ovr" x="574" y="119" width="80" height="13"/>
+<rect class="ovr" x="574" y="149" width="80" height="13"/>
+<rect class="ovr" x="574" y="179" width="80" height="13"/>
+<rect class="ovr" x="574" y="194" width="80" height="13"/>
+<rect class="ovr" x="574" y="224" width="80" height="13"/>
+<rect class="ovr" x="574" y="254" width="80" height="13"/>
+<rect class="ovr" x="574" y="269" width="80" height="13"/>
+<rect class="ovr" x="574" y="299" width="80" height="13"/>
+<text class="s ink" x="614" y="331" text-anchor="middle">zoom 11</text>
+<text class="m dim" x="614" y="346" text-anchor="middle">27 MB</text>
+<text class="m ink" x="724" y="94" text-anchor="middle">lod.f14</text>
+<rect class="null" x="684.5" y="104.5" width="79" height="207"/>
+<rect class="ovr" x="684" y="104" width="80" height="13"/>
+<rect class="ovr" x="684" y="119" width="80" height="13"/>
+<rect class="ovr" x="684" y="134" width="80" height="13"/>
+<rect class="ovr" x="684" y="149" width="80" height="13"/>
+<rect class="ovr" x="684" y="164" width="80" height="13"/>
+<rect class="ovr" x="684" y="179" width="80" height="13"/>
+<rect class="ovr" x="684" y="194" width="80" height="13"/>
+<rect class="ovr" x="684" y="209" width="80" height="13"/>
+<rect class="ovr" x="684" y="224" width="80" height="13"/>
+<rect class="ovr" x="684" y="239" width="80" height="13"/>
+<rect class="ovr" x="684" y="254" width="80" height="13"/>
+<rect class="ovr" x="684" y="269" width="80" height="13"/>
+<rect class="ovr" x="684" y="284" width="80" height="13"/>
+<rect class="ovr" x="684" y="299" width="80" height="13"/>
+<text class="s ink" x="724" y="331" text-anchor="middle">zoom 14&#8211;15</text>
+<text class="m dim" x="724" y="346" text-anchor="middle">791 MB</text>
+<text class="m dim" x="559" y="94" text-anchor="middle">&#8230;</text>
+<text class="m dim" x="669" y="94" text-anchor="middle">&#8230;</text>
+<text class="s ink" x="370" y="331" text-anchor="middle">full detail</text>
+<text class="m dim" x="370" y="346" text-anchor="middle">3.1 GB</text>
+<rect class="tilebox" stroke-width="2" x="460" y="100" width="88" height="216" rx="3"/>
+<rect class="tilebox" stroke-width="2" x="570" y="163" width="88" height="60" rx="3"/>
+<rect class="tilebox" stroke-width="2" x="680" y="178" width="88" height="30" rx="3"/>
+<path class="tilebox" stroke-width="1" stroke-dasharray="3 3" d="M548 163H570"/>
+<path class="tilebox" stroke-width="1" stroke-dasharray="3 3" d="M548 223H570"/>
+<path class="tilebox" stroke-width="1" stroke-dasharray="3 3" d="M658 178H680"/>
+<path class="tilebox" stroke-width="1" stroke-dasharray="3 3" d="M658 208H680"/>
+<path class="stroke" stroke-width="1" marker-end="url(#arrow)" d="M108 106V310"/>
+<text class="s ink" text-anchor="middle" transform="translate(94 208) rotate(-90)">rows in Hilbert order</text>
+<rect class="tilebox" stroke-width="2" x="461" y="367" width="10" height="10" rx="2"/>
+<text class="s ink" x="478" y="376">features centred in one tile</text>
+<text class="h dim" x="24" y="424">READING A TILE</text>
+<rect class="idx" x="24" y="462" width="48" height="40"/>
+<text class="s on" x="48" y="486" text-anchor="middle">root</text>
+<rect class="src" x="74" y="462" width="80" height="40"/>
+<text class="s ink" x="114" y="486" text-anchor="middle">bbox, hilbert</text>
+<rect class="ovr" x="156" y="462" width="144" height="40"/>
+<rect class="att" x="302" y="462" width="126" height="40"/>
+<rect class="src" x="430" y="462" width="104" height="40"/>
+<text class="s ink" x="482" y="486" text-anchor="middle">source columns</text>
+<rect class="stroke" stroke-width="1" x="536.5" y="462.5" width="75" height="39"/>
+<text class="s ink" x="574" y="486" text-anchor="middle">page indexes</text>
+<rect class="idx" x="614" y="462" width="114" height="40"/>
+<rect class="stroke" stroke-width="1" x="730.5" y="462.5" width="45" height="39"/>
+<text class="s ink" x="753" y="486" text-anchor="middle">footer</text>
+<text class="s on" x="164" y="486">overview columns</text>
+<text class="s ink" x="309" y="486">overview attributes</text>
+<text class="s on" x="621" y="486">spatial directory</text>
+<rect class="tile" x="280" y="462" width="14" height="40"/>
+<rect class="tile" x="418" y="462" width="6" height="40"/>
+<rect class="tile" x="718" y="462" width="6" height="40"/>
+<path class="stroke" stroke-width="1" d="M48 455V462"/>
+<circle class="ink" cx="48" cy="446" r="9"/>
+<text class="n inv" x="48" y="450" text-anchor="middle">1</text>
+<path class="stroke" stroke-width="1" d="M287 455V462"/>
+<circle class="ink" cx="287" cy="446" r="9"/>
+<text class="n inv" x="287" y="450" text-anchor="middle">3</text>
+<path class="stroke" stroke-width="1" d="M721 455V462"/>
+<circle class="ink" cx="721" cy="446" r="9"/>
+<text class="n inv" x="721" y="450" text-anchor="middle">2</text>
+<text class="s ink" x="62" y="450">first 16 KB, read once</text>
+<text class="s ink" x="273" y="450" text-anchor="end">the tile&#8217;s pages</text>
+<path class="stroke" stroke-width="1" stroke-dasharray="3 3" d="M296 446H421V462"/>
+<text class="s dim" x="428" y="450">if styling by an attribute</text>
+<text class="s ink" x="707" y="450" text-anchor="end">a directory leaf</text>
+<path class="stroke" stroke-width="1.2" marker-end="url(#arrow)" d="M48 504C48 598 723 598 723 505"/>
+<path class="stroke" stroke-width="1.2" marker-end="url(#arrow)" d="M719 504C719 544 287 544 287 505"/>
+<text class="s ink" x="430" y="551" text-anchor="middle">lists each page&#8217;s tiles and byte range</text>
+<text class="s ink" x="386" y="594" text-anchor="middle">points to the directory leaves</text>
+</svg>

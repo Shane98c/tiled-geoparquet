@@ -128,6 +128,43 @@ def test_take_ragged_picks_whole_rows_in_order():
     assert [len(a) for a in take_ragged(store, np.zeros(0, np.int64))] == [1, 1, 1, 0, 0]
 
 
+def test_a_point_overview_holds_no_copies(tmp_path):
+    """A MultiPoint is drawn as one point at the centre of its bounds, in its
+    own tile, however wide it is, so no row hosts a copy of it and a row a
+    zoom hides stays hidden."""
+    zoom = 8
+    lon = lambda x: x / 2**zoom * 360 - 180  # noqa: E731
+    wide = shapely.MultiPoint([(lon(52.55), 39.7), (lon(53.05), 39.7)])
+    near = shapely.MultiPoint([(lon(53.5), 39.7), (lon(53.5001), 39.7)])
+    far = shapely.MultiPoint([(lon(54.5), 39.7), (lon(54.5001), 39.7)])
+    src = tmp_path / 'multi.parquet'
+    table = pa.table({'geometry': pa.array(list(shapely.to_wkb([wide, near, far])), pa.binary())})
+    geo = {
+        'version': '1.1.0',
+        'primary_column': 'geometry',
+        'columns': {'geometry': {'encoding': 'WKB', 'geometry_types': ['MultiPoint']}},
+    }
+    pq.write_table(table.replace_schema_metadata({'geo': json.dumps(geo)}), src)
+
+    def first_only(rows, at, ctx):
+        ids = rows.column('id').to_numpy()
+        return rows.filter(pa.array(ids == ids.min())) if at == zoom else rows
+
+    out = write(
+        src,
+        tmp_path / 'multi.lod.parquet',
+        zooms=[zoom, zoom + 1],
+        thinning=first_only,
+        workers=1,
+        log=lambda *_: None,
+    )
+    validate(out, full=True)
+    assert len(read_overview(out, zoom)) == 1
+    assert len(read_overview(out, zoom + 1)) == 3
+    values = pq.read_table(out).column('lod').combine_chunks().field(f'p{zoom}')
+    assert values.null_count == 2
+
+
 @pytest.fixture
 def edge_features(tmp_path):
     """Shapes centred exactly on tile edges, shapes three, four and two by two

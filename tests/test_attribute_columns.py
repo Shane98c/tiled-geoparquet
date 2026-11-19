@@ -541,6 +541,20 @@ def test_auto_keeps_cheap_flat_columns(tmp_path, built):
     assert any('attributes auto: kind, height, rps, flag' in line for line in logged)
 
 
+def test_a_string_attribute_without_values_packs_plain_strings(tmp_path, built):
+    src, _ = built
+    table = pq.read_table(src)
+    empty = pa.nulls(table.num_rows, pa.string())
+    table = table.set_column(table.schema.get_field_index('kind'), 'kind', empty)
+    nulls = tmp_path / 'nulls.parquet'
+    pq.write_table(table, nulls)
+    out = _build(nulls, tmp_path / 'out.parquet', thinning=_thinning, attributes='auto')
+    lod = json.loads(pq.read_schema(out).metadata[b'geo'])['lod_columns']
+    kind = next(a for a in lod['attributes'] if a['name'] == 'kind')
+    assert kind['type'] == 'string' and 'values' not in kind
+    validate(out)
+
+
 @pytest.mark.parametrize(
     'given,kept',
     [
@@ -1144,6 +1158,7 @@ def _set_attribute(table, lod, name, row, value):
         (lambda lod, _: lod['attribute_columns']['lods'].append('f99'), 'declared LODs'),
         (lambda lod, _: lod['attributes'].reverse(), 'metadata order'),
         (lambda lod, _: lod['attributes'][1].update(type='int64'), 'nullable int64 column'),
+        (lambda lod, _: lod['attributes'][0].update(values=None), 'values must be a table'),
         (
             lambda _, table: table.set_column(
                 table.schema.get_field_index('height'),

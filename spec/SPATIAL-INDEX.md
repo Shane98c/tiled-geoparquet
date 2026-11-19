@@ -27,14 +27,17 @@ gzip directory nodes: leaves, each level-one node's followed by its slot block, 
 standard Parquet footer | footer_length:u32le | PAR1
 ```
 
+The [layout figure](../docs/layout.svg) draws this order and the reads of one
+overview tile.
+
 The footer retains the original row groups, columns, schema, statistics, and
 GeoParquet metadata, with relocated offsets and updated physical sizes.
 `lod_spatial_index` in its key/value metadata advertises the profile version
 and bootstrap location, `{"version":4,"offset":4,"length":16380}`. The root
 states the same version: a reader refuses any other in whichever of the two
 it opens the file through, before it reads a value, and the validator
-refuses a file where they differ. Primary
-geometry and source attribute chunks are copied byte for byte. LOD chunks are
+refuses a file where they differ. The reference writer copies primary
+geometry and source attribute chunks byte for byte. LOD chunks are
 re-encoded in the original row order, with the same nullable binary schema and
 zstd, with page breaks at the LOD's finest tile grid. Every LOD page is a v1
 data page (a `DATA_PAGE` header) of PLAIN values with RLE/bit-packed hybrid
@@ -146,7 +149,9 @@ the previous entry, and the first entry's against zero:
   the first row, counted within the page, of each run of rows in one cell.
 - `nulls`: the page's trailing rows whose key is null.
 
-Cells are Hilbert cells at `z = min(key.depth, finest zoom of the LOD)`: key
+The profile takes a `key.depth` from 0 to 26, which keeps every key an exact
+JavaScript integer. Cells are Hilbert cells at
+`z = min(key.depth, finest zoom of the LOD)`: key
 `k` lies in cell `floor(k / 4^(key.depth - z))`, and a null key counts as cell
 `4^z`, past every other. Entries are in key order: each entry's minimum cell
 is at least the previous entry's maximum. A node's minimum and maximum cell
@@ -164,10 +169,11 @@ reference writer puts 1,024 pages in a leaf and, while the root would exceed
 the bootstrap, adds a level of branches of 64 entries to a tree: to the row
 directory whose top node is largest, since no overview tile reads the row
 directories, and to the LOD or primary tree whose top node is largest only
-once every row directory has branched. It first fits the root as it would be
+once no row directory's top node holds more than one entry, apart from the trees the slot
+layout branches first ([Attribute slots](#attribute-slots)). It first fits the root as it would be
 without the attributes' metadata, the attribute codec and the attribute slot
 sizes, so the trees branch as in the same file without attributes, and then
-with them. A synthetic directory of 15 LODs, 21 attributes, 25 indexed
+with them, under the same rule. A synthetic directory of 15 LODs, 21 attributes, 25 indexed
 columns and 50 or 500 million rows has the same LOD and primary trees with
 and without the attributes.
 
@@ -324,8 +330,8 @@ tile's boundary copies, which belong to features keyed elsewhere.
 ## Primary directory
 
 Past the finest LOD the reader draws the primary geometry itself, which no
-overview copies. Its pages, copied byte for byte and never re-paged, are
-located by a directory routed by key, as the LOD directories are, whose leaves
+overview copies. Its pages, which the reference writer copies byte for byte,
+are located by a directory routed by key, as the LOD directories are, whose leaves
 list runs of geometry rows with the box of each. A feature reaching into a
 tile from outside it is found by its box, so the primary geometry needs no
 boundary copies. The root's `primary_index` holds `directory`, the top node,
@@ -415,8 +421,8 @@ columns, nested ones included, open the normal Parquet footer lazily. The
 standard page indexes describe every page, so ordinary Parquet readers see an
 ordinary file, and a row group's offset indexes are adjacent, so a footer
 read across columns fetches them in one request. The directories are derived
-from the final footer, which stays authoritative; a validator checks they
-agree.
+from the final footer, which stays authoritative; the validator checks they
+agree ([Validation](#validation)).
 
 Publish files immutably: the profile is
 specific to one file write, and ordinary Parquet writers need not preserve it.
@@ -428,3 +434,42 @@ index pages.
 The reference reader's caching, worker pool, and cancellation behaviour are
 described in the [usage guide](../docs/usage.md#reader-behaviour); none of it
 changes the stored bytes.
+
+## Validation
+
+In its full mode the reference validator
+([Validation](SPEC.md#validation)) checks a file with this index against its
+footer and its keys:
+
+- The LOD directories, complete: metadata, codecs, v1 PLAIN overview page
+  headers, page membership and order, row spans, cell bounds, fences and
+  branch bounds, and standard page ranges.
+- The primary directory, against the geometry's page index and covering one
+  row group at a time: its leaves hold every cell of its zoom once, each
+  listing every page with a row whose box reaches the leaf's tiles, cut into
+  the same runs wherever it is listed; each run's box is the union of its
+  rows' covering boxes and holds a row with an extent.
+- The row directories: they list exactly the flat columns whose pages decode
+  on their own, with codecs and schema matching the footer, and each lists
+  every page of its column once, in row order, with the byte range and rows
+  of its offset index, under branches whose rows match the nodes they
+  locate.
+- Every indexed page: it is a data page, not dictionary encoded, of the rows
+  its index says, and its header counts a value or a null for each.
+- Attribute slots: every LOD holds the attributes; the root gives an
+  attribute slot size per directory exactly when there are attributes; the
+  leaves under each level-one node of every LOD and of the primary directory
+  lie back to back, followed by a slot per attribute and leaf; each slot
+  holds a length within the slot, the attribute's position, the leaf's
+  offset, zero padding and an attribute leaf, the one of each LOD leaf
+  listing the attribute pages beside its pages and the one of each primary
+  leaf the source pages over its runs' rows; each directory's slots are 16
+  bytes longer than its largest attribute leaf; and no directory node
+  overlaps a slot block.
+- Attribute pages: they are cut where their LOD's pages are, but for one
+  page per run of overview pages without a value; an attribute leaf lists
+  length 0 exactly beside those overview pages; and each is a v1 PLAIN page,
+  or a BYTE_STREAM_SPLIT one in a FLOAT or DOUBLE column, in the root's
+  attribute codec.
+
+A file without the index gets the packed-value and offset-index checks.

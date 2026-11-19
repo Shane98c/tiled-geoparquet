@@ -103,7 +103,7 @@ def indexed(tmp_path_factory):
     write(
         src,
         out,
-        zooms=[6, 8],
+        zooms=[6, 7, 8],
         complete_from=8,
         row_group_rows=64,
         page_rows=16,
@@ -300,7 +300,7 @@ def styled(tmp_path_factory):
     _write_unindexed(
         src,
         staged,
-        zooms=[6, 8],
+        zooms=[6, 7, 8],
         complete_from=8,
         attributes=['height'],
         row_group_rows=64,
@@ -916,6 +916,36 @@ def test_covering_geometry_and_key_columns_are_checked(indexed, tmp_path, mutati
 
 
 @pytest.mark.parametrize(
+    'mutation, full, message',
+    [
+        ('double', False, 'key column hilbert must be a nullable int64 column'),
+        ('reversed', True, 'Hilbert keys do not ascend'),
+        ('hidden', True, 'row 0: not shown at the finest LOD f8'),
+    ],
+)
+def test_the_key_orders_the_rows_and_the_finest_lod_shows_them(
+    indexed, tmp_path, mutation, full, message
+):
+    def change(table, geo):
+        if mutation == 'double':
+            return _replace(table, 'hilbert', table['hilbert'].cast(pa.float64()))
+        if mutation == 'reversed':
+            keys = table['hilbert'].combine_chunks()
+            return _replace(table, 'hilbert', keys.take(pa.array(range(len(keys) - 1, -1, -1))))
+        lod = table['lod'].combine_chunks()
+        fields = list(lod.type)
+        children = [lod.field(i) for i in range(len(fields))]
+        finest = [f.name for f in fields].index('f8')
+        children[finest] = _null_at(pa.chunked_array([children[finest]]), 0)
+        hidden = pa.StructArray.from_arrays(children, fields=fields)
+        return _replace(table, 'lod', hidden, nullable=False)
+
+    bad = _rewritten(indexed, tmp_path / f'{mutation}.parquet', change)
+    with pytest.raises(ValidationError, match=re.escape(message)):
+        validate(bad, sample_rows=0, full=full)
+
+
+@pytest.mark.parametrize(
     'margin, message',
     [
         (0, None),
@@ -942,6 +972,68 @@ def test_the_margin_is_a_number_of_pixels(indexed, tmp_path, margin, message):
         validate(bad, sample_rows=0)
         return
     with pytest.raises(ValidationError, match=re.escape(message)):
+        validate(bad, sample_rows=0)
+
+
+@pytest.mark.parametrize(
+    'change, message',
+    [
+        (lambda lod: lod.pop('order'), 'order None is not hilbert_webmercator'),
+        (lambda lod: lod.update(order='z'), "order 'z' is not hilbert_webmercator"),
+        (lambda lod: lod.pop('tile_size'), 'tile_size None is not 512'),
+        (lambda lod: lod.update(tile_size=256), 'tile_size 256 is not 512'),
+        (lambda lod: lod.pop('thinning'), 'thinning must be an object describing the rule'),
+        (lambda lod: lod.pop('attributes'), 'attributes must be a list, empty without attributes'),
+        (lambda lod: lod.pop('column'), 'LOD column None missing'),
+        (lambda lod: lod['key'].pop('depth'), 'key depth None is not a non-negative integer'),
+        (lambda lod: lod.pop('zooms'), 'zooms must be contiguous and ascending within 0..24'),
+        (lambda lod: lod.update(zooms=[6, 8]), 'zooms must be contiguous and ascending within'),
+        (
+            lambda lod: lod['key'].update(depth=7),
+            'zooms must be contiguous and ascending within 0..7',
+        ),
+        (
+            lambda lod: lod.update(zooms=[6, 7, 8, 9]),
+            'every zoom in zooms must be in exactly one LOD',
+        ),
+        (
+            lambda lod: lod['lods']['f6'].update(zooms=[6, 7]),
+            'every zoom in zooms must be in exactly one LOD',
+        ),
+        (
+            lambda lod: lod['lods']['f6'].update(zooms=[]),
+            'lod f6: zooms must be contiguous and ascending',
+        ),
+        (lambda lod: lod.update(version=0.2), 'version 0.2 is not compatible'),
+        (lambda lod: lod.update(pack_version=3.0), 'pack_version 3.0 is not 3'),
+        (lambda lod: lod.update(lods=[{'zooms': [6]}]), 'no lods declared'),
+        (lambda lod: lod['lods'].update(f6=None), 'lods must map each LOD name to an object'),
+        (
+            lambda lod: lod['lods']['f6'].update(scale=[True, True]),
+            'lod f6: scale must be an [x, y] pair',
+        ),
+        (
+            lambda lod: lod['lods']['f6'].update(placeholder=True),
+            'lod f6: placeholder must be a positive width in grid cells',
+        ),
+    ],
+)
+def test_required_metadata_is_checked(indexed, tmp_path, change, message):
+    def apply(table, geo):
+        change(geo['lod_columns'])
+        return table
+
+    bad = _rewritten(indexed, tmp_path / 'declared.parquet', apply)
+    with pytest.raises(ValidationError, match=re.escape(message)):
+        validate(bad, sample_rows=0)
+
+
+def test_the_root_copies_the_footer_metadata_exactly(indexed, tmp_path):
+    raw, root = _root(indexed)
+    root['lod']['tile_size'] = 512.0
+    bad = tmp_path / 'root.parquet'
+    _write_root(bad, raw, root)
+    with pytest.raises(ValidationError, match='spatial root metadata disagrees with footer'):
         validate(bad, sample_rows=0)
 
 
@@ -1096,7 +1188,7 @@ def test_written_coverings_bound_every_coordinate(tmp_path, kind, odd, bounds):
     geometry's coordinates, NaN left out one axis at a time, rounded
     outward, and validation takes a geometry's bounds the same way."""
     src = _among(tmp_path, kind, odd)
-    out = write(src, tmp_path / 'out.parquet', zooms=[8, 10, 12], workers=1, log=lambda *_: None)
+    out = write(src, tmp_path / 'out.parquet', zooms=[8, 9, 10], workers=1, log=lambda *_: None)
     validate(out, full=True)
     table = pq.read_table(out, columns=['id', 'bbox'])
     row = table['id'].to_pylist().index(25)
@@ -1117,7 +1209,7 @@ def test_a_geometry_without_finite_bounds_is_shown_nowhere(tmp_path, kind, odd):
     finite bounds, so as a null or empty one does it gets a null covering and
     key, sorts last and is shown at no zoom, its WKB kept. The extent, grids
     and every other row's overviews are those of the file without it."""
-    options = dict(zooms=[8, 10, 12], workers=1, log=lambda *_: None)
+    options = dict(zooms=[8, 9, 10], workers=1, log=lambda *_: None)
     out = write(_among(tmp_path, kind, odd), tmp_path / 'out.parquet', **options)
     validate(out, full=True)
     (tmp_path / 'alone').mkdir()

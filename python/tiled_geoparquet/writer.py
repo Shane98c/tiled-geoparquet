@@ -34,9 +34,11 @@ from .encoding import (
     INT32,
     LOD_VERSION,
     MAX_ATTRIBUTES,
+    ORDER,
     OVERVIEW_COLUMNS,
     PACK_VERSION,
     SUMMARY_QUANTILES,
+    TILE_SIZE,
     column_type,
     infer_attributes,
     is_attribute_type,
@@ -73,7 +75,6 @@ KEY_FIELD = pa.field(KEY_COLUMN, pa.int64(), nullable=True)
 
 # columns the writer computes have a prefix no source column uses; thinnings see them unprefixed
 THINNING_COLUMNS = ('id', 'cx', 'cy', 'diag', 'area', 'nv', 'u')
-TILE_SIZE = 512
 # 1.1 defines the bbox covering; 2.0 requires Parquet's GEOMETRY type on the WKB, which the output lacks
 GEOPARQUET_VERSION = '1.1.0'
 # OGC:CRS84 and EPSG:4326, both read as x/y
@@ -353,15 +354,17 @@ def guess_zooms(con, sorted_path, geometry, family, zooms, complete_from, extent
         coords, index = shapely.get_coordinates(geoms, return_index=True)
         steps = np.hypot(*np.diff(np.stack(mercator(coords[:, 0], coords[:, 1]), 1), axis=0).T)
         same = index[1:] == index[:-1]
-        spacing = float(np.median(steps[same])) if same.any() else 0.0
+        # a coordinate that is NaN on one axis gives steps that are NaN
+        steps = steps[same][np.isfinite(steps[same])]
+        spacing = float(np.median(steps)) if len(steps) else 0.0
         extent_size = max(extent[2] - extent[0], extent[3] - extent[1])
-        coarsest = max(0, zoom_where(extent_size) - 1)
+        coarsest = min(AUTO_FINEST_ZOOM, max(0, zoom_where(extent_size) - 1))
         finest = min(
             AUTO_FINEST_ZOOM, max(coarsest + 1, zoom_where(spacing / 4) if spacing else 16)
         )
         first_complete = zoom_where(diag) if family != 'point' and diag else None
         if auto_from:
-            complete_from = None if family == 'point' else min(first_complete, finest)
+            complete_from = None if first_complete is None else min(first_complete, finest)
         if auto_zooms:
             zooms = list(range(coarsest, finest + 1))
         log(
@@ -575,7 +578,7 @@ def _auto_attributes(con, src: str, schema: pa.Schema, geometry: str, log) -> li
 def _value_table(con, path: Path, name: str, overrides: Iterable[pa.Array]) -> list[str] | None:
     """The sorted distinct values of string attribute `name`, those of its
     column in `path` and of the thinnings' `overrides`, or None when there are
-    more than DICTIONARY_MAX and it packs plain strings. The overrides are
+    none or more than DICTIONARY_MAX and it packs plain strings. The overrides are
     read DICTIONARY_SCAN_ROWS rows at a time until the values pass the limit,
     and a batch's values become Python strings only when it has DICTIONARY_MAX
     or fewer, so at most twice that many are held."""
@@ -594,7 +597,7 @@ def _value_table(con, path: Path, name: str, overrides: Iterable[pa.Array]) -> l
             if len(distinct) > DICTIONARY_MAX:
                 return None
             values.update(distinct.to_pylist())
-    return sorted(values) if len(values) <= DICTIONARY_MAX else None
+    return sorted(values) if 0 < len(values) <= DICTIONARY_MAX else None
 
 
 def _summaries(
@@ -841,8 +844,8 @@ def write(
 ) -> Path:
     """Build a Tiled GeoParquet file in one call.
 
-    Rows use one global Hilbert order. ``zooms`` lie in 0..24, the depth of
-    its key, so every tile is one interval of keys.
+    Rows use one global Hilbert order. ``zooms`` are consecutive and lie in
+    0..24, the depth of its key, so every tile is one interval of keys.
     ``thinning`` chooses displayed rows at each zoom. ``complete_from`` sets
     the zoom from which every feature is shown, whatever the thinning says,
     and the base zoom a rate-based thinning counts from; 'auto' derives it
@@ -933,13 +936,32 @@ def _margin_pixels(value) -> float:
     return int(value) if value.is_integer() else value
 
 
-def _build(src: str, out: Path, o: SimpleNamespace, held: contextlib.ExitStack) -> Path:
-    """`_write_unindexed`'s work, leaving what it opens with `held` to close."""
-    if o.zooms != 'auto' and not all(0 <= z <= KEY_DEPTH for z in o.zooms):
+def _given_zooms(zooms):
+    """`zooms` as `write` takes them: 'auto', or consecutive ascending zooms
+    within the key's depth, returned as a list of ints."""
+    if isinstance(zooms, str):
+        if zooms != 'auto':
+            raise ValueError(f"zooms must be 'auto' or a list of zooms; got {zooms!r}")
+        return zooms
+    given = list(zooms)
+    if not all(
+        isinstance(z, (int, np.integer)) and not isinstance(z, (bool, np.bool_)) for z in given
+    ):
+        raise ValueError(f'zooms must be integers; got {given}')
+    given = [int(z) for z in given]
+    if not all(0 <= z <= KEY_DEPTH for z in given):
         raise ValueError(
             f'zooms must lie in 0..{KEY_DEPTH}, the Hilbert key depth, so every tile is one '
-            f'interval of keys; got {list(o.zooms)}'
+            f'interval of keys; got {given}'
         )
+    if not given or given != list(range(given[0], given[0] + len(given))):
+        raise ValueError(f'zooms must be consecutive and ascending; got {given}')
+    return given
+
+
+def _build(src: str, out: Path, o: SimpleNamespace, held: contextlib.ExitStack) -> Path:
+    """`_write_unindexed`'s work, leaving what it opens with `held` to close."""
+    o.zooms = _given_zooms(o.zooms)
     margin_pixels = _margin_pixels(o.margin_pixels)
     out.parent.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
@@ -1052,6 +1074,15 @@ def _build(src: str, out: Path, o: SimpleNamespace, held: contextlib.ExitStack) 
     placeholder_pixels = o.placeholder_pixels
     if placeholder_pixels is None:
         placeholder_pixels = getattr(thinning, 'placeholder_pixels', DOT_CELLS / SUBPIXELS)
+    if (
+        isinstance(placeholder_pixels, bool)
+        or not isinstance(placeholder_pixels, (int, float, np.number))
+        or not np.isfinite(placeholder_pixels)
+        or placeholder_pixels <= 0
+    ):
+        raise ValueError(
+            f'placeholder_pixels must be a positive number of pixels; got {placeholder_pixels!r}'
+        )
     dot_cells = float(placeholder_pixels) * SUBPIXELS
     if o.zooms != 'auto':
         _check_grid((mxmin, mymin, mxmax, mymax), max(o.zooms), dot_cells)
@@ -1061,8 +1092,16 @@ def _build(src: str, out: Path, o: SimpleNamespace, held: contextlib.ExitStack) 
         f'(ST_XMin({quoted}) + ST_XMax({quoted})) / 2',
         f'(ST_YMin({quoted}) + ST_YMax({quoted})) / 2',
     )
-    # thinnings and grids work in Web Mercator metres; the covering stays in degrees
-    centroid = f'ST_Centroid({quoted})'
+    # thinnings and grids work in Web Mercator metres; the covering stays in degrees. A point
+    # family's point is the centre of its bounds, which the key cell holds, and a shape of no
+    # length or area, which has no centroid, takes that centre too
+    centre = (f'({limits[0]} + {limits[2]}) / 2', f'({limits[1]} + {limits[3]}) / 2')
+    if family == 'point':
+        centre_x, centre_y = centre
+    else:
+        centroid = f'ST_Centroid({quoted})'
+        centre_x = f'coalesce(ST_X({centroid}), {centre[0]})'
+        centre_y = f'coalesce(ST_Y({centroid}), {centre[1]})'
     width = f'({sql_mercator_x(f"ST_XMax({quoted})")} - {sql_mercator_x(f"ST_XMin({quoted})")})'
     height = f'({sql_mercator_y(f"ST_YMax({quoted})")} - {sql_mercator_y(f"ST_YMin({quoted})")})'
     # the source is lon/lat; DuckDB 2 requires the axis order to be stated
@@ -1075,8 +1114,8 @@ def _build(src: str, out: Path, o: SimpleNamespace, held: contextlib.ExitStack) 
         f"""
         COPY (
             SELECT row_number() OVER () AS __id,
-                CASE WHEN {valid} THEN {sql_mercator_x(f'ST_X({centroid})')}::DOUBLE END AS __cx,
-                CASE WHEN {valid} THEN {sql_mercator_y(f'ST_Y({centroid})')}::DOUBLE END AS __cy,
+                CASE WHEN {valid} THEN {sql_mercator_x(centre_x)}::DOUBLE END AS __cx,
+                CASE WHEN {valid} THEN {sql_mercator_y(centre_y)}::DOUBLE END AS __cy,
                 CASE WHEN {valid} THEN sqrt({width} ^ 2 + {height} ^ 2) END AS __diag,
                 CASE WHEN {valid} THEN {area} END AS __area,
                 CASE WHEN {valid} THEN ST_NPoints({quoted}) END AS __nv,
@@ -1292,6 +1331,9 @@ def _build(src: str, out: Path, o: SimpleNamespace, held: contextlib.ExitStack) 
     # LOD name -> (host row, tile tag, copied row) per copy, sorted by host
     spill_entries: dict[str, tuple] = {}
     for b in lod_plan:
+        # a point is drawn in its own tile, and a point LOD has no row that only hosts copies
+        if b['geometry_type'] == 'Point':
+            continue
         shown = np.flatnonzero((levels >> lod_bit[b['name']]) & 1)
         size = EARTH_RADIUS * np.radians(bounds['xmax'][shown] - bounds['xmin'][shown])
         np.maximum(
@@ -1301,7 +1343,7 @@ def _build(src: str, out: Path, o: SimpleNamespace, held: contextlib.ExitStack) 
         )
         parts = []
         for z in b['zooms']:
-            # a shape under a pixel draws as a placeholder square its own tile shows whole
+            # a shape under a pixel reaches under half a pixel into another tile
             wide = size / resolution(z) >= 1
             large = shown[wide]
             copied, tiles = straddlers(
@@ -1363,7 +1405,7 @@ def _build(src: str, out: Path, o: SimpleNamespace, held: contextlib.ExitStack) 
     geo[LOD_KEY] = {
         'version': LOD_VERSION,
         'column': 'lod',
-        'order': 'hilbert_webmercator',
+        'order': ORDER,
         'key': {'column': KEY_COLUMN, 'depth': KEY_DEPTH},
         'zooms': zooms,
         'tile_size': TILE_SIZE,

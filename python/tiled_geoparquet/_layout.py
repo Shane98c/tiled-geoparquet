@@ -30,7 +30,13 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from ._compact import dumps, get, loads, set_value
-from .encoding import INDEX_VERSION, check_format, check_index_version
+from .encoding import (
+    INDEX_KEY_DEPTH,
+    INDEX_VERSION,
+    check_format,
+    check_index_version,
+    check_zooms,
+)
 from .key import hilbert_key
 from .spill import ranges
 from .unpack import PageBounds, leading_rows, leads, moved, shown_rows
@@ -1263,8 +1269,9 @@ def finalize_layout(
     geo = json.loads(parquet.schema_arrow.metadata[b'geo'])
     lod = geo['lod_columns']
     check_format(lod)
+    check_zooms(lod)
     key_column = lod['key']['column']
-    if not 0 <= lod['key']['depth'] <= 26:
+    if lod['key']['depth'] > INDEX_KEY_DEPTH:
         raise ValueError('Hilbert depth must fit exact JavaScript integers (0..26)')
     primary = geo['primary_column']
     root = {'version': INDEX_VERSION, 'lod': lod, 'primary': primary, 'codecs': {}}
