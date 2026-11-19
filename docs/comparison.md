@@ -152,9 +152,10 @@ any other column that the reader looked up in the file's full table. The
 page takes the colours for `class` from the summary of that attribute in the
 file's metadata ([Attributes](usage.md#attributes)).
 
-**Fresh load** reloads the page, which clears the readers' caches but not the
-browser's HTTP cache. **Reset counters** keeps the caches, so you can compare
-navigation from that point.
+The tools for measuring are under **Measurement**. **Fresh load** reloads the
+page, which clears the readers' caches but not the browser's HTTP cache.
+**Reset counters** keeps the caches, so you can compare navigation from that
+point.
 
 By default the readers' requests skip the browser's HTTP cache. Every load is
 then a first visit, and the times reflect only the network and the reader. The

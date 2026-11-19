@@ -317,6 +317,22 @@
         margin-left: auto;
         color: #555;
       }
+      /* closed, the measurement tools are one word in the row of controls; open, a row below the legend */
+      #measure summary {
+        color: #555;
+        cursor: pointer;
+      }
+      #measure[open] {
+        order: 2;
+        flex-basis: 100%;
+      }
+      #measure .tools {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px 12px;
+        margin-top: 6px;
+      }
       #bar small {
         display: block;
         color: #555;
@@ -327,14 +343,20 @@
       #legend {
         display: flex;
         flex: 0 0 100%;
+        order: 1;
         align-items: center;
         gap: 2px 10px;
         height: 18px;
-        overflow: hidden;
+        overflow: auto hidden;
+        scrollbar-width: none;
         white-space: nowrap;
+      }
+      #legend::-webkit-scrollbar {
+        display: none;
       }
       #legend span {
         display: inline-flex;
+        flex: none;
         align-items: center;
         gap: 4px;
       }
@@ -342,6 +364,21 @@
         width: 10px;
         height: 10px;
         border-radius: 2px;
+      }
+      /* on a phone the maps keep over half the screen and the panels scroll below them */
+      @media (max-width: 700px) {
+        #dock {
+          max-height: 45vh;
+          max-height: 45svh;
+          overflow-y: auto;
+        }
+        #ledger,
+        #bar {
+          flex: none;
+        }
+        #ledger {
+          max-height: none;
+        }
       }
     </style>
   </head>
@@ -418,32 +455,39 @@
           </p>
           <p id="style-help-columns"></p>
         </div>
-        <span id="legend"></span>
-        <label id="cache-control" hidden><input type="checkbox" id="cache" />Browser cache</label>
-        <label id="latency-control" hidden
-          >Data request delay
-          <select id="latency">
-            <option value="0">Local / 0 ms</option>
-            <option value="50">50 ms</option>
-            <option value="100">100 ms</option>
-          </select></label
-        >
-        <button id="reload">Fresh load</button>
-        <button id="reset">Reset counters (keep caches)</button>
-        <button id="diagnose">Copy diagnostics</button>
+        <details id="measure">
+          <summary>Measurement</summary>
+          <div class="tools">
+            <label id="cache-control" hidden
+              ><input type="checkbox" id="cache" />Browser cache</label
+            >
+            <label id="latency-control" hidden
+              >Data request delay
+              <select id="latency">
+                <option value="0">Local / 0 ms</option>
+                <option value="50">50 ms</option>
+                <option value="100">100 ms</option>
+              </select></label
+            >
+            <button id="reload">Fresh load</button>
+            <button id="reset">Reset counters (keep caches)</button>
+            <button id="diagnose">Copy diagnostics</button>
+          </div>
+          <small id="notes"
+            >The views are synchronized. Totals count from when the page loaded or from the last
+            reset. The figure for a move is what that move downloaded on top of what the page
+            already had, so it can be zero. The archives use different thinning and overzoom rules.
+            A request cancelled before its response starts is not counted; one cancelled later
+            counts at its full size. Times are measured from the end of a move, and the first view's
+            time from the request for its file.</small
+          >
+        </details>
         <span id="stall"></span>
         <span id="zoom"></span>
         <a id="repo" href="https://github.com/Shane98c/tiled-geoparquet"
           >Tiled GeoParquet on GitHub</a
         >
-        <small id="notes"
-          >The views are synchronized. Totals count from when the page loaded or from the last
-          reset. The figure for a move is what that move downloaded on top of what the page already
-          had, so it can be zero. The archives use different thinning and overzoom rules. A request
-          cancelled before its response starts is not counted; one cancelled later counts at its
-          full size. Times are measured from the end of a move, and the first view's time from the
-          request for its file.</small
-        >
+        <span id="legend"></span>
       </div>
     </div>
     <script type="application/json" id="domains">
@@ -1238,6 +1282,12 @@
         reload()
       }
       document.getElementById('reload').onclick = reload
+      // the panel's own controls reload the page, so it opens as it was left
+      const measure = document.getElementById('measure')
+      try {
+        measure.open = sessionStorage.getItem('measure') === 'open'
+        measure.ontoggle = () => sessionStorage.setItem('measure', measure.open ? 'open' : '')
+      } catch {}
       if (!localServer) {
         document.getElementById('cache-control').hidden = false
         document.getElementById('cache').checked = cached
@@ -1455,6 +1505,8 @@
         document.getElementById('ledger-view').textContent = maps.length
           ? `zoom ${maps[0].map.getZoom().toFixed(1)}${name ? `, coloured by ${name}` : ''}`
           : ''
+        const BETWEEN =
+          'Bytes its requests carried that it did not ask for: the gaps between nearby ranges read as one request, and responses cancelled partway.'
         const label = (pane, part) => {
           const [kind, column] = part.split(':')
           if (kind === 'column') return column
@@ -1465,7 +1517,8 @@
           return kind
         }
         document.getElementById('ledger-rows').replaceChildren(
-          ...rows.map(({ pane, requests, bytes, parts, move, loading, time }) => {
+          ...rows.map(({ pane, requests, bytes, parts: all, move, loading, time }) => {
+            const parts = all.filter(([part, n]) => part !== 'other' || n >= bytes / 100)
             const what = element(
               'div',
               { className: 'what' },
@@ -1475,7 +1528,7 @@
                 ' · ',
                 element(
                   'span',
-                  {},
+                  part === 'other' ? { title: BETWEEN } : {},
                   element('i', { className: `dot ${part.split(':')[0]}` }),
                   `${label(pane, part)} ${size(n)}`,
                 ),
@@ -1653,7 +1706,7 @@
         const longest = Math.max(0, ...waits)
         document.getElementById('stall').textContent =
           longest > 8000
-            ? ` ${waits.length} tiles waiting, the longest ${Math.round(longest / 1000)} s: copy diagnostics`
+            ? ` ${waits.length} tiles waiting, the longest ${Math.round(longest / 1000)} s: copy diagnostics, under Measurement`
             : ''
       }, 1000)
     </script>
