@@ -133,7 +133,7 @@ reader nor requests its file. The selection is in the URL
 (`panes=lod,pmtiles,cogp,esri`, where `lod` is Tiled GeoParquet). The readers
 request data directly from the public S3 bucket, with no simulated latency or
 bandwidth cap, and the files have identical immutable cache settings. The
-view and style controls are those of the [local comparison](usage.md#demo).
+view and style controls are those of the [local comparison](../js/README.md#demo).
 
 The strip under the maps shows how many bytes each reader has requested since
 the page loaded, or since the counters were last reset. It counts response
@@ -163,7 +163,7 @@ Ticking **Browser cache** (`cache=on`) sends every reader's requests through the
 cache, so reopening a view reads from it. Chrome's cache handles one request
 per URL at a time, so range requests that a reader sends to a single URL are
 answered one after another. In this mode the Tiled GeoParquet reader puts each
-range in the URL ([Requests](usage.md#requests)), so every request has a URL
+range in the URL ([Requests](../js/README.md#requests)), so every request has a URL
 of its own and none waits on another. The PMTiles library sends all its ranges
 to one URL, as it does on any page.
 
@@ -344,7 +344,7 @@ area quantiles; summed area is not raster union coverage.
 The build recipe is [`benchmarks/write-japan-tippecanoe.py`](../benchmarks/write-japan-tippecanoe.py).
 It takes source, staging-output, and indexed-output paths. It uses private build
 phases to check intermediate integrity; the public `write()` API performs the
-complete build in one call. See the [usage guide](usage.md) for that workflow.
+complete build in one call. See the [writer guide](usage.md) for that workflow.
 
 Source versus writer output: all 53,742,978 rows pass count, XOR and sum checks
 of whole-row hashes across all 23 source analytical columns, including IDs and

@@ -432,7 +432,7 @@ Its layout pass rejects encrypted or external chunks, bloom filters and legacy
 index pages.
 
 The reference reader's caching, worker pool, and cancellation behaviour are
-described in the [usage guide](../docs/usage.md#reader-behaviour); none of it
+described in the [reader guide](../js/README.md#reader-behaviour); none of it
 changes the stored bytes.
 
 ## Validation

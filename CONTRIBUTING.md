@@ -41,7 +41,7 @@ npm --prefix js run demo:compare -- --lod /path/indexed.parquet --pmtiles /path/
 ```
 
 Optional `--cogp` and `--esri` paths enable the other readers; the
-[reader guide](docs/usage.md#demo) describes the page. For a scripted
+[reader guide](js/README.md#demo) describes the page. For a scripted
 five-reader measurement, see
 [the comparison page](docs/comparison.md#reproducing).
 
@@ -128,7 +128,7 @@ access design into other GeoParquet overview proposals.
 | `tests/`, `js/test/`       | Correctness tests and measurement harnesses           |
 | `examples/`                | Small runnable construction examples                  |
 | `benchmarks/`              | Dataset-specific builds and recorded results          |
-| `docs/`                    | Usage guide, comparison, design alternatives          |
+| `docs/`                    | Writer guide, comparison, design alternatives         |
 | `demo/`                    | Local and hosted comparison UI and deck.gl example    |
 
 See [THIRD_PARTY.md](THIRD_PARTY.md) before modifying or redistributing vendored

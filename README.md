@@ -10,7 +10,7 @@ index lets a browser fetch the relevant Parquet pages without opening the
 full footer. Ordinary GeoParquet tools query the original columns; the map
 uses a custom reader. That reader also maps any WKB GeoParquet without
 overviews straight from its rows, which suits files of a few MB
-([plain GeoParquet](docs/usage.md#plain-geoparquet)).
+([plain GeoParquet](js/README.md#plain-geoparquet)).
 
 Format draft 0.2.0. The format can still change. The Python and JavaScript
 packages take the format's version, so 0.2.x reads and writes format 0.2.
@@ -18,7 +18,8 @@ packages take the format's version, so 0.2.x reads and writes format 0.2.
 [Live comparison](https://tiled-geoparquet.pages.dev/) ·
 [Format specification](spec/SPEC.md) ·
 [Spatial index](spec/SPATIAL-INDEX.md) ·
-[Writer and reader guide](docs/usage.md) ·
+[Writer guide](docs/usage.md) ·
+[Reader guide](js/README.md) ·
 [Comparison with other formats](docs/comparison.md) ·
 [Contributing](CONTRIBUTING.md)
 
@@ -200,20 +201,20 @@ map overzooms the finest overview past its zoom, as it does a PMTiles
 archive; `sourceUrl(config, { maxzoom: 18 })` draws exact geometry from
 there to z18, at 230 to 650 KB a cold tile on 155.6 million US buildings
 against 30 to 45 KB at the finest overview zoom
-([guide](docs/usage.md#in-a-maplibre-app)).
+([guide](js/README.md#in-a-maplibre-app)).
 
 The tiles are standard Mapbox Vector Tiles, so any map library that lets you
 load a tile's bytes yourself can draw them with `fetchTile`; the
-[guide](docs/usage.md#in-other-map-libraries) shows OpenLayers. Clients that
+[guide](js/README.md#in-other-map-libraries) shows OpenLayers. Clients that
 only fetch tile URLs, such as desktop GIS, read them from
-[`tiled-geoparquet-serve`](docs/usage.md#serving-tiles-over-http).
+[`tiled-geoparquet-serve`](js/README.md#serving-tiles-over-http).
 
 The reader also exposes whole-feature geometry batches with typed coordinate
 buffers, plus GeoJSON, GeoArrow IPC, and MVT adapters; the
 [deck.gl example](https://tiled-geoparquet.pages.dev/deck/) renders the
-hosted Japan file outside MapLibre. See the [guide](docs/usage.md) for source
-attributes, nested fields, custom thinning, validation, and worker
-configuration.
+hosted Japan file outside MapLibre. See the [writer guide](docs/usage.md) for
+custom thinning, attributes and validation, and the
+[reader guide](js/README.md) for nested fields and worker configuration.
 
 ## measurements
 
@@ -310,7 +311,7 @@ request counts and transfer sizes, not a general speed ranking.
   skip it, and a view opened again reads from the network where the cache
   would answer from disk. The `rangeParam` option gives each range a URL of
   its own, so the requests run side by side through the cache and a view
-  opened again reads from it ([Requests](docs/usage.md#requests)).
+  opened again reads from it ([Requests](js/README.md#requests)).
 - **Overviews are selective.** Thinning and quantization serve display; they
   are not an exact analytical summary. Whole-feature overview queries preserve
   thinning and use bbox overlap, not exact intersection. Use original geometry
